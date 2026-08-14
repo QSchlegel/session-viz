@@ -26,16 +26,18 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { loadConfig } from './home.mjs'
 
 const run = promisify(execFile)
-const CONFIG = join(homedir(), '.claude', 'session-viz', 'config.json')
 
 interface Config { url: string; token: string; actor?: string }
 
 function config(): Config {
   const env = process.env.SESSION_VIZ_TOKEN
-  let file: Partial<Config> = {}
-  try { file = JSON.parse(readFileSync(CONFIG, 'utf8')) as Partial<Config> } catch { /* none yet */ }
+  // Resolved by home.mts rather than hardcoded, so this finds the token
+  // wherever /qsetup was able to put it — which under a sandboxed harness is
+  // not necessarily the preferred location.
+  const file: Partial<Config> = loadConfig<Config>() || {}
   const url = process.env.SESSION_VIZ_URL || file.url || 'https://cloud.session-viz.com'
   const token = env || file.token
   if (!token) {

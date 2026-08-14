@@ -9,8 +9,8 @@
 // preprod" sent four times is four deploys, not four failures. The useful split
 // is RITUAL from MISS, and it is decidable from what happened after the prompt:
 //
-//   MISS    the first attempt ran no tools, or drew a correction. Re-sending it
-//           reproduced the no-op. Worth rewriting, not worth a command.
+//   MISS    every instance ran no tools. Re-sending it reproduced the no-op.
+//           Worth rewriting, not worth a command.
 //   RITUAL  every instance ran tools and did work. You are hand-typing a
 //           procedure. Worth a command.
 //
@@ -144,14 +144,28 @@ export async function harvest({ minCount = 2 }: { minCount?: number } = {}): Pro
 
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
 
+// The description is a YAML scalar, not free text. Interpolated raw, a first line
+// carrying a colon, a '#' or a leading quote emitted frontmatter that no parser
+// accepts — the promoted command then fails to load, or loads with a description
+// silently truncated at the '#'. A double-quoted scalar has to escape only the
+// backslash and the quote; control characters cannot appear inside one at all.
+const yamlString = (s: string): string =>
+  `"${s.replace(/\p{Cc}+/gu, ' ').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+
 export function commandFile(item: HarvestItem): CommandFile {
-  const name = slug(item.text.split('\n')[0]!)
+  const first = item.text.split('\n')[0]!
+  // A first line with no alphanumerics slugs to '', which wrote the command to
+  // '.claude/commands/.md' — a nameless dotfile no command loader picks up. Fall
+  // back to the rest of the prompt, which usually still has words in it.
+  const name = slug(first) || slug(item.text) || 'prompt'
   const tools = item.tools.map((t) => t.n).join(', ')
   return {
     name,
     path: `.claude/commands/${name}.md`,
+    // Trimmed before quoting: a plain scalar dropped the trailing space left by
+    // cutting at 100 chars, and quoting would otherwise start preserving it.
     body: `---
-description: ${item.text.split('\n')[0]!.slice(0, 100)}
+description: ${yamlString(first.slice(0, 100).trim())}
 ---
 
 ${item.text.trim()}
@@ -181,6 +195,13 @@ if (isMain) {
   if (argv.includes('--json')) { console.log(JSON.stringify(items, null, 2)); process.exit(0) }
 
   const target = opt('--write')
+  // `--write` as the last argv element leaves opt() with nothing to hand back, and
+  // an empty target is indistinguishable from no --write at all: the run printed
+  // the listing and exited 0, as if the write had never been asked for.
+  if (!target && argv.includes('--write')) {
+    console.error('--write needs a prompt to match, e.g. --write "ship to preprod"')
+    process.exit(1)
+  }
   if (target) {
     const item = items.find((i) => i.key.startsWith(norm(target)))
     if (!item) { console.error(`no repeated prompt matching "${target}"`); process.exit(1) }

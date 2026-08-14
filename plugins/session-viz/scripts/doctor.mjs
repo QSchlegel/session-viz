@@ -12,9 +12,8 @@
 //
 // Where a recommendation cannot be supported it says so. A single repo is not a
 // baseline, and this refuses to invent one.
-import { readdirSync, statSync, existsSync, readFileSync, createReadStream } from 'node:fs';
+import { readdirSync, existsSync, readFileSync, createReadStream } from 'node:fs';
 import { join, basename } from 'node:path';
-import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { listSessions } from './extract.mjs';
 const count = (dir, ext = '.md') => {
@@ -45,7 +44,17 @@ export function fingerprint(root) {
             allow += a.length;
             if (a.some((p) => /^Write|^Edit/.test(String(p))))
                 coversWrite = true;
-            hooks += Object.keys(j?.hooks || {}).length;
+            // An event name is one key however much hangs off it, so a repo wiring six
+            // commands onto PreToolUse reported a single hook and read as unconfigured.
+            // The number under the 'hooks' column is commands, which is what a person
+            // means when they ask how many hooks a repo runs.
+            const events = j?.hooks || {};
+            for (const entries of Object.values(events)) {
+                if (!Array.isArray(entries))
+                    continue;
+                for (const e of entries)
+                    hooks += Array.isArray(e?.hooks) ? e.hooks.length : 1;
+            }
         }
         catch { }
     }
@@ -133,9 +142,11 @@ export function audit(target, fleet) {
     ];
     for (const c of checks) {
         const has = c.pred(me);
-        const n = share(c.pred);
         if (has || !others.length)
             continue;
+        // A satisfied check needs no baseline. Taking the share first walked the
+        // whole fleet once per check for a number that was then thrown away.
+        const n = share(c.pred);
         const level = others.length >= MIN_BASELINE && n / others.length >= 0.5 ? 'gap' : 'note';
         findings.push({
             level, key: c.key,
@@ -156,19 +167,26 @@ if (isMain) {
     const fleet = repos.map(fingerprint);
     if (argv.includes('--all')) {
         const rows = fleet.map((f) => ({ ...f, ...audit(f.root, fleet) }));
+        // comparedAgainst is the baseline size that decided gap-vs-note. Without it
+        // the machine output cannot tell a norm from an observation, which is the
+        // one distinction this tool exists to keep.
         if (argv.includes('--json')) {
-            console.log(JSON.stringify(rows.map((r) => ({ repo: r.repo, me: r.me, findings: r.findings })), null, 2));
+            console.log(JSON.stringify(rows.map((r) => ({ repo: r.repo, me: r.me, findings: r.findings, comparedAgainst: r.comparedAgainst })), null, 2));
             process.exit(0);
         }
         console.log(`fleet: ${fleet.length} repos with transcripts and a checkout on disk\n`);
         console.log('  CLAUDE  cmds  skills  hooks  allow  write  repo');
-        for (const f of fleet.sort((a, b) => Number(b.hasClaudeMd) - Number(a.hasClaudeMd))) {
+        // sort() is in place. Sorting `fleet` for display reordered the very array
+        // every audit() above was handed by reference, so a presentation choice
+        // reached back into the comparison it was presenting.
+        const ordered = [...fleet].sort((a, b) => Number(b.hasClaudeMd) - Number(a.hasClaudeMd));
+        for (const f of ordered) {
             console.log(`  ${(f.hasClaudeMd ? '  ✓   ' : '  —   ')}  ${String(f.commands).padStart(4)}  ${String(f.skills).padStart(6)}  ${String(f.hooks).padStart(5)}  ${String(f.permissionAllow).padStart(5)}  ${f.permissionCoversWrite ? '  ✓  ' : '  —  '}  ${f.repo}`);
         }
-        const noMd = fleet.filter((f) => !f.hasClaudeMd);
+        const noMd = ordered.filter((f) => !f.hasClaudeMd);
         if (noMd.length)
             console.log(`\n  ${noMd.length} without a CLAUDE.md: ${noMd.map((f) => f.repo).join(', ')}`);
-        const noWrite = fleet.filter((f) => !f.permissionCoversWrite);
+        const noWrite = ordered.filter((f) => !f.permissionCoversWrite);
         if (noWrite.length)
             console.log(`  ${noWrite.length} without a Write permission: ${noWrite.map((f) => f.repo).join(', ')}`);
         process.exit(0);

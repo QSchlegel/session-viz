@@ -194,7 +194,7 @@ async function scanRun(file: string): Promise<RunScan> {
     toolCounts: new Map(),
   }
   const names = new Map<string, string>()
-  const lastInput = new Map<string, string>()
+  let lastKey: string | null = null
   const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
   for await (const line of rl) {
     let o: TranscriptRecord
@@ -214,7 +214,10 @@ async function scanRun(file: string): Promise<RunScan> {
       r.cin += u.input_tokens || 0
       r.cread += u.cache_read_input_tokens || 0
       r.ccreate += u.cache_creation_input_tokens || 0
-      if (o.message?.stop_reason !== undefined) r.lastStop = o.message.stop_reason
+      // An explicit `stop_reason: null` is the absence of a terminal reason,
+      // not one. Last-write-wins let a trailing null erase the 'end_turn'
+      // behind it and terminalState then read the run as a zombie.
+      if (o.message?.stop_reason != null) r.lastStop = o.message.stop_reason
       // A malformed record could hold a string here; iterating it yields
       // characters, which fall out of the loop on the type check below.
       for (const b of (o.message?.content || []) as ContentBlock[]) {
@@ -226,9 +229,12 @@ async function scanRun(file: string): Promise<RunScan> {
         if (b.name === 'StructuredOutput') r.structured++
         if (WRITE_TOOLS.has(b.name)) r.intentWrite++
         // Loop detection: the same tool with the same input, back to back.
+        // Keyed per tool name this measured "the previous use OF THIS TOOL",
+        // so Read(A), Bash(X), Read(A) — a re-read after other work, not a
+        // loop — scored one. Back to back is the whole tool sequence.
         const key = b.name + '|' + JSON.stringify(b.input || {}).slice(0, 300)
-        if (lastInput.get(b.name) === key) r.loops++
-        lastInput.set(b.name, key)
+        if (lastKey === key) r.loops++
+        lastKey = key
       }
     } else if (o.type === 'user') {
       const c = o.message?.content
@@ -280,9 +286,14 @@ function terminalState(r: RunScan): TerminalState {
 // delivery, so `wrote_ok` is a tool-result observation and is never called
 // DELIVERED. UNVERIFIED is the default and is never alarmed on: a write into a
 // container is exactly the case a probe would get wrong.
+//
+// `denied` means nothing landed, so it is tested AFTER wroteOk. Testing it
+// first labelled a run with ten good Writes and one blocked Edit `denied`,
+// which dropped it out of the cost-per-delivered denominator while its output
+// tokens stayed in the numerator — cpdo inflated by the runs that shipped.
 function deliveryState(r: RunScan): DeliveryState {
-  if (r.writeDenied > 0) return 'denied'
   if (r.wroteOk > 0) return 'wrote_ok'
+  if (r.writeDenied > 0) return 'denied'
   if (r.intentWrite > 0) return 'unverified'
   return 'no_intent'
 }

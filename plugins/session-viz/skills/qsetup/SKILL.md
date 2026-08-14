@@ -44,11 +44,19 @@ Two scopes exist and they are not interchangeable:
 | `contrib` | sending findings — plane A, person-blind aggregates |
 | `collab` | vaults, task handoff and the MCP — plane B, identity-bearing |
 
+The page sends the browser on to the workspace once the token verifies, so the last thing
+the user sees is a console that already shows this machine as connected — not a dead
+loopback tab.
+
 ### 2. Report what happened
 
 One line: the scope and workspace it verified against, and the config path. Do not print
 the token, not even partially — it is on the user's screen already and does not need to be
 in the transcript too.
+
+If the output carries a `note` about the preferred location not being writable, say which
+path it settled on — that is a sandboxed harness, and the next command needs to find the
+same file.
 
 ## Other flags
 
@@ -59,7 +67,7 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/qsetup.mjs --forget   # delete it
 
 ## What it writes
 
-`~/.claude/session-viz/config.json`, mode `0600` in a `0700` directory:
+One `config.json`, mode `0600` in a `0700` directory:
 
 ```json
 {
@@ -70,6 +78,26 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/qsetup.mjs --forget   # delete it
   "savedAt": "…"
 }
 ```
+
+The location is not tied to any one harness — this plugin runs under Codex and others
+too, and a machine that never had Claude Code installed has no `~/.claude` to write to.
+Candidates, best first:
+
+| path | when |
+|---|---|
+| `$SESSION_VIZ_HOME/config.json` | set — wins outright, see below |
+| `$XDG_CONFIG_HOME/session-viz/` | `XDG_CONFIG_HOME` is set |
+| `~/.config/session-viz/` | the default |
+| `~/.claude/session-viz/` | honoured, never preferred — installs predating this |
+
+Reads take the first that exists, so an existing token keeps working. Writes go to the
+one already in use, or to the default when there is none.
+
+**Sandboxed harnesses.** Codex and friends confine writes to the workspace, so every
+path above fails with `EPERM` and no amount of retrying helps. Point
+`SESSION_VIZ_HOME` at a directory inside the workspace — it beats every other candidate,
+including a config that already exists somewhere unreachable. Setting `SESSION_VIZ_TOKEN`
+in the environment skips the file entirely.
 
 `SESSION_VIZ_URL`, `SESSION_VIZ_TOKEN` and `SESSION_VIZ_ACTOR` still take precedence when
 set, so a CI environment overrides the file without touching it.

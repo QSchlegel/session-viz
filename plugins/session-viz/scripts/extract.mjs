@@ -387,7 +387,7 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000 }
         turns: [],
     };
     let current = null;
-    const newTurn = ({ index, uuid, ts, text, promptId = null, hasImage = false, steering = false, origin = null, effort = null }) => ({
+    const newTurn = ({ index, uuid, ts, text, promptId = null, hasImage = false, typed = true, steering = false, origin = null, effort = null }) => ({
         index,
         promptId,
         uuid,
@@ -397,6 +397,7 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000 }
         text: text.length > maxPromptChars ? text.slice(0, maxPromptChars) + '\n…[truncated]' : text,
         fullChars: text.length,
         hasImage,
+        typed,
         steering,
         origin,
         signals: signals(text),
@@ -576,6 +577,10 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000 }
                     ts,
                     text,
                     hasImage: !!c.hasImage,
+                    // An IDE-wrapped record is a real turn but nobody wrote it. Left off
+                    // the turn, classifyUser's verdict dies at the call site and a click
+                    // on an element scores as prose the user composed.
+                    typed: c.typed,
                     effort: rec.effort || null,
                 });
                 break;
@@ -737,7 +742,21 @@ if (isMain) {
         }
         process.exit(0);
     }
-    const positional = argv.filter((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1] !== '--project' && argv[argv.indexOf(a) - 1] !== '--limit');
+    // Which argument is a flag's value is a fact about position, not about text:
+    // indexOf() answers with the *first* match, so in `--project foo foo` the
+    // trailing session id resolves back to the --project slot and is discarded —
+    // the tool then extracts the newest session in the project instead of the one
+    // that was named, and says nothing about it.
+    const positional = [];
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (a.startsWith('--'))
+            continue;
+        const prev = argv[i - 1];
+        if (prev === '--project' || prev === '--limit')
+            continue;
+        positional.push(a);
+    }
     const target = resolveTarget(positional[0], opt('--project'));
     if (!target) {
         console.error('no session found. try --list');

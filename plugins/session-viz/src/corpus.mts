@@ -477,6 +477,14 @@ const worktreeOf = (cwd: string | null | undefined) => {
 
 const repoName = (cwd: string | null | undefined) => repoRoot(cwd).replace(/^.*\//, '')
 
+// The one name a session is labelled by, everywhere. Not every transcript
+// records a cwd, and repoName(null) is '' — so a session without one has only
+// its transcript slug to go on. Spelled out separately at each call site the
+// fallback drifted: exemplars said '', while the project summary, the digest and
+// the flattened turns all said the slug, and nothing joined an exemplar back to
+// the project it came from.
+const projectOf = (s: Session) => repoName(s.cwd) || s.project
+
 // ---------------------------------------------------------------- helpers
 
 const rate = (n: number, d: number) => (d ? +(n / d).toFixed(3) : 0)
@@ -558,7 +566,7 @@ function digest(s: Session, meta: SessionMeta): SessionDigest {
     medianPromptChars: median(s.turns.map((x) => x.signals.chars)),
     craftTurns: s.turns.filter((x) => x.score.additions.length).length,
     sessionId: s.sessionId,
-    project: s.cwd ? repoName(s.cwd) : s.project,
+    project: projectOf(s),
     worktree: worktreeOf(s.cwd),
     cwd: s.cwd,
     gitBranch: s.gitBranch,
@@ -1176,7 +1184,7 @@ function buildExemplars(sessions: Session[], turns: CorpusTurn[]): Exemplars {
         const orig = s.turns.find((x) => x.index === t.derived.repeatOf)
         repeats.push({
           sessionId: s.sessionId,
-          project: repoName(s.cwd),
+          project: projectOf(s),
           at: t.startedAt,
           firstTurn: t.derived.repeatOf,
           repeatTurn: t.index,
@@ -1189,7 +1197,7 @@ function buildExemplars(sessions: Session[], turns: CorpusTurn[]): Exemplars {
         if (prev) {
           corrections.push({
             sessionId: s.sessionId,
-            project: repoName(s.cwd),
+            project: projectOf(s),
             at: t.startedAt,
             drewIt: { turn: prev.index, text: clip(prev.text, 200), toolCalls: prev.toolCallCount, outputTokens: prev.tokens.output },
             correction: { turn: t.index, text: clip(t.text, 200) },
@@ -1338,9 +1346,17 @@ export async function buildCorpus({ projectFilter = null, since = null, limit = 
         noHumanTurns++
         continue
       }
-      if (since && Date.parse(s.startedAt!) < since) {
-        outOfWindow++
-        continue
+      // Written as `!(t >= since)` rather than `t < since` because a transcript
+      // whose records carried no timestamp has a null startedAt: Date.parse
+      // gives NaN, every comparison with NaN is false, and the session slipped
+      // through every dated window. Undateable is not the same as in-window —
+      // a session that cannot be placed in time is out of a window that has one.
+      if (since) {
+        const startedMs = s.startedAt ? Date.parse(s.startedAt) : NaN
+        if (!(startedMs >= since)) {
+          outOfWindow++
+          continue
+        }
       }
       s._meta = { bytes: f.size, subagents: subagentVolume(f.file) }
       sessions.push(s)
@@ -1352,7 +1368,7 @@ export async function buildCorpus({ projectFilter = null, since = null, limit = 
 
   // Flatten once, tagging provenance so every aggregate can point back.
   const turns = sessions.flatMap((s) =>
-    s.turns.map((t) => ({ ...t, _session: s.sessionId, _project: repoName(s.cwd) || s.project }))
+    s.turns.map((t) => ({ ...t, _session: s.sessionId, _project: projectOf(s) }))
   )
 
   const digests = sessions.map((s) => digest(s, s._meta))

@@ -97,6 +97,8 @@ export interface SessionTurn {
   text: string
   fullChars: number
   hasImage: boolean
+  /** false when the record was IDE-wrapped rather than written by hand */
+  typed: boolean
   /** true when the turn arrived as a queued_command mid-flight */
   steering: boolean
   origin: string | null
@@ -315,6 +317,8 @@ interface NewTurnArgs {
   text: string
   promptId?: string | null
   hasImage?: boolean
+  /** defaults true: everything but an IDE-wrapped record was typed */
+  typed?: boolean
   steering?: boolean
   origin?: string | null
   effort?: string | null
@@ -716,7 +720,7 @@ export async function extract(
 
   let current: TurnDraft | null = null
 
-  const newTurn = ({ index, uuid, ts, text, promptId = null, hasImage = false, steering = false, origin = null, effort = null }: NewTurnArgs): TurnDraft => ({
+  const newTurn = ({ index, uuid, ts, text, promptId = null, hasImage = false, typed = true, steering = false, origin = null, effort = null }: NewTurnArgs): TurnDraft => ({
     index,
     promptId,
     uuid,
@@ -726,6 +730,7 @@ export async function extract(
     text: text.length > maxPromptChars ? text.slice(0, maxPromptChars) + '\n…[truncated]' : text,
     fullChars: text.length,
     hasImage,
+    typed,
     steering,
     origin,
     signals: signals(text),
@@ -893,6 +898,10 @@ export async function extract(
           ts,
           text,
           hasImage: !!c.hasImage,
+          // An IDE-wrapped record is a real turn but nobody wrote it. Left off
+          // the turn, classifyUser's verdict dies at the call site and a click
+          // on an element scores as prose the user composed.
+          typed: c.typed,
           effort: rec.effort || null,
         })
         break
@@ -1069,7 +1078,19 @@ if (isMain) {
     process.exit(0)
   }
 
-  const positional = argv.filter((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1] !== '--project' && argv[argv.indexOf(a) - 1] !== '--limit')
+  // Which argument is a flag's value is a fact about position, not about text:
+  // indexOf() answers with the *first* match, so in `--project foo foo` the
+  // trailing session id resolves back to the --project slot and is discarded —
+  // the tool then extracts the newest session in the project instead of the one
+  // that was named, and says nothing about it.
+  const positional: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!
+    if (a.startsWith('--')) continue
+    const prev = argv[i - 1]
+    if (prev === '--project' || prev === '--limit') continue
+    positional.push(a)
+  }
   const target = resolveTarget(positional[0], opt('--project'))
   if (!target) {
     console.error('no session found. try --list')

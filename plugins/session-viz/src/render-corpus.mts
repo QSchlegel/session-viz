@@ -7,9 +7,9 @@
 // optional and carries the model-written reading of it. The visual layer never
 // depends on inference, so the charts stay true even with no advice attached.
 
-import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
+import { readFileSync, writeFileSync, chmodSync, realpathSync } from 'node:fs'
 import { execFile } from 'node:child_process'
-import { basename } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 // ---------------------------------------------------------------- model shape
 //
@@ -674,7 +674,12 @@ function projectsSection(m: CorpusModel): string {
   for (const s of m.sessions) bySession.set(s.sessionId, s)
   return m.projects
     .map((p) => {
-      const inc = m.incidents.filter((i) => i.project === p.name)
+      // Joining on p.name would join on a repository basename, which is not
+      // unique: two checkouts named Vault under different parents each claim the
+      // other's incidents, and both cards then overstate their rework count.
+      // Session ids are unique, and every incident carries the one it came from.
+      const ids = new Set(p.sessionIds)
+      const inc = m.incidents.filter((i) => (i.sessionId ? ids.has(i.sessionId) : i.project === p.name))
       const sessions = p.sessionIds
         .map((id) => bySession.get(id))
         .filter((s): s is SessionDigest => Boolean(s))
@@ -881,7 +886,6 @@ function graphSection(m: CorpusModel): string {
   if (!g || !g.nodes.length) return '<div class="empty">No shared topics found across projects.</div>'
 
   const { width, height, positions } = g.layout
-  const byId = new Map(g.nodes.map((n): [string, GraphNode] => [n.id, n]))
   // Sized by link count, as Obsidian does — a node's importance in a graph view
   // is how much it connects. Repos get a floor so the anchors stay findable.
   const maxDeg = Math.max(1, ...g.nodes.map((n) => n.degree))
@@ -898,7 +902,7 @@ function graphSection(m: CorpusModel): string {
   }
 
   const edges = g.edges
-    .map((e, i) => {
+    .map((e) => {
       const a = positions[e.source]
       const b = positions[e.target]
       if (!a || !b) return ''
@@ -980,7 +984,13 @@ function graphSection(m: CorpusModel): string {
 // Distinct hues rather than a sequential ramp: models are categories, and a
 // ramp would imply an ordering the data does not support.
 const MODEL_COLORS = ['var(--accent)', '#4a7fb5', '#7a9b4f', '#a8628f', '#c99a3d', 'var(--bar)']
-const colorFor = (name: string, names: string[]): string | undefined => MODEL_COLORS[Math.min(names.indexOf(name), MODEL_COLORS.length - 1)]
+// A name the rollup never listed indexes at -1, and MODEL_COLORS[-1] paints the
+// segment `background:undefined` — an unpainted stripe in the adoption bar. Such
+// a name belongs in the same last bucket the seventh model onwards falls into.
+const colorFor = (name: string, names: string[]): string => {
+  const i = names.indexOf(name)
+  return MODEL_COLORS[i < 0 ? MODEL_COLORS.length - 1 : Math.min(i, MODEL_COLORS.length - 1)]!
+}
 
 function modelsSection(m: CorpusModel): string {
   const mo = m.models
@@ -1142,7 +1152,16 @@ ${m.meta.excluded?.outOfWindow ? `<li>${m.meta.excluded.outOfWindow} session(s) 
 
 // ---------------------------------------------------------------- cli
 
-const isMain = process.argv[1] && import.meta.url.endsWith(basename(process.argv[1]))
+// A suffix match fires on any entry script whose file name ends this module's —
+// `node corpus.mjs` importing this module ran the renderer's CLI and exited 1
+// before corpus.mjs got to do anything. The entry is realpath'd because Node
+// resolves symlinks before it sets import.meta.url, and a plugin directory is
+// commonly reached through one.
+const entry = process.argv[1]
+let isMain = false
+try {
+  isMain = entry !== undefined && import.meta.url === pathToFileURL(realpathSync(entry)).href
+} catch {}
 if (isMain) {
   const argv = process.argv.slice(2)
   const opt = (n: string, d: string | null = null): string | null | undefined => {

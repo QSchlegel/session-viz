@@ -7,9 +7,10 @@
 // carries the model-derived TLDR, intent breakdown and the /compact instruction.
 // Keeping them separate means the visual layer never depends on inference.
 
-import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
+import { readFileSync, writeFileSync, chmodSync, realpathSync } from 'node:fs'
 import { execFile } from 'node:child_process'
-import { basename } from 'node:path'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 interface TurnToolCall {
   name: string
@@ -263,9 +264,17 @@ const BAND_MEANING: Record<string, string> = {
   poor: 'Most turns required correction or were abandoned mid-flight.',
 }
 
+// The baseline a turn scores at before anything counts for or against it.
+// extract.mjs owns it (BASE) and the spine does not carry it, so the renderer
+// keeps a named copy rather than a literal buried in the markup.
+const SCORE_BASE = 72
+
 function renderScore(session: Session): string {
   const s = session.score
-  if (!s || s.value === null) return ''
+  // The spine is parsed JSON, so a score object with no `value` arrives as
+  // undefined, not null — which slipped past a null-only guard and printed the
+  // word "undefined" in the dial and in the --pct gradient width.
+  if (!s || typeof s.value !== 'number') return ''
   const caveat =
     s.confidence !== 'high'
       ? `<div class="caveat">Confidence ${esc(s.confidence)} — only ${s.turnsScored} turns, so the outcome signals have little to witness. Treat this as weak evidence, not a verdict.</div>`
@@ -328,7 +337,7 @@ export function render(session: Session, intent: Intent | null | undefined): str
     ${repeat}
     <pre>${esc(turn.text)}</pre>
     <div class="tools">${tools || '<span class="tool">no tools</span>'}${steer}${flags.map((f) => `<span class="tool">${esc(f)}</span>`).join('')}</div>
-    ${why ? `<ul class="ded">${why}</ul>` : '<p class="ded" style="list-style:none;padding:0">Scored at the ${72} baseline — nothing counted for or against it.</p>'}
+    ${why ? `<ul class="ded">${why}</ul>` : `<p class="ded" style="list-style:none;padding:0">Scored at the ${SCORE_BASE} baseline — nothing counted for or against it.</p>`}
   </div>
 </details>`
     })
@@ -396,14 +405,30 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
 
 // ---------------------------------------------------------------- cli
 
-const isMain = process.argv[1] && import.meta.url.endsWith(basename(process.argv[1]))
+// Comparing basenames by suffix made this module the entry point whenever the
+// process was started from any script whose name ends the same way — a sibling
+// render.mjs, or even er.mjs — so importing render() ran the CLI and exited.
+// Resolved real paths are the only comparison that answers "am I the entry".
+const realPath = (p: string): string => {
+  try {
+    return realpathSync(p)
+  } catch {
+    return resolve(p)
+  }
+}
+const isMain = !!process.argv[1] && realPath(fileURLToPath(import.meta.url)) === realPath(process.argv[1])
 if (isMain) {
   const argv = process.argv.slice(2)
   const opt = (n: string, d: string | null = null): string | null | undefined => {
     const i = argv.indexOf(n)
     return i >= 0 ? argv[i + 1] : d
   }
-  const spinePath = argv.find((a) => !a.startsWith('--') && a.endsWith('.json'))
+  // A flag's value is not a positional argument. Without this, `--intent
+  // intent.json spine.json` rendered the intent file as the spine.
+  const VALUE_FLAGS = new Set(['--intent', '-o', '--out'])
+  const spinePath = argv
+    .filter((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(argv[i - 1] ?? ''))
+    .find((a) => a.endsWith('.json'))
   if (!spinePath) {
     console.error('usage: render.mjs spine.json [--intent intent.json] [-o out.html] [--open]')
     process.exit(1)

@@ -6,9 +6,9 @@
 // Same split as render.mjs: the model is deterministic, the advice file is
 // optional and carries the model-written reading of it. The visual layer never
 // depends on inference, so the charts stay true even with no advice attached.
-import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, chmodSync, realpathSync } from 'node:fs';
 import { execFile } from 'node:child_process';
-import { basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(1) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
 // Accepts undefined because several callers read optional rates off pairs that
@@ -370,7 +370,12 @@ function projectsSection(m) {
         bySession.set(s.sessionId, s);
     return m.projects
         .map((p) => {
-        const inc = m.incidents.filter((i) => i.project === p.name);
+        // Joining on p.name would join on a repository basename, which is not
+        // unique: two checkouts named Vault under different parents each claim the
+        // other's incidents, and both cards then overstate their rework count.
+        // Session ids are unique, and every incident carries the one it came from.
+        const ids = new Set(p.sessionIds);
+        const inc = m.incidents.filter((i) => (i.sessionId ? ids.has(i.sessionId) : i.project === p.name));
         const sessions = p.sessionIds
             .map((id) => bySession.get(id))
             .filter((s) => Boolean(s))
@@ -546,7 +551,6 @@ function graphSection(m) {
     if (!g || !g.nodes.length)
         return '<div class="empty">No shared topics found across projects.</div>';
     const { width, height, positions } = g.layout;
-    const byId = new Map(g.nodes.map((n) => [n.id, n]));
     // Sized by link count, as Obsidian does — a node's importance in a graph view
     // is how much it connects. Repos get a floor so the anchors stay findable.
     const maxDeg = Math.max(1, ...g.nodes.map((n) => n.degree));
@@ -561,7 +565,7 @@ function graphSection(m) {
         (adj[e.target] ||= []).push(e.source);
     }
     const edges = g.edges
-        .map((e, i) => {
+        .map((e) => {
         const a = positions[e.source];
         const b = positions[e.target];
         if (!a || !b)
@@ -634,7 +638,13 @@ function graphSection(m) {
 // Distinct hues rather than a sequential ramp: models are categories, and a
 // ramp would imply an ordering the data does not support.
 const MODEL_COLORS = ['var(--accent)', '#4a7fb5', '#7a9b4f', '#a8628f', '#c99a3d', 'var(--bar)'];
-const colorFor = (name, names) => MODEL_COLORS[Math.min(names.indexOf(name), MODEL_COLORS.length - 1)];
+// A name the rollup never listed indexes at -1, and MODEL_COLORS[-1] paints the
+// segment `background:undefined` — an unpainted stripe in the adoption bar. Such
+// a name belongs in the same last bucket the seventh model onwards falls into.
+const colorFor = (name, names) => {
+    const i = names.indexOf(name);
+    return MODEL_COLORS[i < 0 ? MODEL_COLORS.length - 1 : Math.min(i, MODEL_COLORS.length - 1)];
+};
 function modelsSection(m) {
     const mo = m.models;
     const names = mo.rollup.map((x) => x.name);
@@ -776,7 +786,17 @@ ${m.meta.excluded?.outOfWindow ? `<li>${m.meta.excluded.outOfWindow} session(s) 
 </div></body></html>`;
 }
 // ---------------------------------------------------------------- cli
-const isMain = process.argv[1] && import.meta.url.endsWith(basename(process.argv[1]));
+// A suffix match fires on any entry script whose file name ends this module's —
+// `node corpus.mjs` importing this module ran the renderer's CLI and exited 1
+// before corpus.mjs got to do anything. The entry is realpath'd because Node
+// resolves symlinks before it sets import.meta.url, and a plugin directory is
+// commonly reached through one.
+const entry = process.argv[1];
+let isMain = false;
+try {
+    isMain = entry !== undefined && import.meta.url === pathToFileURL(realpathSync(entry)).href;
+}
+catch { }
 if (isMain) {
     const argv = process.argv.slice(2);
     const opt = (n, d = null) => {

@@ -24,22 +24,14 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, chmodSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
-const DIR = join(homedir(), '.claude', 'session-viz');
-const CONFIG = join(DIR, 'config.json');
+import { rmSync, existsSync } from 'node:fs';
+import { findConfig, configPaths, configTarget, loadConfig, saveConfig, harnessLabel } from './home.mjs';
 const DEFAULT_URL = 'https://cloud.session-viz.com';
 const DEADLINE_MS = 5 * 60 * 1000;
 /** Config first, environment second — an explicit env var still wins nothing here
  *  by accident: it is read only when the file has no value for that field. */
 export function readConfig() {
-    try {
-        return JSON.parse(readFileSync(CONFIG, 'utf8'));
-    }
-    catch {
-        return null;
-    }
+    return loadConfig();
 }
 export function resolveToken() {
     const cfg = readConfig();
@@ -50,15 +42,8 @@ export function resolveToken() {
     const actor = process.env.SESSION_VIZ_ACTOR || cfg?.actor;
     return actor ? { url, token, actor } : { url, token };
 }
-function writeConfig(cfg) {
-    mkdirSync(DIR, { recursive: true, mode: 0o700 });
-    writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
-    // writeFileSync honours `mode` only when it creates the file, so an existing
-    // one keeps whatever permissions it had. The same omission left session
-    // reports world-readable in /tmp; not repeating it here.
-    chmodSync(CONFIG, 0o600);
-    chmodSync(dirname(CONFIG), 0o700);
-}
+// Path resolution, the 0600/0700 modes and the permission fallback all live in
+// home.mts, because /qshare has to agree with this about where the token is.
 const redact = (t) => (t.length > 12 ? `${t.slice(0, 8)}…${t.slice(-4)}` : '…');
 async function verify(url, token) {
     const r = await fetch(`${url.replace(/\/$/, '')}/v1/token/introspect`, {
@@ -71,7 +56,7 @@ async function verify(url, token) {
     return (await r.json());
 }
 // ---------------------------------------------------------------- the page
-const PAGE = (nonce, defaultUrl) => `<!doctype html>
+const PAGE = (nonce, defaultUrl, target, actor) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Connect session-viz</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -100,13 +85,13 @@ code{font-family:var(--mono);font-size:12.5px;color:var(--accent)}
 <div class="card">
   <h1>Connect this machine</h1>
   <p>Paste the token from your workspace. It is checked against the server before anything
-     is written, and stored only in <code>~/.claude/session-viz/config.json</code>.</p>
+     is written, and stored only in <code>${target}</code>.</p>
   <label for="u">Server</label>
   <input id="u" type="text" value="${defaultUrl}" spellcheck="false">
   <label for="t">Plugin token</label>
   <input id="t" type="password" placeholder="svt_…" spellcheck="false" autocomplete="off" autofocus>
   <label for="a">Actor label (optional)</label>
-  <input id="a" type="text" placeholder="you@example.com" spellcheck="false">
+  <input id="a" type="text" placeholder="you@example.com" spellcheck="false" value="${actor}">
   <button id="go" type="button">Verify and save</button>
   <p class="msg" id="m"></p>
 </div>
@@ -127,8 +112,20 @@ $('go').onclick = async () => {
     })
     const d = await r.json()
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status))
-    say('Saved. Scope ' + d.scope + ', workspace ' + d.tenant + '. You can close this tab.', 'ok')
+    // Back to the workspace rather than "you can close this tab". The console
+    // is where the next thing happens, and it now sees this machine as
+    // connected — telling somebody to close the tab left them looking at a
+    // checklist that had no idea the setup they just did had happened.
+    say('Saved — scope ' + d.scope + ', workspace ' + d.tenant + '. Taking you to your workspace…', 'ok')
     $('t').value = ''
+    // A link too, because a redirect can be blocked and a dead end here is a
+    // person with a working config who thinks it failed.
+    const a = document.createElement('a')
+    a.href = d.app
+    a.textContent = 'Open it now'
+    a.style.marginLeft = '8px'
+    m.appendChild(a)
+    setTimeout(() => { location.href = d.app }, 1200)
   } catch (e) {
     say(e.message, 'bad')
     $('go').disabled = false
@@ -154,10 +151,14 @@ async function run() {
     if (argv.includes('--show')) {
         const cfg = readConfig();
         if (!cfg) {
-            console.log('no config at ' + CONFIG);
+            // Every place that was looked at, not just the one we would write to —
+            // "no config at <path>" is unhelpful when four paths are consulted.
+            console.log('no config. looked in:');
+            for (const p of configPaths())
+                console.log(`  ${p}`);
             return;
         }
-        console.log(`config   ${CONFIG}`);
+        console.log(`config   ${findConfig()}`);
         console.log(`server   ${cfg.url}`);
         console.log(`token    ${redact(cfg.token)}${cfg.scope ? `  (${cfg.scope})` : ''}`);
         console.log(`tenant   ${cfg.tenant || '—'}`);
@@ -166,16 +167,23 @@ async function run() {
         return;
     }
     if (argv.includes('--forget')) {
-        if (existsSync(CONFIG)) {
-            rmSync(CONFIG);
-            console.log(`removed ${CONFIG}`);
+        // Every copy, not the first one found. Leaving a shadowed config behind
+        // means "forget" hands the token straight back on the next read.
+        const gone = configPaths().filter((p) => existsSync(p));
+        for (const p of gone) {
+            rmSync(p);
+            console.log(`removed ${p}`);
         }
-        else
+        if (!gone.length)
             console.log('nothing to remove');
         return;
     }
     const nonce = crypto.randomBytes(18).toString('base64url');
     const defaultUrl = process.env.SESSION_VIZ_URL || readConfig()?.url || DEFAULT_URL;
+    // Pre-filled, not imposed: the field stays editable, and an empty label is a
+    // valid answer. It saves the common case of typing the name of the harness
+    // you are visibly sitting in.
+    const harness = harnessLabel();
     await new Promise((resolve) => {
         const server = http.createServer(async (req, res) => {
             const url = new URL(req.url || '/', 'http://127.0.0.1');
@@ -185,7 +193,7 @@ async function run() {
             };
             if (req.method === 'GET' && url.pathname === '/') {
                 res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-                return res.end(PAGE(nonce, defaultUrl));
+                return res.end(PAGE(nonce, defaultUrl, configTarget(), harness === 'unknown' ? '' : harness));
             }
             if (req.method === 'POST' && url.pathname === '/save') {
                 // The nonce is the whole reason another local process cannot drive
@@ -216,16 +224,22 @@ async function run() {
                 try {
                     const info = await verify(target, token);
                     const actor = String(body.actor || '').trim();
-                    writeConfig({
+                    const saved = saveConfig({
                         url: target, token, scope: info.scope, tenant: info.tenant,
                         ...(actor ? { actor } : {}),
                         savedAt: new Date().toISOString(),
                     });
-                    send(200, { saved: true, scope: info.scope, tenant: info.tenant });
-                    console.log(`\n  saved   ${CONFIG} (0600)`);
+                    const app = `${target}/app`;
+                    send(200, { saved: true, scope: info.scope, tenant: info.tenant, app });
+                    if (saved.fellBack) {
+                        console.log('\n  note    the preferred config location was not writable;');
+                        console.log('          this harness is probably sandboxed.');
+                    }
+                    console.log(`\n  saved   ${saved.path} (0600)`);
                     console.log(`  token   ${redact(token)}  scope ${info.scope}`);
                     console.log(`  tenant  ${info.tenant}`);
-                    console.log(`  server  ${target}\n`);
+                    console.log(`  server  ${target}`);
+                    console.log(`  browser sent to ${app}\n`);
                     console.log('  The MCP reads environment variables rather than this file, so for');
                     console.log('  vaults and task handoff also add to your shell profile:\n');
                     console.log(`    export SESSION_VIZ_URL=${target}`);

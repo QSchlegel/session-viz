@@ -25,15 +25,14 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { loadConfig } from './home.mjs';
 const run = promisify(execFile);
-const CONFIG = join(homedir(), '.claude', 'session-viz', 'config.json');
 function config() {
     const env = process.env.SESSION_VIZ_TOKEN;
-    let file = {};
-    try {
-        file = JSON.parse(readFileSync(CONFIG, 'utf8'));
-    }
-    catch { /* none yet */ }
+    // Resolved by home.mts rather than hardcoded, so this finds the token
+    // wherever /qsetup was able to put it — which under a sandboxed harness is
+    // not necessarily the preferred location.
+    const file = loadConfig() || {};
     const url = process.env.SESSION_VIZ_URL || file.url || 'https://cloud.session-viz.com';
     const token = env || file.token;
     if (!token) {
