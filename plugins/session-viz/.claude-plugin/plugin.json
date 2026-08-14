@@ -1,7 +1,7 @@
 {
   "name": "session-viz",
-  "description": "Seven commands over the transcripts Claude Code already writes: per-session quality, corpus trends, the autonomous delivery ledger, token economy, repeat harvesting, config audit, and optional shared vaults with task handoff",
-  "version": "0.5.0",
+  "description": "Eight commands over the transcripts Claude Code already writes: per-session quality, corpus trends, the autonomous delivery ledger, token economy, repeat harvesting, config audit, one-page setup, and optional shared vaults with task handoff",
+  "version": "0.6.0",
   "author": {
     "name": "QSchlegel"
   },

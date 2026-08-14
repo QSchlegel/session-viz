@@ -1,6 +1,6 @@
 # session-viz
 
-Seven commands over the transcripts Claude Code already writes to your disk.
+Eight commands over the transcripts Claude Code already writes to your disk.
 
 Nothing is sent anywhere. The plugin reads `~/.claude/projects/**`, computes locally, and opens
 an HTML report. There is a hosted side, and it is entirely optional — every command below works
@@ -26,6 +26,7 @@ added.
 | `/qcost` | Where the tokens actually went |
 | `/qship` | Prompts you keep retyping, split into rituals and misses |
 | `/qdoctor` | This repo's config, measured against your other repos |
+| `/qsetup` | Connect this machine — paste the token into a page, not a shell |
 | `/qteam` | Shared vaults and task handoff (needs the hosted side) |
 
 ## What it refuses to tell you
@@ -43,7 +44,21 @@ overlapping weeks the comparison is refused rather than estimated.
 
 ## Requirements
 
-Node 18+. That is all — no dependencies, no build step. Each script is also runnable directly:
+Node 18+ to run it. No runtime dependencies.
+
+## Building
+
+Sources are TypeScript in `plugins/session-viz/src/*.mts`, compiled to
+`plugins/session-viz/scripts/*.mjs`. The compiled output is committed, because a plugin
+is installed by cloning it — there is no build step on the machine that installs it.
+
+```bash
+npm install
+npm run build     # src/*.mts -> scripts/*.mjs
+npm run check     # types only, no emit
+```
+
+Edit the `.mts` sources, never `scripts/`. Each compiled script is runnable directly:
 
 ```bash
 node plugins/session-viz/scripts/runs.mjs --help

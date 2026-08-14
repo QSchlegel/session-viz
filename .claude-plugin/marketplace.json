@@ -8,7 +8,7 @@
     {
       "name": "session-viz",
       "source": "./plugins/session-viz",
-      "description": "Session and agent observability: /qpact /qtrends /qruns /qcost /qship /qdoctor /qteam",
+      "description": "Eight commands over the transcripts Claude Code already writes: /qpact /qtrends /qruns /qcost /qship /qdoctor /qsetup /qteam",
       "category": "productivity"
     }
   ]

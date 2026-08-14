@@ -1,0 +1,15 @@
+{
+  "name": "session-viz-plugin",
+  "private": true,
+  "version": "0.5.0",
+  "description": "Build tooling for the session-viz Claude Code plugin",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.2"
+  }
+}
