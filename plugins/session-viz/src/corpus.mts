@@ -61,6 +61,11 @@ interface SessionDigest {
   medianPromptChars: number
   craftTurns: number
   sessionId: string | null
+  /** Which harness wrote the transcript. Carried rather than re-derived from the
+   *  file path, because projectOf() deliberately merges a repo worked in both
+   *  and a card pooling two harnesses into one rework rate has to be able to
+   *  say so. */
+  harness: string
   project: string
   worktree: string | null
   cwd: string | null
@@ -566,6 +571,7 @@ function digest(s: Session, meta: SessionMeta): SessionDigest {
     medianPromptChars: median(s.turns.map((x) => x.signals.chars)),
     craftTurns: s.turns.filter((x) => x.score.additions.length).length,
     sessionId: s.sessionId,
+    harness: s.harness,
     project: projectOf(s),
     worktree: worktreeOf(s.cwd),
     cwd: s.cwd,

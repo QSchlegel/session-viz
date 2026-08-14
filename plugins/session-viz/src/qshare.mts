@@ -27,6 +27,7 @@ import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { loadConfig } from './home.mjs'
+import { emitJson } from './out.mjs'
 
 const run = promisify(execFile)
 
@@ -210,7 +211,7 @@ if (isMain) {
 
       if (review >= 0) {
         console.log('\n--- the literal payload ---')
-        console.log(JSON.stringify(payload, null, 2))
+        await emitJson(payload)
         console.log('\nShare it with:  qshare.mjs --share ' + kind + ' ' + ref + ' --yes')
         process.exit(0)
       }

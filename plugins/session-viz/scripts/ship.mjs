@@ -20,6 +20,7 @@
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { extract, listSessions } from './extract.mjs';
+import { emitJson } from './out.mjs';
 const norm = (s) => String(s || '').toLowerCase()
     .replace(/\[image[^\]]*\]/g, ' ')
     .replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
@@ -131,7 +132,7 @@ if (isMain) {
     const opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
     const items = await harvest({ minCount: Number(opt('--min') || 2) });
     if (argv.includes('--json')) {
-        console.log(JSON.stringify(items, null, 2));
+        await emitJson(items);
         process.exit(0);
     }
     const target = opt('--write');

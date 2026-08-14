@@ -17,6 +17,7 @@ import { readdirSync, existsSync, readFileSync, createReadStream } from 'node:fs
 import { join, basename } from 'node:path'
 import { createInterface } from 'node:readline'
 import { listSessions } from './extract.mjs'
+import { emitJson } from './out.mjs'
 
 const count = (dir: string, ext = '.md'): number => {
   try { return readdirSync(dir).filter((f) => f.endsWith(ext)).length } catch { return 0 }
@@ -205,7 +206,7 @@ if (isMain) {
     // comparedAgainst is the baseline size that decided gap-vs-note. Without it
     // the machine output cannot tell a norm from an observation, which is the
     // one distinction this tool exists to keep.
-    if (argv.includes('--json')) { console.log(JSON.stringify(rows.map((r) => ({ repo: r.repo, me: r.me, findings: r.findings, comparedAgainst: r.comparedAgainst })), null, 2)); process.exit(0) }
+    if (argv.includes('--json')) { await emitJson(rows.map((r) => ({ repo: r.repo, me: r.me, findings: r.findings, comparedAgainst: r.comparedAgainst }))); process.exit(0) }
     console.log(`fleet: ${fleet.length} repos with transcripts and a checkout on disk\n`)
     console.log('  CLAUDE  cmds  skills  hooks  allow  write  repo')
     // sort() is in place. Sorting `fleet` for display reordered the very array
@@ -224,7 +225,7 @@ if (isMain) {
 
   const target = argv.find((a) => !a.startsWith('--')) || process.cwd()
   const r = audit(target, fleet)
-  if (argv.includes('--json')) { console.log(JSON.stringify(r, null, 2)); process.exit(0) }
+  if (argv.includes('--json')) { await emitJson(r); process.exit(0) }
 
   console.log(`repo        ${r.me.repo}`)
   console.log(`config      CLAUDE.md ${r.me.hasClaudeMd ? `yes (${r.me.claudeMdRules} rules)` : 'no'} · ${r.me.commands} commands · ${r.me.skills} skills · ${r.me.hooks} hooks`)

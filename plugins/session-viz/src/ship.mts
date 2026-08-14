@@ -21,6 +21,7 @@
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { extract, listSessions } from './extract.mjs'
+import { emitJson } from './out.mjs'
 
 // Shapes read off extract.mjs, which is still untyped JavaScript. Only the
 // fields this file actually touches are modelled.
@@ -192,7 +193,7 @@ if (isMain) {
   const opt = (n: string): string | null | undefined => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null }
   const items = await harvest({ minCount: Number(opt('--min') || 2) })
 
-  if (argv.includes('--json')) { console.log(JSON.stringify(items, null, 2)); process.exit(0) }
+  if (argv.includes('--json')) { await emitJson(items); process.exit(0) }
 
   const target = opt('--write')
   // `--write` as the last argv element leaves opt() with nothing to hand back, and

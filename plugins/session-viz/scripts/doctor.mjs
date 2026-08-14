@@ -16,6 +16,7 @@ import { readdirSync, existsSync, readFileSync, createReadStream } from 'node:fs
 import { join, basename } from 'node:path';
 import { createInterface } from 'node:readline';
 import { listSessions } from './extract.mjs';
+import { emitJson } from './out.mjs';
 const count = (dir, ext = '.md') => {
     try {
         return readdirSync(dir).filter((f) => f.endsWith(ext)).length;
@@ -171,7 +172,7 @@ if (isMain) {
         // the machine output cannot tell a norm from an observation, which is the
         // one distinction this tool exists to keep.
         if (argv.includes('--json')) {
-            console.log(JSON.stringify(rows.map((r) => ({ repo: r.repo, me: r.me, findings: r.findings, comparedAgainst: r.comparedAgainst })), null, 2));
+            await emitJson(rows.map((r) => ({ repo: r.repo, me: r.me, findings: r.findings, comparedAgainst: r.comparedAgainst })));
             process.exit(0);
         }
         console.log(`fleet: ${fleet.length} repos with transcripts and a checkout on disk\n`);
@@ -194,7 +195,7 @@ if (isMain) {
     const target = argv.find((a) => !a.startsWith('--')) || process.cwd();
     const r = audit(target, fleet);
     if (argv.includes('--json')) {
-        console.log(JSON.stringify(r, null, 2));
+        await emitJson(r);
         process.exit(0);
     }
     console.log(`repo        ${r.me.repo}`);

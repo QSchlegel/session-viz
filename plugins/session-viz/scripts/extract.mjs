@@ -11,8 +11,8 @@
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, basename } from 'node:path';
-import { homedir } from 'node:os';
-const PROJECTS = join(homedir(), '.claude', 'projects');
+import { codexProject, codexRecords, isCodexTranscript, listCodexSessions } from './codex.mjs';
+import { transcriptRoots } from './home.mjs';
 // ---------------------------------------------------------------- classifying
 // User-role records are not all typed prompts. Three groups, enumerated from
 // the tags that actually occur across the transcript corpus:
@@ -357,12 +357,52 @@ function addUsage(acc, usage) {
     acc.cacheRead += usage.cache_read_input_tokens || 0;
     acc.cacheCreate += usage.cache_creation_input_tokens || 0;
 }
+// ---------------------------------------------------------------- record source
+/** Claude Code's own transcripts: one record per line, nothing to normalise.
+ *
+ *  The parse is kept out of the yield so that a throw from *downstream* — the
+ *  spine's tool-block loop hits one on a malformed `content` object — travels
+ *  back out to the caller instead of being swallowed by the torn-line catch and
+ *  silently truncating the session. */
+async function* claudeRecords(file) {
+    const rl = createInterface({
+        input: createReadStream(file, { encoding: 'utf8' }),
+        crlfDelay: Infinity,
+    });
+    for await (const line of rl) {
+        if (!line.trim())
+            continue;
+        let rec;
+        try {
+            rec = JSON.parse(line);
+        }
+        catch {
+            continue; // tolerate a torn final line on a live session
+        }
+        yield rec;
+    }
+}
+// Which harness wrote a transcript is a fact about where it lives, so the roots
+// answer it and only a file handed to the CLI by path has to be sniffed. Read
+// once: a corpus scan calls this per file, and no answer can change mid-run.
+let ROOTS = null;
+function rootOf(file) {
+    if (!ROOTS)
+        ROOTS = transcriptRoots();
+    return ROOTS.find((r) => file.startsWith(r.dir.endsWith('/') ? r.dir : r.dir + '/')) || null;
+}
 // ---------------------------------------------------------------- extraction
-export async function extract(file, { redactText = true, maxPromptChars = 4000 } = {}) {
+export async function extract(file, { redactText = true, maxPromptChars = 4000, harness: harnessOpt } = {}) {
+    const root = rootOf(file);
+    const harness = harnessOpt || root?.harness || (isCodexTranscript(file) ? 'codex' : 'claude-code');
     const session = {
         sessionId: null,
         file,
-        project: basename(file.replace(/\/[^/]+$/, '')),
+        harness,
+        // Claude Code's project directory is the transcript's parent, so its
+        // basename names the project. Codex nests YYYY/MM/DD, where that basename
+        // is a day number twelve unrelated projects a year would share.
+        project: harness === 'codex' ? codexProject(file, root?.dir) : basename(file.replace(/\/[^/]+$/, '')),
         cwd: null,
         gitBranch: null,
         version: null,
@@ -434,20 +474,12 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000 }
         session.turns.push(current);
         current = null;
     };
-    const rl = createInterface({
-        input: createReadStream(file, { encoding: 'utf8' }),
-        crlfDelay: Infinity,
-    });
-    for await (const line of rl) {
-        if (!line.trim())
-            continue;
-        let rec;
-        try {
-            rec = JSON.parse(line);
-        }
-        catch {
-            continue; // tolerate a torn final line on a live session
-        }
+    // Everything below this line is harness-agnostic given a TranscriptRecord.
+    // A Codex rollout is normalised into these shapes on the way in rather than
+    // being taught to the switch, so the spine has exactly one record vocabulary
+    // to reason about and Claude Code's path is the one it always was.
+    const source = harness === 'codex' ? codexRecords(file) : claudeRecords(file);
+    for await (const rec of source) {
         session.totals.records++;
         const ts = rec.timestamp;
         if (ts) {
@@ -641,14 +673,15 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000 }
     return session;
 }
 // ---------------------------------------------------------------- discovery
-export function listSessions(projectFilter) {
-    if (!existsSync(PROJECTS))
-        return [];
+/** One directory per project, one JSONL per session, no recursion. Claude Code's
+ *  layout, and the assumed shape of any root this file does not have an adapter
+ *  for. */
+function listProjectDirSessions(harness, root, projectFilter) {
     const out = [];
-    for (const proj of readdirSync(PROJECTS)) {
+    for (const proj of readdirSync(root)) {
         if (projectFilter && !proj.includes(projectFilter))
             continue;
-        const dir = join(PROJECTS, proj);
+        const dir = join(root, proj);
         let entries;
         try {
             entries = readdirSync(dir);
@@ -661,8 +694,32 @@ export function listSessions(projectFilter) {
                 continue;
             const full = join(dir, f);
             const st = statSync(full);
-            out.push({ project: proj, file: full, size: st.size, mtime: st.mtimeMs });
+            out.push({ harness, project: proj, file: full, size: st.size, mtime: st.mtimeMs });
         }
+    }
+    return out;
+}
+/**
+ * Every transcript on this machine, newest first.
+ *
+ * The roots come from transcriptRoots(), which already returns only directories
+ * that exist — so the old `existsSync(PROJECTS) → []` guard is now implicit, and
+ * an empty result means "nothing has left transcripts where we know to look"
+ * rather than "Claude Code has never run here".
+ *
+ * The scan cannot be shared, only the sort: Claude Code keeps sessions one level
+ * under a project directory, Codex keeps them three levels down a date tree. A
+ * fixed two-level readdir over ~/.codex/sessions returns ['2026'] and finds none
+ * of the 436 rollouts under it, reporting success the whole way.
+ */
+export function listSessions(projectFilter) {
+    const out = [];
+    for (const root of transcriptRoots()) {
+        if (root.harness === 'codex') {
+            out.push(...listCodexSessions(root.dir, projectFilter));
+            continue;
+        }
+        out.push(...listProjectDirSessions(root.harness, root.dir, projectFilter));
     }
     return out.sort((a, b) => b.mtime - a.mtime);
 }
@@ -697,7 +754,7 @@ function fmtDuration(ms) {
 }
 function summarize(s) {
     const L = [];
-    L.push(`session   ${s.sessionId}`);
+    L.push(`session   ${s.sessionId}   harness:${s.harness}`);
     L.push(`title     ${s.title || '—'}`);
     L.push(`cwd       ${s.cwd}   branch:${s.gitBranch || '—'}`);
     L.push(`span      ${s.startedAt} → ${s.endedAt}  (${fmtDuration(s.durationMs)})`);

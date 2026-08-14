@@ -17,6 +17,7 @@ import { readdirSync, statSync, createReadStream } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
+import { emitJson } from './out.mjs';
 const PROJECTS = join(homedir(), '.claude', 'projects');
 // The one hand-maintained constant in the classifier. A run that ends by
 // calling a return tool has SUCCEEDED; without this list, "ended on a tool
@@ -421,7 +422,7 @@ if (isMain) {
     }
     const L = ledger(runs);
     if (argv.includes('--json'))
-        console.log(JSON.stringify({ ...L, runs }, null, 2));
+        await emitJson({ ...L, runs });
     else if (argv.includes('--cost'))
         console.log(renderCost(L));
     else

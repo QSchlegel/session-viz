@@ -139,6 +139,7 @@ function digest(s, meta) {
         medianPromptChars: median(s.turns.map((x) => x.signals.chars)),
         craftTurns: s.turns.filter((x) => x.score.additions.length).length,
         sessionId: s.sessionId,
+        harness: s.harness,
         project: projectOf(s),
         worktree: worktreeOf(s.cwd),
         cwd: s.cwd,

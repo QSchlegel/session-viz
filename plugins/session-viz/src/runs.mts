@@ -19,6 +19,7 @@ import type { Dirent } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createInterface } from 'node:readline'
+import { emitJson } from './out.mjs'
 
 // Shapes of the JSONL on disk. Only the fields this file reads are modelled;
 // the payloads are untrusted, so anything whose shape genuinely varies stays
@@ -496,7 +497,7 @@ if (isMain) {
     process.exit(1)
   }
   const L = ledger(runs)
-  if (argv.includes('--json')) console.log(JSON.stringify({ ...L, runs }, null, 2))
+  if (argv.includes('--json')) await emitJson({ ...L, runs })
   else if (argv.includes('--cost')) console.log(renderCost(L))
   else console.log(renderLedger(L))
 }
