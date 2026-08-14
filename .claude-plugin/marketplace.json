@@ -1,0 +1,15 @@
+{
+  "name": "session-viz",
+  "description": "Session and agent observability for Claude Code",
+  "owner": {
+    "name": "QSchlegel"
+  },
+  "plugins": [
+    {
+      "name": "session-viz",
+      "source": "./plugins/session-viz",
+      "description": "Session and agent observability: /qpact /qtrends /qruns /qcost /qship /qdoctor /qteam",
+      "category": "productivity"
+    }
+  ]
+}
