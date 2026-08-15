@@ -15,7 +15,7 @@
 // was a native dependency in a plugin that currently has none, or shelling out
 // to a `sqlite3` binary that is not on every machine this runs on.
 
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
@@ -239,8 +239,26 @@ export function composerCwd(c: Composer): string | null {
 function gitRootOf(start: string): string | null {
   const home = homedir()
   let dir = start
+  let below = start
   for (let i = 0; i < 40 && dir && dir !== '/' && dir !== home; i++) {
-    if (existsSync(join(dir, '.git'))) return dir
+    if (existsSync(join(dir, '.git'))) {
+      // Found a repo — but a repo is not automatically a project. `~/git` here
+      // is itself a checkout that CONTAINS several dozen unrelated ones, so
+      // every file whose own directory tree holds no `.git` walked all the way
+      // up into it: 44 sessions spanning at least 8 codebases were filed under
+      // a project literally named `git`, the 5th busiest in /qtrends, pooling
+      // their rework rates and stealing 322 turns from the projects they came
+      // from. The dominant-checkout vote could not fix this, because the vote
+      // is taken over what this function returns and every candidate was `~/git`.
+      //
+      // A directory holding two or more child checkouts is a container. The
+      // useful label for a file beneath one is the child it sits in — grouping
+      // `~/git/DW-Apps/apps/…` under `~/git/DW-Apps` keeps eleven related
+      // sessions together instead of dissolving them into "all my repositories".
+      if (isRepoContainer(dir)) return below === dir ? null : below
+      return dir
+    }
+    below = dir
     const up = dirname(dir)
     if (up === dir) break
     dir = up
@@ -249,6 +267,26 @@ function gitRootOf(start: string): string | null {
   // the same thing to a per-project rate: this conversation cannot be
   // attributed, and saying so beats filing it under `/Users/<name>`.
   return null
+}
+
+// Directories are checked once — a corpus scan asks about the same few hundred
+// paths thousands of times, and each answer costs a readdir.
+const containerCache = new Map<string, boolean>()
+
+/** Does this directory hold two or more checkouts of its own? */
+function isRepoContainer(dir: string): boolean {
+  const hit = containerCache.get(dir)
+  if (hit !== undefined) return hit
+  let n = 0
+  try {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue
+      if (existsSync(join(dir, e.name, '.git')) && ++n >= 2) break
+    }
+  } catch { /* unreadable is not a container */ }
+  const out = n >= 2
+  containerCache.set(dir, out)
+  return out
 }
 
 /**
@@ -327,25 +365,57 @@ interface ToolFormer {
 const TOOL_NAMES: Record<string, string> = {
   edit_file: 'Edit',
   search_replace: 'Edit',
+  apply_patch: 'Edit',
+  multiedit: 'Edit',
+  edit_notebook: 'NotebookEdit',
   create_file: 'Write',
   write: 'Write',
   delete_file: 'Edit',
   read_file: 'Read',
+  read_lints: 'Read',
   run_terminal_cmd: 'Bash',
+  run_terminal_command: 'Bash',
   grep: 'Grep',
   grep_search: 'Grep',
+  ripgrep_raw_search: 'Grep',
   codebase_search: 'Grep',
+  semantic_search: 'Grep',
+  semantic_search_full: 'Grep',
   file_search: 'Glob',
+  glob_file_search: 'Glob',
   list_dir: 'Glob',
-  read_lints: 'Read',
   todo_write: 'TodoWrite',
   web_search: 'WebSearch',
+  web_fetch: 'WebFetch',
   fetch_pull_request: 'WebFetch',
+  rg: 'Grep',
 }
 
+// What is left unmapped after this is 1.3% of calls, and deliberately so:
+// `create_plan` and `ask_question` have no Claude Code equivalent to be renamed
+// into, and an `mcp_<server>_<tool>` name is already the MCP tool's real
+// identity in both harnesses. Inventing a mapping for those would lose
+// information rather than align it.
+
+// Cursor versions its tools by suffix — `edit_file` became `edit_file_v2`,
+// `run_terminal_cmd` became `run_terminal_command_v2`. The suffix is stripped
+// before lookup so a version bump does not silently unmap a tool again.
+//
+// It already had. A census over all 641 sessions found 47.6% of 66,392 tool
+// calls falling through unmapped, almost all of it `_v2`, and the damage was
+// not cosmetic: WRITE_TOOLS in runs.mts gates on the mapped name, so 6,854 real
+// file edits never reached intentWrite. 274 sessions — one of them with 225
+// edits — were reported `delivery: no_intent`, meaning "never tried to write
+// anything". Those runs then dropped out of the cost-per-delivered denominator
+// while their output tokens stayed in the numerator, which is precisely the
+// inflation deliveryState()'s ordering exists to prevent.
+const VERSION_SUFFIX = /_v\d+$/
+
 const toolName = (t: ToolFormer): string => {
-  const raw = t.name || t.tool || ''
-  return TOOL_NAMES[raw] || raw || 'UnknownTool'
+  const raw = (t.name || t.tool || '').trim()
+  if (!raw) return 'UnknownTool'
+  const base = raw.replace(VERSION_SUFFIX, '').toLowerCase()
+  return TOOL_NAMES[base] || raw
 }
 
 /**
@@ -420,9 +490,22 @@ export async function* cursorRecords(file: string): AsyncGenerator<TranscriptRec
   const started = new Date(c.createdAt || Date.now()).toISOString()
   let lastTs = started
 
+  // sessionId on EVERY record, the way Claude Code writes it.
+  //
+  // Omitting it was not a missing field, it was a silent merge. extract() only
+  // ever reads `sessionId` off a record, so every Cursor session came out with
+  // `sessionId: null` — and corpus.mts counts distinct sessions with
+  // `new Set(turns.map(t => t._session)).size`. All 640 Cursor sessions were
+  // therefore ONE member of that set, and every per-session figure in /qtrends
+  // collapsed accordingly: `interrupted` reported 70 sessions where the truth
+  // was 107, `correction` 21 against 74. The HTML render then crashed outright
+  // on the collision.
+  //
+  // A uuid is not a substitute: it is per-record, and nothing groups by it.
   const mk = (type: string, extra: Partial<TranscriptRecord> = {}): TranscriptRecord => ({
     type,
     uuid: `${composerId}:${seq++}`,
+    sessionId: composerId,
     timestamp: lastTs,
     ...extra,
   })

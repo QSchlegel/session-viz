@@ -1277,10 +1277,23 @@ function buildCaveats(model: CorpusModel): string[] {
   // and came back empty is the other half of naming the blend: from a mix line
   // alone, a reader who runs cloud sessions cannot tell whether they are absent
   // because they were quiet or because nothing here can see them.
-  const missing = harnessCoverage().filter((h) => !h.found)
+  const coverage = harnessCoverage()
+  const missing = coverage.filter((h) => !h.found)
   if (missing.length)
     c.push(
       `Not in this corpus: ${missing.map((h) => `${h.harness} — ${h.reason.replace(/\.$/, '')}`).join('; ')}. Every rate above is over what was found, not over everything you ran.`
+    )
+
+  // Harnesses that ARE here but do not report full token counts. Filtering the
+  // caveat on `!found` alone left this unsaid, and it was the more misleading
+  // half: Cursor is 61% of the turns in this corpus and writes a model name on
+  // 1.15% of its records and a token count on ~9%, so the token line above and
+  // every `out` column on a Cursor-heavy project card read as measured zeroes
+  // rather than as absent instrumentation.
+  const partial = coverage.filter((h) => h.found && h.tokens !== 'full')
+  if (partial.length)
+    c.push(
+      `Token and model figures are incomplete for ${partial.map((h) => h.harness).join(', ')}: ${partial.length === 1 ? 'it records' : 'they record'} counts on a minority of messages, so every token total here is a floor and a project worked in ${partial.length === 1 ? 'that harness' : 'those harnesses'} can show 0 output while having done real work.`
     )
 
   // The single most misreadable number in the report. State it before anyone
@@ -1300,7 +1313,16 @@ function buildCaveats(model: CorpusModel): string[] {
   const noModel = models.rollup.find((m) => m.name === NO_MODEL)
   if (noModel)
     c.push(
-      `${noModel.turns} turns had no model record because the request was aborted before anything ran. They are excluded from every per-model rate; folding them in would blame whichever model happened to be selected.`
+      // Two different causes land in this bucket and the caveat used to assert
+      // only the first. Before Cursor it was true: those turns ran 0.0 tools
+      // and were 52% rework, which is what being aborted looks like. Cursor
+      // then added ~3400 turns that ran 12.7 tools each and shipped real output
+      // — not aborted at all, just a harness that writes a model name on 1.15%
+      // of its records. Stating one cause for both made the number a claim
+      // about user behaviour that the data does not support.
+      (partial.length
+        ? `${noModel.turns} turns have no model record, from two unrelated causes: requests aborted before anything ran, and ${partial.map((h) => h.harness).join('/')} not recording a model name on most messages. They are excluded from every per-model rate — folding them in would blame whichever model happened to be selected — but the count is not a measure of abandoned work.`
+        : `${noModel.turns} turns had no model record because the request was aborted before anything ran. They are excluded from every per-model rate; folding them in would blame whichever model happened to be selected.`)
     )
   if (meta.turnCount < 300) c.push(`Only ${meta.turnCount} human turns in scope — rates below ~5% are single incidents, not patterns.`)
   const lowConf = sessions.filter((s) => s.confidence !== 'high').length
