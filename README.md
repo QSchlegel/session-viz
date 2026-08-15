@@ -1,12 +1,25 @@
 # session-viz
 
-Ten commands over the transcripts Claude Code already writes to your disk.
+Ten commands over the transcripts your coding agents already write to your disk.
 
-Nothing is sent anywhere. The plugin reads `~/.claude/projects/**`, computes locally, and opens
-an HTML report. There is a hosted side, and it is entirely optional — every command below works
-with no account, no token and no network.
+Nothing is sent anywhere. It reads the transcripts, computes locally, and opens an HTML report.
+There is a hosted side, and it is entirely optional — every command below works with no account,
+no token and no network.
+
+**It reads three harnesses and installs into three.** Those are different lists, in one way worth
+knowing: reading is automatic, installing is per-harness. A Claude Code install still analyses your
+Codex and Cursor history, because those transcripts are on the same disk either way.
+
+| harness | read from | install into |
+|---|---|---|
+| Claude Code | `~/.claude/projects` | `claude plugin install` |
+| Codex | `~/.codex/sessions` | `install.mjs codex` |
+| Cursor | one SQLite database under `globalStorage` | `install.mjs cursor` |
+| Claude Code **cloud** | not stored locally — see below | — |
 
 ## Install
+
+### Claude Code
 
 ```bash
 claude plugin marketplace add QSchlegel/session-viz
@@ -15,6 +28,49 @@ claude plugin install session-viz@session-viz
 
 Two steps on purpose: `install` cannot resolve a plugin from a marketplace this machine has never
 added.
+
+### Codex, Cursor
+
+Both read the same skill format Claude Code does — a directory holding a `SKILL.md` with `name`
+and `description` frontmatter — so the same ten commands work there. What is *not* portable is the
+line inside each one that runs the analysis: it says `${CLAUDE_PLUGIN_ROOT}`, a variable only
+Claude Code sets, which anywhere else expands to nothing and fails on a path that never existed.
+
+So this resolves it on the way in, rather than asking you to:
+
+```bash
+git clone https://github.com/QSchlegel/session-viz
+cd session-viz && npm install && npm run build
+node plugins/session-viz/scripts/install.mjs
+```
+
+With no arguments it installs into whichever harnesses are on the machine. Name them to be explicit
+— `install.mjs codex cursor` — or pass `--dry-run` to see what it would write first.
+
+```bash
+node plugins/session-viz/scripts/install.mjs --list        # what is installed, and is it current
+node plugins/session-viz/scripts/install.mjs --uninstall codex
+```
+
+The skills are copied; the scripts are not. Copies point back at the checkout, so **re-run install
+after updating the plugin** — `--list` reports when a copy has gone stale. `--uninstall` removes
+only files this tool wrote, identified by a marker inside them, so a skill of the same name you
+wrote by hand is never touched.
+
+Restart the harness afterwards: skills register at startup.
+
+One behavioural difference is worth knowing rather than discovering. Claude Code honours
+`disable-model-invocation`, so these run only when you ask for them. Codex and Cursor have no
+equivalent, so the model there may decide to run them itself. They are read-only analyses — but
+read-only is not the same as expected.
+
+### Cloud sessions
+
+Claude Code sessions run on claude.ai/code keep their transcripts server-side. They are not under
+`~/.claude`, not in the desktop app's support directory, and `claude agents --json` lists only
+local runs — so nothing here can read them unless you attach the session from this machine, which
+writes a local transcript like any other. Every report says so, rather than quietly leaving the
+surface out of the numbers.
 
 ## Commands
 
