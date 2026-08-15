@@ -143,13 +143,13 @@ export function audit(target, fleet) {
         });
     }
     const checks = [
-        { key: 'hasClaudeMd', label: 'a CLAUDE.md', pred: (f) => f.hasClaudeMd,
+        { key: 'hasClaudeMd', label: 'CLAUDE.md', pred: (f) => f.hasClaudeMd,
             why: 'Repeated constraints live here instead of being re-explained each session.' },
-        { key: 'permissionCoversWrite', label: 'a Write permission in settings', pred: (f) => f.permissionCoversWrite,
+        { key: 'permissionCoversWrite', label: 'Write permission in settings', pred: (f) => f.permissionCoversWrite,
             why: 'Scheduled and headless runs cannot answer a permission prompt; without this they die at the first write.' },
-        { key: 'commands', label: 'slash commands', pred: (f) => f.commands > 0,
+        { key: 'commands', label: 'slash commands', plural: true, pred: (f) => f.commands > 0,
             why: 'Procedures you retype are cheaper as a command. /qship finds the candidates.' },
-        { key: 'hasSettings', label: 'a settings file', pred: (f) => f.hasSettings, why: '' },
+        { key: 'hasSettings', label: 'settings file', pred: (f) => f.hasSettings, why: '' },
     ];
     for (const c of checks) {
         const has = c.pred(me);
@@ -161,7 +161,10 @@ export function audit(target, fleet) {
         const level = others.length >= MIN_BASELINE && n / others.length >= 0.5 ? 'gap' : 'note';
         findings.push({
             level, key: c.key,
-            text: `No ${c.label}. ${n} of ${others.length} of your other repos have one.${c.why ? ' ' + c.why : ''}`,
+            // `n` is a count of repos, so it drives the verb; `plural` describes the
+            // thing being counted, so it drives the object. They are independent —
+            // "1 … has them" and "12 … have one" are both reachable and both correct.
+            text: `No ${c.label}. ${n} of ${others.length} of your other repos ${n === 1 ? 'has' : 'have'} ${c.plural ? 'them' : 'one'}.${c.why ? ' ' + c.why : ''}`,
         });
     }
     if (me.hasClaudeMd && me.claudeMdRules < 3) {
