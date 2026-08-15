@@ -1,6 +1,6 @@
 # session-viz
 
-Nine commands over the transcripts Claude Code already writes to your disk.
+Ten commands over the transcripts Claude Code already writes to your disk.
 
 Nothing is sent anywhere. The plugin reads `~/.claude/projects/**`, computes locally, and opens
 an HTML report. There is a hosted side, and it is entirely optional — every command below works
@@ -28,6 +28,7 @@ added.
 | `/qdoctor` | This repo's config, measured against your other repos |
 | `/qsetup` | Connect this machine — paste the token into a page, not a shell |
 | `/qshare` | Choose what your team can see — nothing by default |
+| `/qfeed` | File tasks from findings that passed a gate — and only those |
 | `/qteam` | Shared vaults and task handoff (needs the hosted side) |
 
 ## What it refuses to tell you
