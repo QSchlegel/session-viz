@@ -94,9 +94,15 @@ async function cwdOf(file) {
                 continue;
             try {
                 const o = JSON.parse(line);
-                if (o.cwd) {
+                // Claude Code puts `cwd` at the top level; Codex nests it in
+                // session_meta's payload. Reading only the top level returned null for
+                // every one of the 436 rollouts on this machine — opened, parsed, and
+                // learned nothing from — leaving 13 real repositories out of the
+                // fingerprint, including the one with 256 sessions in it.
+                const cwd = o.cwd || o.payload?.cwd;
+                if (cwd) {
                     rl.close();
-                    return o.cwd;
+                    return cwd;
                 }
             }
             catch { }

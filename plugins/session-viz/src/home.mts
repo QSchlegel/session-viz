@@ -11,7 +11,7 @@
 // So: one resolver, honoured everywhere, with an override that a confined
 // harness can actually set.
 
-import { mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -122,11 +122,31 @@ export interface TranscriptRoot {
  * listed here — a fork, a private harness, or a directory copied off another
  * machine. Entries take the form `harness=/path` or a bare path, which is
  * reported as `custom`.
+ *
+ * Identity is the directory itself (device + inode), not the string that names
+ * it. CLAUDE_CONFIG_DIR pointing at `~/.claude` through a symlink, or as
+ * `~/.Claude` on macOS's case-insensitive default filesystem, spells the same
+ * directory two ways — de-duplicated on the raw string both survive, every
+ * transcript under them is listed twice, and each duplicate is extracted as a
+ * separate session. That doubles every pooled rate and every token total in
+ * /qtrends, /qdoctor, /qship and /qpact at once, with nothing to show for it.
  */
 export function transcriptRoots(): TranscriptRoot[] {
   const out: TranscriptRoot[] = []
+  const seen = new Set<string>()
   const push = (harness: string, dir: string | undefined): void => {
-    if (dir && existsSync(dir) && !out.some((r) => r.dir === dir)) out.push({ harness, dir })
+    if (!dir) return
+    let key: string
+    try {
+      const st = statSync(dir)
+      if (!st.isDirectory()) return
+      key = `${st.dev}:${st.ino}`
+    } catch {
+      return // missing, or unreadable, which is the same thing to a scan
+    }
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({ harness, dir })
   }
   for (const entry of (process.env.SESSION_VIZ_TRANSCRIPTS || '').split(':').filter(Boolean)) {
     const at = entry.indexOf('=')
