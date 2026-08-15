@@ -21,6 +21,7 @@ import { readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { extract, listSessions } from './extract.mjs';
 import { transcriptRoots } from './home.mjs';
+import { repoName, repoRoot, worktreeOf } from './repo.mjs';
 // ---------------------------------------------------------------- friction sets
 // `roundtrip` fires when no tools ran, which makes it collinear with tool-call
 // count by construction. Any analysis that stratifies on workload has to drop it
@@ -35,30 +36,9 @@ const hasFriction = (t) => t.friction.length > 0;
 // model happened to be selected when the user hit escape.
 const NO_MODEL = '(no model ran)';
 // ---------------------------------------------------------------- projects
-// Claude Code puts worktrees at <repo>/.claude/worktrees/<name>, and each one
-// gets its own transcript directory. Left alone, a repo worked on across five
-// worktrees appears as five unrelated single-session "projects" — which both
-// hides the repo that actually dominates the corpus and makes every per-project
-// rate a sample of one branch.
-const WORKTREE_SEP = '/.claude/worktrees/';
-// Codex checks its worktrees out *outside* the repository, at
-// ~/.codex/worktrees/<id>/<repo> — so unlike the layout above, splitting the
-// path recovers nothing, and the checkout arrives as a project of its own
-// carrying the repository's basename. That collides: the knowledge graph mints
-// node ids as `repo:<name>`, so both entries land on one id at one position,
-// one circle permanently occluding the other while their tooltips disagree.
-const CODEX_WORKTREE = /\/\.codex\/worktrees\/([^/]+)\/[^/]+$/;
-const repoRoot = (cwd) => String(cwd || '').split(WORKTREE_SEP)[0];
-// The branch-ish worktree name, or null for the main checkout. Kept rather than
-// discarded: within a repo, "which worktree" is the useful second axis.
-const worktreeOf = (cwd) => {
-    const s = String(cwd || '');
-    const i = s.indexOf(WORKTREE_SEP);
-    if (i !== -1)
-        return s.slice(i + WORKTREE_SEP.length).split('/')[0];
-    return s.match(CODEX_WORKTREE)?.[1] ?? null;
-};
-const repoName = (cwd) => repoRoot(cwd).replace(/^.*\//, '');
+// repoRoot / worktreeOf / repoName live in repo.mts, imported at the top of this
+// file. They were defined here first; three other readers then grew partial
+// copies that disagreed with this one about Codex. See repo.mts.
 // The one name a session is labelled by, everywhere. Not every transcript
 // records a cwd, and repoName(null) is '' — so a session without one has only
 // its transcript slug to go on. Spelled out separately at each call site the

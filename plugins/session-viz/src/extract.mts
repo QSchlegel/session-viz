@@ -399,6 +399,26 @@ const SECRETS: [RegExp, string][] = [
   // KEY=value / TOKEN: value in pasted env blocks
   [/\b([A-Z][A-Z0-9_]{3,}(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|DSN))\s*[=:]\s*\S+/g, '$1=«redacted»'],
   [/\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^\s"'`]+/g, '«redacted-conn-string»'],
+  // The vendor-prefixed key shape, generically: `<vendor>_<class>_<entropy>`,
+  // as used by Stripe (sk_live_, pk_test_), and by everyone who copied Stripe.
+  //
+  // The list above is one pattern per vendor, which means it only ever redacts
+  // the issuers somebody thought of. A live key of exactly this shape reached a
+  // /qship report in cleartext from the real corpus — matched by nothing here,
+  // because its vendor prefix was not on the list. Every unlisted issuer had the
+  // same hole, and the reports are the half of this tool designed to be shared.
+  //
+  // Anchored on the class segment (pk/sk/pat/api/key/token/secret) rather than
+  // on entropy alone: a bare "long base62 run" also describes a git SHA, a UUID
+  // and a minified identifier, and redacting those would quietly gut the prompt
+  // text this tool exists to measure.
+  //
+  // Two entries because the convention has two orders, and a pattern written for
+  // one silently passes the other — which is how the first draft of this fix
+  // caught the key that prompted it while still letting every Stripe key
+  // through.
+  [/\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g, '«redacted-key»'],
+  [/\b[a-z][a-z0-9]{1,20}_(?:pk|sk|pat|api|key|token|secret)_[A-Za-z0-9_-]{12,}\b/gi, '«redacted-key»'],
 ]
 
 function redact(s: string): string {

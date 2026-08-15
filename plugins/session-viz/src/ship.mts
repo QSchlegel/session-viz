@@ -22,6 +22,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { extract, listSessions } from './extract.mjs'
 import { emitJson } from './out.mjs'
+import { repoName } from './repo.mjs'
 
 // Shapes read off extract.mjs, which is still untyped JavaScript. Only the
 // fields this file actually touches are modelled.
@@ -101,13 +102,19 @@ export async function harvest({ minCount = 2 }: { minCount?: number } = {}): Pro
     let s: ExtractedSession
     try { s = await extract(f.file) as ExtractedSession } catch { continue }
     if (!s.turns.length) continue
-    const repo = (s.cwd || s.project).split('/.claude/worktrees/')[0]!
+    // Both worktree layouts, via the shared definition. On the Claude Code
+    // separator alone, a prompt retyped once in each of three worktrees of one
+    // repo counted as three repos here and as one in /qtrends.
+    const repo = repoName(s.cwd) || String(s.project)
     for (const t of s.turns) {
       const key = norm(t.text)
       if (key.length < 6 || SKIP.test(key) || MACHINE.test(key)) continue
       if (!groups.has(key)) groups.set(key, { key, text: t.text.trim(), hits: [] })
       groups.get(key)!.hits.push({
-        repo: repo.replace(/^.*\//, ''), session: s.sessionId, at: t.startedAt,
+        // No further basename strip: repoName() has already done it, and doing
+        // it again to the fallback turns a Codex project of `2026/08/14` into
+        // `14` — twelve unrelated projects a year sharing one label.
+        repo, session: s.sessionId, at: t.startedAt,
         tools: t.toolCallCount || 0,
         toolNames: (t.toolCalls || []).map((x) => x.name),
         drewCorrection: !!t.derived?.followedByCorrection,

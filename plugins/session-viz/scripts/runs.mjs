@@ -15,10 +15,19 @@
 // run that happens to contain human turns — that is a field, not a subsystem.
 import { readdirSync, statSync, createReadStream } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { emitJson } from './out.mjs';
-const PROJECTS = join(homedir(), '.claude', 'projects');
+import { transcriptRoots } from './home.mjs';
+import { codexRecords, listCodexSessions } from './codex.mjs';
+import { repoFromSlug, repoName } from './repo.mjs';
+// No PROJECTS constant any more. This file used to hardcode ~/.claude/projects
+// while extract.mts, corpus.mts and doctor.mts had already moved to
+// transcriptRoots() — so /qruns and /qcost reported a Claude-Code-only fleet
+// next to a /qtrends that covered two harnesses, and the token totals on the
+// two screens could not be reconciled by anyone reading them.
+//
+// Cost is the sharpest case: Codex spend was not under-reported, it was absent,
+// and nothing on the /qcost screen said a harness was missing.
 // The one hand-maintained constant in the classifier. A run that ends by
 // calling a return tool has SUCCEEDED; without this list, "ended on a tool
 // call" looks like failure and condemns most of a healthy fleet.
@@ -65,11 +74,36 @@ function familyOf(text) {
         return 'note-writer';
     return 'other';
 }
-async function scanRun(file) {
+/**
+ * Claude Code writes one JSON object per line; that IS the record.
+ *
+ * A parse failure skips the line rather than the file. Records are yielded, not
+ * collected, so a 588 MB rollout does not have to fit in memory — the same
+ * constraint that made codexRecords a generator.
+ */
+async function* claudeRecords(file) {
+    const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+    for await (const line of rl) {
+        try {
+            yield JSON.parse(line);
+        }
+        catch { /* a bad line is not a bad file */ }
+    }
+}
+/**
+ * Reduce a stream of records to a RunScan.
+ *
+ * Split out of scanRun so Codex can reach it. Everything below this line was
+ * already harness-agnostic given a well-shaped record — codex.mts normalises a
+ * rollout into exactly these shapes on the way in, including `message.usage`,
+ * which is what makes the cost ledger work across both without a second
+ * accounting path to keep in step with this one.
+ */
+async function scanRecords(source) {
     const r = {
         started: null, agentEnded: null, lastRecord: null,
         out: 0, cin: 0, cread: 0, ccreate: 0,
-        tools: 0, toolErr: 0, humanTurns: 0,
+        tools: 0, toolErr: 0, humanTurns: 0, cwd: null,
         lastStop: null, lastTool: null, lastToolId: null, resolved: new Set(),
         firstText: '', schedName: null, models: new Map(),
         structured: 0, structuredFail: 0,
@@ -79,16 +113,12 @@ async function scanRun(file) {
     };
     const names = new Map();
     let lastKey = null;
-    const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
-    for await (const line of rl) {
-        let o;
-        try {
-            o = JSON.parse(line);
-        }
-        catch {
-            continue;
-        }
+    for await (const o of source) {
         const ts = o.timestamp;
+        // First cwd wins. Codex records it on session_meta and nowhere else, so a
+        // last-write-wins read would lose it the moment any later record omits it.
+        if (!r.cwd && o.cwd)
+            r.cwd = o.cwd;
         if (ts) {
             if (!r.started)
                 r.started = ts;
@@ -139,6 +169,18 @@ async function scanRun(file) {
         }
         else if (o.type === 'user') {
             const c = o.message?.content;
+            // A user record carrying anything other than a tool_result is a person
+            // typing. Counted because it is the only evidence that separates a run
+            // somebody drove from one a machine issued — and on Codex it is the ONLY
+            // evidence, there being no /subagents/ directory to read it off the path.
+            // codex.mts has already dropped the human turns from `codex exec` and
+            // control-surface rollouts, so a machine-issued run reaches here at zero.
+            if (Array.isArray(c)) {
+                if (c.some((b) => b.type !== 'tool_result'))
+                    r.humanTurns++;
+            }
+            else if (typeof c === 'string' && c.trim())
+                r.humanTurns++;
             if (Array.isArray(c)) {
                 for (const b of c) {
                     if (b.type === 'tool_result') {
@@ -176,6 +218,10 @@ async function scanRun(file) {
     }
     return r;
 }
+/** Scan one transcript, reading it the way its harness wrote it. */
+const scanRun = (file, harness) => scanRecords(harness === 'codex'
+    ? codexRecords(file)
+    : claudeRecords(file));
 // Ordered, because the naive version of each of these is wrong in a way that
 // changes the headline. See README.
 function terminalState(r) {
@@ -213,32 +259,49 @@ function deliveryState(r) {
         return 'unverified';
     return 'no_intent';
 }
-export async function collectRuns({ since = null } = {}) {
-    const runs = [];
+/** Every transcript a harness left under one of its roots, with its kind. */
+function* rootFiles(harness, dir) {
+    if (harness === 'codex') {
+        // A flat date tree: no project directory to name the repo, and no
+        // /subagents/ nesting. Both are recovered from the records instead — cwd
+        // for the repo, an absence of human turns for the kind.
+        for (const s of listCodexSessions(dir))
+            yield { file: s.file, isSub: false, slug: '' };
+        return;
+    }
     let projects = [];
     try {
-        projects = readdirSync(PROJECTS);
+        projects = readdirSync(dir);
     }
     catch {
-        return { runs: [], root: PROJECTS };
+        return;
     }
     for (const proj of projects) {
-        const dir = join(PROJECTS, proj);
+        const projDir = join(dir, proj);
         try {
-            if (!statSync(dir).isDirectory())
+            if (!statSync(projDir).isDirectory())
                 continue;
         }
         catch {
             continue;
         }
-        for (const file of walk(dir)) {
+        for (const file of walk(projDir)) {
             const isSub = /\/subagents\//.test(file);
-            const depth = file.slice(dir.length + 1).split('/').length - 1;
-            if (!isSub && depth !== 0)
+            // Only depth-0 files are sessions; anything else nested is not.
+            if (!isSub && file.slice(projDir.length + 1).split('/').length - 1 !== 0)
                 continue;
+            yield { file, isSub, slug: proj };
+        }
+    }
+}
+export async function collectRuns({ since = null } = {}) {
+    const runs = [];
+    const roots = transcriptRoots();
+    for (const { harness, dir } of roots) {
+        for (const { file, isSub, slug: projSlug } of rootFiles(harness, dir)) {
             let s;
             try {
-                s = await scanRun(file);
+                s = await scanRun(file, harness);
             }
             catch {
                 continue;
@@ -247,11 +310,21 @@ export async function collectRuns({ since = null } = {}) {
                 continue;
             if (since && Date.parse(s.started) < since)
                 continue;
-            const kind = isSub ? 'subagent' : s.schedName ? 'scheduled' : 'human';
+            // Codex has no /subagents/ directory, so its machine-issued runs are
+            // identified by having no human turn at all. Calling those 'scheduled'
+            // rather than inventing a fourth kind: from a delivery ledger's point of
+            // view they are the same thing — work nobody was sitting in front of.
+            const kind = isSub ? 'subagent'
+                : s.schedName ? 'scheduled'
+                    : harness === 'codex' && s.humanTurns === 0 ? 'scheduled'
+                        : 'human';
             const agentMs = s.agentEnded ? Date.parse(s.agentEnded) - Date.parse(s.started) : 0;
             runs.push({
-                file, kind,
-                repo: proj.replace(/^-Users-[^-]+-/, '').split('--claude-worktrees-')[0],
+                file, kind, harness,
+                // cwd first for both harnesses; the slug is a Claude-Code-only fallback
+                // for a transcript that never recorded one. Codex has no slug to fall
+                // back to, so an unreadable rollout is named '' rather than mislabelled.
+                repo: repoName(s.cwd) || (projSlug ? repoFromSlug(projSlug) : ''),
                 task: s.schedName ? slug(s.schedName) : null,
                 family: isSub ? familyOf(s.firstText) : null,
                 week: isoWeek(s.started), started: s.started,
@@ -268,7 +341,11 @@ export async function collectRuns({ since = null } = {}) {
         }
     }
     runs.sort((a, b) => a.started.localeCompare(b.started));
-    return { runs, root: PROJECTS };
+    // `roots`, plural, replaces the single `root`. A caller that prints where the
+    // data came from has to be able to say "both of these" — printing one root
+    // while reporting over two is how the Claude-Code-only assumption stayed
+    // invisible for as long as it did.
+    return { runs, roots: roots.map((r) => `${r.harness}:${r.dir}`) };
 }
 // ---------------------------------------------------------------- aggregate
 const sum = (a, f) => a.reduce((n, x) => n + f(x), 0);
@@ -313,6 +390,16 @@ export function ledger(runs) {
     })).sort((x, y) => y.runs - x.runs);
     const terminal = [...by(runs, 'terminal').entries()].map(([k, a]) => [k, a.length]).sort((x, y) => y[1] - x[1]);
     const kinds = [...by(runs, 'kind').entries()].map(([k, a]) => [k, a.length]);
+    // Per-harness, and reported even when there is only one. A single line saying
+    // `claude-code 1236` is how somebody notices that the Codex they have been
+    // running all week is not in these numbers — which is the failure this whole
+    // change exists to make impossible to have silently.
+    const harnesses = [...by(runs, 'harness').entries()].map(([harness, a]) => ({
+        harness, runs: a.length,
+        human: a.filter((r) => r.kind === 'human').length,
+        auto: a.filter((r) => r.kind !== 'human').length,
+        out: sum(a, (r) => r.out), cread: sum(a, (r) => r.cread),
+    })).sort((x, y) => y.cread - x.cread);
     return {
         generated: new Date().toISOString().slice(0, 16).replace('T', ' '),
         totals: {
@@ -322,7 +409,7 @@ export function ledger(runs) {
             ccreate: sum(runs, (r) => r.ccreate), cin: sum(runs, (r) => r.cin),
             toolErr: sum(runs, (r) => r.toolErr), loops: sum(runs, (r) => r.loops),
         },
-        terminal, tasks, families,
+        terminal, tasks, families, harnesses,
         autonomous: {
             runs: auto.length,
             delivered: auto.filter((r) => r.delivery === 'wrote_ok').length,
@@ -346,6 +433,7 @@ function renderLedger(L) {
     const out = [];
     out.push(`runs        ${t.runs}   human ${t.human || 0} · scheduled ${t.scheduled || 0} · subagent ${t.subagent || 0}`);
     out.push(`tokens      ${fmt(t.out)} out · ${fmt(t.cread)} cache-read · ${fmt(t.ccreate)} cache-create`);
+    out.push(`harnesses   ${L.harnesses.map((h) => `${h.harness} ${h.runs} (${fmt(h.cread)} cr)`).join(' · ')}`);
     out.push(`autonomous  ${a.runs} runs · ${a.delivered} wrote a file · ${a.denied} denied · ${a.zombie} zombie`);
     out.push('');
     out.push('terminal state');

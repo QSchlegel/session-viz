@@ -18,6 +18,7 @@ import { join, basename } from 'node:path'
 import { createInterface } from 'node:readline'
 import { listSessions } from './extract.mjs'
 import { emitJson } from './out.mjs'
+import { repoRoot } from './repo.mjs'
 
 const count = (dir: string, ext = '.md'): number => {
   try { return readdirSync(dir).filter((f) => f.endsWith(ext)).length } catch { return 0 }
@@ -130,8 +131,11 @@ export async function knownRepos(): Promise<string[]> {
   for (const s of listSessions()) {
     const cwd = await cwdOf(s.file)
     if (!cwd) continue
-    // Worktrees fold back into their repository.
-    const root = cwd.split('/.claude/worktrees/')[0]!
+    // Worktrees fold back into their repository — for both harnesses. Splitting
+    // on the Claude Code separator alone left every Codex worktree checkout in
+    // as a repository of its own, so the fleet baseline this audit compares a
+    // repo against counted some of them twice.
+    const root = repoRoot(cwd)
     if (existsSync(root)) seen.add(root)
   }
   return [...seen]
