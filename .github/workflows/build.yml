@@ -1,0 +1,93 @@
+# The compiled output in plugins/session-viz/scripts/ is committed on purpose:
+# a Claude Code plugin is installed by copying the repo, with no build step at
+# install time, and the skills invoke `node ${CLAUDE_PLUGIN_ROOT}/scripts/*.mjs`
+# directly. So the artifact has to be present and correct in the tree.
+#
+# Committing build output means it can drift. An edit to a .mts that skips
+# `npm run build` ships the OLD behaviour while the source reads as if the
+# change landed — and the diff shows only the .mts, so review sees nothing
+# wrong. This is the check that makes that impossible.
+#
+# Nothing here interpolates event data. Every step reads only the checked-out
+# tree, so there is no path for a branch name, title or commit message to reach
+# a shell.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 22 is the floor, not a preference: the Cursor adapter reads SQLite
+      # through `node:sqlite`, which does not exist before it. Building on an
+      # older runtime would typecheck and then fail at runtime for every user.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Committed output matches source
+        run: |
+          if ! git diff --exit-code --stat -- plugins/session-viz/scripts; then
+            echo
+            echo "::error::plugins/session-viz/scripts is stale — it does not match plugins/session-viz/src."
+            echo "Run 'npm run build' and commit the result. The scripts/ directory is what"
+            echo "actually runs when the plugin is installed; leaving it behind ships the old"
+            echo "behaviour while the source reads as though the change landed."
+            exit 1
+          fi
+
+      # The plugin claims to run with no dependencies. That is load-bearing:
+      # it is installed by copy, so anything in `dependencies` would simply be
+      # absent at runtime. devDependencies are fine — they only build it.
+      - name: No runtime dependencies
+        run: |
+          deps=$(node -p "Object.keys(require('./package.json').dependencies || {}).join(' ')")
+          if [ -n "$deps" ]; then
+            echo "::error::package.json declares runtime dependencies: $deps"
+            echo "The plugin is installed by copying the repo, with no npm install, so these"
+            echo "would be missing when it runs. Use devDependencies, or vendor the code."
+            exit 1
+          fi
+
+      # Smoke test on the runner's empty corpus. transcriptRoots() returns
+      # nothing there — the case most likely to divide by zero or index an empty
+      # array, and the one no local run ever exercises, because a developer's
+      # machine always has transcripts on it.
+      #
+      # A non-zero exit is NOT the failure condition: extract, runs and corpus
+      # deliberately refuse with a one-line message when there is no corpus, and
+      # asserting exit 0 would fail CI on correct behaviour. What must never
+      # happen is an uncaught exception, so the stack trace is what is checked.
+      - name: Commands survive an empty corpus
+        run: |
+          cd plugins/session-viz
+          failed=0
+          for s in extract runs corpus doctor ship; do
+            err=$(node "scripts/$s.mjs" --json 2>&1 >/dev/null) || true
+            if printf '%s' "$err" | grep -qE '^\s+at |Error: .*\n.*at '; then
+              echo "::error::$s.mjs threw on an empty corpus instead of refusing cleanly"
+              printf '%s\n' "$err" | head -20
+              failed=1
+            else
+              echo "$s: ok ($(printf '%s' "$err" | head -1 | cut -c1-60))"
+            fi
+          done
+          exit $failed
