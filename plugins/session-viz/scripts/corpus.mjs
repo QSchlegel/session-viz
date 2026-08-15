@@ -1181,7 +1181,15 @@ if (isMain) {
     // nothing to do with Codex.
     const roots = transcriptRoots();
     if (!roots.length) {
-        console.error('no transcripts found — looked for ~/.claude/projects and ~/.codex/sessions');
+        // Built from harnessCoverage() rather than written out, so it cannot go
+        // stale the way the hardcoded version did: that still named only Claude
+        // Code and Codex after Cursor was added, telling a Cursor user we had
+        // looked somewhere we had not.
+        console.error('no transcripts found. Looked for:');
+        for (const h of harnessCoverage()) {
+            console.error(`  ${h.harness.padEnd(18)} ${h.where}${h.reason ? `  — ${h.reason.replace(/\.$/, '')}` : ''}`);
+        }
+        console.error('Set SESSION_VIZ_TRANSCRIPTS=<harness>=/path to add a location.');
         process.exit(1);
     }
     const model = await buildCorpus({
