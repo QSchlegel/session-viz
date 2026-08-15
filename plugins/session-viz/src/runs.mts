@@ -563,16 +563,8 @@ function renderLedger(L: Ledger): string {
   // everything is covered. An all-clear line on every run trains people to stop
   // reading it, and this is the line that has to be read the one time it says
   // an entire harness is absent from the numbers above.
-  const gaps = L.coverage.filter((c) => !c.found || c.tokens !== 'full')
-  if (gaps.length) {
-    out.push('not in these numbers')
-    for (const c of gaps) {
-      out.push(c.found
-        ? `  ${c.harness}: counted, but token data is ${c.tokens} — its spend is a floor, not a total`
-        : `  ${c.harness}: ${c.reason}`)
-    }
-    out.push('')
-  }
+  const cov = coverageBlock(L)
+  if (cov) out.push(cov.replace(/^\n/, ''))
 
   out.push('caveats')
   for (const c of L.caveats) out.push(`  - ${c}`)
@@ -604,9 +596,34 @@ function renderCost(L: Ledger): string {
     out.push(`  The spread between families is the actionable part: same harness, same model,`)
     out.push(`  different prompt. Narrowing the widest one is worth more than any prompt tweak.`)
   }
-  out.push('')
+  // The coverage block belongs HERE most of all, and was missing: /qcost is the
+  // one screen that is entirely about token totals, and it was printing a
+  // composition percentage over 2320 runs without mentioning that 641 of them
+  // carry no token data at all. The percentages are not wrong, but a reader
+  // takes them for a bill, and a whole harness contributing a measured zero is
+  // the single thing most likely to mislead them.
+  out.push(coverageBlock(L))
   out.push('  No currency is shown. The rate card is not part of this snapshot, and a dollar')
   out.push('  figure derived from an assumed price is an assumption rendered as a fact.')
+  return out.join('\n')
+}
+
+/**
+ * What is missing or partial, as lines. Empty when everything is covered.
+ *
+ * Shared by both renderers rather than written into one of them, because that
+ * is exactly how /qcost came to be the screen without it.
+ */
+function coverageBlock(L: Ledger): string {
+  const gaps = L.coverage.filter((c) => !c.found || c.tokens !== 'full')
+  if (!gaps.length) return ''
+  const out = ['', 'not in these numbers']
+  for (const c of gaps) {
+    out.push(c.found
+      ? `  ${c.harness}: counted, but token data is ${c.tokens} — its spend is a floor, not a total`
+      : `  ${c.harness}: ${c.reason}`)
+  }
+  out.push('')
   return out.join('\n')
 }
 
