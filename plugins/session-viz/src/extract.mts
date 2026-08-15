@@ -13,6 +13,7 @@ import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { join, basename } from 'node:path'
 import { codexProject, codexRecords, isCodexTranscript, listCodexSessions } from './codex.mjs'
+import { cursorRecords, isCursorTranscript, listCursorSessions } from './cursor.mjs'
 import { harnessLabel, transcriptRoots } from './home.mjs'
 import type { TranscriptRoot } from './home.mjs'
 
@@ -258,6 +259,10 @@ interface TranscriptMessage {
   model?: string
   usage?: UsageRecord
   content?: string | ContentBlock[]
+  /** Why generation stopped. extract() itself does not read this — runs.mts
+   *  does, off the same records — but an adapter synthesising a record has to
+   *  be able to say how a run ended, and this is the field that carries it. */
+  stop_reason?: string | null
 }
 
 interface TranscriptAttachment {
@@ -758,15 +763,26 @@ export async function extract(
   { redactText = true, maxPromptChars = 4000, harness: harnessOpt }: ExtractOptions = {}
 ): Promise<Session> {
   const root = rootOf(file)
-  const harness = harnessOpt || root?.harness || (isCodexTranscript(file) ? 'codex' : 'claude-code')
+  // Cursor is sniffed ahead of the root lookup, not after it. Its sessions are
+  // addressed `<db>#<composerId>`, a string that begins with the globalStorage
+  // root — so rootOf() matches it by prefix, hands back harness 'cursor'
+  // correctly, but the same prefix logic would let a `--project` path or a
+  // hand-passed file fall through to the JSONL reader and fail as a missing
+  // file. Deciding on the address itself is the only check that cannot.
+  const harness = isCursorTranscript(file) ? 'cursor'
+    : harnessOpt || root?.harness || (isCodexTranscript(file) ? 'codex' : 'claude-code')
   const session: SessionDraft = {
     sessionId: null,
     file,
     harness,
     // Claude Code's project directory is the transcript's parent, so its
     // basename names the project. Codex nests YYYY/MM/DD, where that basename
-    // is a day number twelve unrelated projects a year would share.
-    project: harness === 'codex' ? codexProject(file, root?.dir) : basename(file.replace(/\/[^/]+$/, '')),
+    // is a day number twelve unrelated projects a year would share. Cursor has
+    // no directory at all — its project is the checkout its files came from,
+    // resolved by the adapter and carried on the records.
+    project: harness === 'cursor' ? ''
+      : harness === 'codex' ? codexProject(file, root?.dir)
+      : basename(file.replace(/\/[^/]+$/, '')),
     cwd: null,
     gitBranch: null,
     version: null,
@@ -845,7 +861,9 @@ export async function extract(
   // A Codex rollout is normalised into these shapes on the way in rather than
   // being taught to the switch, so the spine has exactly one record vocabulary
   // to reason about and Claude Code's path is the one it always was.
-  const source = harness === 'codex' ? codexRecords(file) : claudeRecords(file)
+  const source = harness === 'cursor' ? cursorRecords(file)
+    : harness === 'codex' ? codexRecords(file)
+    : claudeRecords(file)
 
   for await (const rec of source) {
     session.totals.records++
@@ -1082,12 +1100,20 @@ export function listSessions(projectFilter?: string | null): SessionFile[] {
       out.push(...listCodexSessions(root.dir, projectFilter))
       continue
     }
+    if (root.harness === 'cursor') {
+      out.push(...listCursorSessions(root.dir, projectFilter))
+      continue
+    }
     out.push(...listProjectDirSessions(root.harness, root.dir, projectFilter))
   }
   return out.sort((a, b) => b.mtime - a.mtime)
 }
 
 function resolveTarget(arg: string | undefined, projectFilter?: string | null): string | null {
+  // A Cursor address is not a path, so existsSync is false for a perfectly
+  // valid one — accepted explicitly rather than falling through to the
+  // basename search, which would never match a composer UUID.
+  if (arg && isCursorTranscript(arg)) return arg
   if (arg && existsSync(arg)) return arg
   const all = listSessions(projectFilter)
   if (!all.length) return null

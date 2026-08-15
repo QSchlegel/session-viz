@@ -19,6 +19,7 @@ import { createInterface } from 'node:readline'
 import { listSessions } from './extract.mjs'
 import { emitJson } from './out.mjs'
 import { repoRoot } from './repo.mjs'
+import { isCursorTranscript } from './cursor.mjs'
 
 const count = (dir: string, ext = '.md'): number => {
   try { return readdirSync(dir).filter((f) => f.endsWith(ext)).length } catch { return 0 }
@@ -105,7 +106,17 @@ interface TranscriptHead {
 // `qs/plugins` and the path check silently drops it — that reconstruction found
 // four repos out of sixteen. Reading the real value costs a few lines per file.
 async function cwdOf(file: string): Promise<string | null> {
-  const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
+  // Not every harness stores a session as a file of lines. A Cursor session is
+  // addressed `<db>#<composerId>`, so streaming it threw an uncaught ENOENT
+  // that took the whole audit down — the crash was in doctor, the cause was an
+  // assumption about transcripts made three files away.
+  if (isCursorTranscript(file)) return null
+  let rl
+  try {
+    rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
+  } catch {
+    return null
+  }
   let n = 0
   try {
     for await (const line of rl) {
@@ -129,7 +140,12 @@ async function cwdOf(file: string): Promise<string | null> {
 export async function knownRepos(): Promise<string[]> {
   const seen = new Set<string>()
   for (const s of listSessions()) {
-    const cwd = await cwdOf(s.file)
+    // Cursor records no cwd anywhere in the session; its adapter reconstructs
+    // one from the files the conversation touched and puts it on `project`
+    // during the listing. Reusing that costs nothing — the alternative is
+    // opening the SQLite database a second time per session to recompute a
+    // value we already have.
+    const cwd = s.harness === 'cursor' ? (s.project || null) : await cwdOf(s.file)
     if (!cwd) continue
     // Worktrees fold back into their repository — for both harnesses. Splitting
     // on the Claude Code separator alone left every Codex worktree checkout in
