@@ -17,8 +17,9 @@ import { readdirSync, statSync, createReadStream } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { emitJson } from './out.mjs';
-import { transcriptRoots } from './home.mjs';
+import { harnessCoverage, transcriptRoots } from './home.mjs';
 import { codexRecords, listCodexSessions } from './codex.mjs';
+import { cursorRecords, listCursorSessions } from './cursor.mjs';
 import { repoFromSlug, repoName } from './repo.mjs';
 // No PROJECTS constant any more. This file used to hardcode ~/.claude/projects
 // while extract.mts, corpus.mts and doctor.mts had already moved to
@@ -219,9 +220,11 @@ async function scanRecords(source) {
     return r;
 }
 /** Scan one transcript, reading it the way its harness wrote it. */
-const scanRun = (file, harness) => scanRecords(harness === 'codex'
-    ? codexRecords(file)
-    : claudeRecords(file));
+const scanRun = (file, harness) => scanRecords(harness === 'cursor'
+    ? cursorRecords(file)
+    : harness === 'codex'
+        ? codexRecords(file)
+        : claudeRecords(file));
 // Ordered, because the naive version of each of these is wrong in a way that
 // changes the headline. See README.
 function terminalState(r) {
@@ -266,6 +269,16 @@ function* rootFiles(harness, dir) {
         // /subagents/ nesting. Both are recovered from the records instead — cwd
         // for the repo, an absence of human turns for the kind.
         for (const s of listCodexSessions(dir))
+            yield { file: s.file, isSub: false, slug: '' };
+        return;
+    }
+    if (harness === 'cursor') {
+        // Not a tree at all — one SQLite database, addressed `<db>#<composerId>`.
+        // Cursor's own subagent composers are listed alongside their parents, and
+        // are not distinguished here: `subagentComposerIds` names them, but a
+        // subagent composer is a first-class conversation in that database and
+        // counting it as a nested run would double its tokens against its parent.
+        for (const s of listCursorSessions(dir))
             yield { file: s.file, isSub: false, slug: '' };
         return;
     }
@@ -410,6 +423,11 @@ export function ledger(runs) {
             toolErr: sum(runs, (r) => r.toolErr), loops: sum(runs, (r) => r.loops),
         },
         terminal, tasks, families, harnesses,
+        // Every harness we know how to read, including the ones that returned
+        // nothing. `harnesses` above is what was measured; this is what was looked
+        // for — and the difference between them is the only place a missing
+        // surface can show up.
+        coverage: harnessCoverage(),
         autonomous: {
             runs: auto.length,
             delivered: auto.filter((r) => r.delivery === 'wrote_ok').length,
@@ -458,6 +476,20 @@ function renderLedger(L) {
         }
     }
     out.push('');
+    // Printed only when something known is missing or partial, and silent when
+    // everything is covered. An all-clear line on every run trains people to stop
+    // reading it, and this is the line that has to be read the one time it says
+    // an entire harness is absent from the numbers above.
+    const gaps = L.coverage.filter((c) => !c.found || c.tokens !== 'full');
+    if (gaps.length) {
+        out.push('not in these numbers');
+        for (const c of gaps) {
+            out.push(c.found
+                ? `  ${c.harness}: counted, but token data is ${c.tokens} — its spend is a floor, not a total`
+                : `  ${c.harness}: ${c.reason}`);
+        }
+        out.push('');
+    }
     out.push('caveats');
     for (const c of L.caveats)
         out.push(`  - ${c}`);

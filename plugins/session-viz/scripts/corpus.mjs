@@ -20,7 +20,7 @@
 import { readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { extract, listSessions } from './extract.mjs';
-import { transcriptRoots } from './home.mjs';
+import { harnessCoverage, transcriptRoots } from './home.mjs';
 import { repoName, repoRoot, worktreeOf } from './repo.mjs';
 // ---------------------------------------------------------------- friction sets
 // `roundtrip` fires when no tools ran, which makes it collinear with tool-call
@@ -809,6 +809,13 @@ function buildCaveats(model) {
     const mix = Object.entries(meta.harnesses).sort((a, b) => b[1] - a[1]);
     if (mix.length > 1)
         c.push(`Sessions come from more than one harness — ${mix.map(([h, n]) => `${h} ${n}`).join(', ')} — and every rate here pools them. Per-project cards name their own mix; a project worked in from both is not a statement about either alone.`);
+    // The harnesses NOT in the mix above. Naming which surfaces were looked for
+    // and came back empty is the other half of naming the blend: from a mix line
+    // alone, a reader who runs cloud sessions cannot tell whether they are absent
+    // because they were quiet or because nothing here can see them.
+    const missing = harnessCoverage().filter((h) => !h.found);
+    if (missing.length)
+        c.push(`Not in this corpus: ${missing.map((h) => `${h.harness} — ${h.reason.replace(/\.$/, '')}`).join('; ')}. Every rate above is over what was found, not over everything you ran.`);
     // The single most misreadable number in the report. State it before anyone
     // reaches the model table and reads it as a benchmark.
     const uncomparable = models.pairs.filter((p) => !p.comparable && !p.sharedWeeks.length);

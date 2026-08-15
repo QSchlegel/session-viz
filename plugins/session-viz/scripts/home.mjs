@@ -13,6 +13,7 @@
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { cursorDb, cursorGlobalStorage, cursorReadable } from './cursor.mjs';
 /**
  * Config directories, best first.
  *
@@ -150,6 +151,9 @@ export function transcriptRoots() {
     // Codex: rollout-*.jsonl under a date tree, session_meta on the first line.
     push('codex', process.env.CODEX_HOME ? join(process.env.CODEX_HOME, 'sessions') : undefined);
     push('codex', join(homedir(), '.codex', 'sessions'));
+    // Cursor: one SQLite database for the whole machine, under globalStorage.
+    for (const d of cursorGlobalStorage())
+        push('cursor', d);
     return out;
 }
 /**
@@ -164,5 +168,67 @@ export function harnessLabel() {
         return 'claude-code';
     if (process.env.CODEX_HOME || process.env.CODEX_SANDBOX)
         return 'codex';
+    if (process.env.CURSOR_TRACE_ID || process.env.CURSOR_AGENT)
+        return 'cursor';
     return 'unknown';
+}
+export function harnessCoverage() {
+    const roots = transcriptRoots();
+    const has = (h) => roots.find((r) => r.harness === h);
+    const out = [];
+    const cc = has('claude-code');
+    out.push({
+        harness: 'claude-code', found: !!cc,
+        where: cc?.dir || join(homedir(), '.claude', 'projects'),
+        reason: cc ? '' : 'no transcript directory on this machine',
+        tokens: 'full',
+    });
+    const cx = has('codex');
+    out.push({
+        harness: 'codex', found: !!cx,
+        where: cx?.dir || join(homedir(), '.codex', 'sessions'),
+        reason: cx ? '' : 'no transcript directory on this machine',
+        tokens: 'full',
+    });
+    const cu = has('cursor');
+    const cuDb = cu ? cursorDb(cu.dir) : null;
+    out.push({
+        harness: 'cursor',
+        // Present-and-unreadable is a different sentence from not-installed, and
+        // has a different fix. Both are distinguished here rather than collapsed
+        // into one absence.
+        found: !!cuDb && cursorReadable(),
+        where: cuDb || cu?.dir || cursorGlobalStorage()[0] || '',
+        reason: !cu ? 'Cursor not installed for this user'
+            : !cuDb ? 'globalStorage holds no state.vscdb'
+                : !cursorReadable() ? 'this Node cannot open SQLite — node:sqlite needs Node 22 or newer'
+                    : '',
+        // Cursor writes a token count on a minority of messages and zero on the
+        // rest, so its spend is a floor, not a total. Saying so here is the only
+        // thing between that and a /qcost that reads as complete.
+        tokens: 'partial',
+    });
+    // Claude Code cloud sessions keep their transcripts server-side. Nothing on
+    // this machine holds them — not ~/.claude, not the desktop app's support
+    // directory — and `claude agents --json` lists only what runs locally. A
+    // cloud session appears here only once it has been attached to from this
+    // machine, which writes a local transcript like any other session.
+    //
+    // Listed anyway, and permanently not-found, because the alternative is a
+    // report that silently omits a surface the user runs real work on. An
+    // absence that is stated can be argued with; one that is omitted cannot.
+    out.push({
+        harness: 'claude-code-cloud', found: false,
+        where: 'claude.ai/code — server-side',
+        reason: 'cloud transcripts are not stored locally. Attach the session from this machine, or point SESSION_VIZ_TRANSCRIPTS at an export, and it is read like any other.',
+        tokens: 'none',
+    });
+    // Anything the user pointed at by hand. Reported as found because it only
+    // exists in this list by having been named explicitly.
+    for (const r of roots) {
+        if (['claude-code', 'codex', 'cursor'].includes(r.harness))
+            continue;
+        out.push({ harness: r.harness, found: true, where: r.dir, reason: '', tokens: 'full' });
+    }
+    return out;
 }
