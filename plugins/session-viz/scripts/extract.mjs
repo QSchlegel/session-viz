@@ -12,7 +12,7 @@ import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, basename } from 'node:path';
 import { codexProject, codexRecords, isCodexTranscript, listCodexSessions } from './codex.mjs';
-import { transcriptRoots } from './home.mjs';
+import { harnessLabel, transcriptRoots } from './home.mjs';
 // ---------------------------------------------------------------- classifying
 // User-role records are not all typed prompts. Three groups, enumerated from
 // the tags that actually occur across the transcript corpus:
@@ -733,7 +733,17 @@ function resolveTarget(arg, projectFilter) {
         const hit = all.find((s) => basename(s.file).startsWith(arg));
         return hit ? hit.file : null;
     }
-    return all[0].file;
+    // No argument means "this session". /qpact's first step runs `extract.mjs
+    // --json` with none and its skill states the contract outright — "it resolves
+    // the most recently modified transcript, which is the live session". Newest
+    // overall stopped meaning that the moment a second harness's transcripts
+    // joined the list: a Codex rollout written a minute ago outranks the live
+    // Claude Code transcript, render.mjs produces a report for the foreign
+    // harness, and the skill goes on to describe it as "this session". Preferring
+    // the running harness restores the contract for both, and only falls back to
+    // newest-overall when nothing says which harness this is.
+    const running = harnessLabel();
+    return (all.find((s) => s.harness === running) || all[0]).file;
 }
 // ---------------------------------------------------------------- cli
 function fmtTokens(n) {

@@ -92,9 +92,11 @@ export function fingerprint(root: string): Fingerprint {
   }
 }
 
-/** The one field of a transcript line this reads. */
+/** The one field of a transcript line this reads, at either of the two depths a
+ *  harness puts it. */
 interface TranscriptHead {
   cwd?: string
+  payload?: { cwd?: string } | null
 }
 
 // Repos come from the `cwd` recorded in the transcript, NOT from the directory
@@ -110,7 +112,13 @@ async function cwdOf(file: string): Promise<string | null> {
       if (!line.includes('"cwd"')) continue
       try {
         const o = JSON.parse(line) as TranscriptHead
-        if (o.cwd) { rl.close(); return o.cwd }
+        // Claude Code puts `cwd` at the top level; Codex nests it in
+        // session_meta's payload. Reading only the top level returned null for
+        // every one of the 436 rollouts on this machine — opened, parsed, and
+        // learned nothing from — leaving 13 real repositories out of the
+        // fingerprint, including the one with 256 sessions in it.
+        const cwd = o.cwd || o.payload?.cwd
+        if (cwd) { rl.close(); return cwd }
       } catch {}
     }
   } finally { rl.close() }

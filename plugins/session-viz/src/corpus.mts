@@ -20,11 +20,9 @@
 
 import { readdirSync, statSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { extract, listSessions } from './extract.mjs'
 import type { FrictionKind, ScoreBand, Session, SessionFile, SessionTurn, TokenTotals, TurnSignals, TurnToolCall } from './extract.mjs'
-
-const PROJECTS = join(homedir(), '.claude', 'projects')
+import { transcriptRoots } from './home.mjs'
 
 // ---------------------------------------------------------------- types
 
@@ -320,6 +318,8 @@ interface WorktreeSummary {
 interface ProjectSummary {
   name: string
   cwd: string
+  /** Sessions per harness, so a mixed card can say so. */
+  harnesses: Record<string, number>
   worktrees: WorktreeSummary[]
   sessions: number
   sessionIds: (string | null)[]
@@ -398,6 +398,8 @@ interface CorpusMeta {
   sessionCount: number
   turnCount: number
   projectCount: number
+  /** Sessions per harness — the blend every rate below is pooled over. */
+  harnesses: Record<string, number>
   span: { from: string | null; to: string | null; days: number }
   transcriptBytes: number
   subagents: SubagentVolume
@@ -471,13 +473,23 @@ const NO_MODEL = '(no model ran)'
 // rate a sample of one branch.
 const WORKTREE_SEP = '/.claude/worktrees/'
 
+// Codex checks its worktrees out *outside* the repository, at
+// ~/.codex/worktrees/<id>/<repo> — so unlike the layout above, splitting the
+// path recovers nothing, and the checkout arrives as a project of its own
+// carrying the repository's basename. That collides: the knowledge graph mints
+// node ids as `repo:<name>`, so both entries land on one id at one position,
+// one circle permanently occluding the other while their tooltips disagree.
+const CODEX_WORKTREE = /\/\.codex\/worktrees\/([^/]+)\/[^/]+$/
+
 const repoRoot = (cwd: string | null | undefined) => String(cwd || '').split(WORKTREE_SEP)[0]!
 
 // The branch-ish worktree name, or null for the main checkout. Kept rather than
 // discarded: within a repo, "which worktree" is the useful second axis.
 const worktreeOf = (cwd: string | null | undefined) => {
-  const i = String(cwd || '').indexOf(WORKTREE_SEP)
-  return i === -1 ? null : cwd!.slice(i + WORKTREE_SEP.length).split('/')[0]!
+  const s = String(cwd || '')
+  const i = s.indexOf(WORKTREE_SEP)
+  if (i !== -1) return s.slice(i + WORKTREE_SEP.length).split('/')[0]!
+  return s.match(CODEX_WORKTREE)?.[1] ?? null
 }
 
 const repoName = (cwd: string | null | undefined) => repoRoot(cwd).replace(/^.*\//, '')
@@ -1275,6 +1287,15 @@ function buildCaveats(model: CorpusModel): string[] {
       `${meta.excluded.noHumanTurns} of ${meta.excluded.transcriptsFound} transcripts contain no human turns — almost always scheduled-task runs — and are excluded entirely. They still consumed tokens; nothing here accounts for them.`
     )
 
+  // Every rate in this report pools harnesses, and a repo worked in from both
+  // produces one card that reads as whichever harness the reader came from.
+  // Naming the mix is the difference between a blend and a silent one.
+  const mix = Object.entries(meta.harnesses).sort((a, b) => b[1] - a[1])
+  if (mix.length > 1)
+    c.push(
+      `Sessions come from more than one harness — ${mix.map(([h, n]) => `${h} ${n}`).join(', ')} — and every rate here pools them. Per-project cards name their own mix; a project worked in from both is not a statement about either alone.`
+    )
+
   // The single most misreadable number in the report. State it before anyone
   // reaches the model table and reads it as a benchmark.
   const uncomparable = models.pairs.filter((p) => !p.comparable && !p.sharedWeeks.length)
@@ -1383,9 +1404,22 @@ export async function buildCorpus({ projectFilter = null, since = null, limit = 
 
   // Grouped by repository, not by working directory — worktrees of one repo are
   // one project.
+  // A Codex worktree belongs to a repository whose root appears nowhere in its
+  // path; the only record of that root is elsewhere in the corpus. A same-named
+  // root from a session that is not itself a worktree is that repository, and
+  // folding onto it is what keeps the repo one project with one graph node
+  // rather than two entries sharing a name and a `repo:<name>` id. A checkout
+  // with no such root stays its own project, where it collides with nothing.
+  const rootByName = new Map<string, string>()
+  for (const s of sessions) {
+    const r = repoRoot(s.cwd)
+    if (!r || worktreeOf(r)) continue
+    if (!rootByName.has(repoName(r))) rootByName.set(repoName(r), r)
+  }
   const byProject = new Map<string, CorpusSession[]>()
   for (const s of sessions) {
-    const k = s.cwd ? repoRoot(s.cwd) : s.project
+    const r = repoRoot(s.cwd)
+    const k = r ? (worktreeOf(r) ? rootByName.get(repoName(r)) || r : r) : s.project
     if (!byProject.has(k)) byProject.set(k, [])
     byProject.get(k)!.push(s)
   }
@@ -1406,6 +1440,15 @@ export async function buildCorpus({ projectFilter = null, since = null, limit = 
       return {
         name: cwd.replace(/^.*\//, ''),
         cwd,
+        // Which harness produced the sessions behind this card. A repo worked in
+        // from both pools two harnesses into one rework rate, and personal-page
+        // is 83% Codex by session count while the report reads as Claude Code's.
+        // The digest has carried `harness` since the adapter landed; without
+        // this, nothing read it and the blend was unmarked.
+        harnesses: group.reduce<Record<string, number>>((acc, s) => {
+          acc[s.harness] = (acc[s.harness] || 0) + 1
+          return acc
+        }, {}),
         worktrees: [...wt.values()].sort((a, b) => b.turns - a.turns),
         sessions: group.length,
         sessionIds: group.map((s) => s.sessionId),
@@ -1436,6 +1479,12 @@ export async function buildCorpus({ projectFilter = null, since = null, limit = 
       sessionCount: sessions.length,
       turnCount: turns.length,
       projectCount: projects.length,
+      // Sessions per harness. Every rate below this line pools them, so what the
+      // mix is has to be stated somewhere a reader will see it.
+      harnesses: sessions.reduce<Record<string, number>>((acc, s) => {
+        acc[s.harness] = (acc[s.harness] || 0) + 1
+        return acc
+      }, {}),
       span: {
         from: sessions[0]?.startedAt || null,
         to: sessions[sessions.length - 1]?.endedAt || null,
@@ -1614,8 +1663,15 @@ if (isMain) {
     const i = argv.indexOf(n)
     return i >= 0 ? argv[i + 1] : d
   }
-  if (!existsSync(PROJECTS)) {
-    console.error(`no transcripts found at ${PROJECTS}`)
+  // Ask the resolver, not a hardcoded ~/.claude/projects. extract.mts dropped
+  // its own copy of that path when transcriptRoots() arrived; this one survived,
+  // and it made the whole /qpact pipeline unreachable for a Codex user with no
+  // Claude Code — the exact user the adapter exists to serve. listSessions()
+  // found their rollouts; this refused to look at them and printed a path with
+  // nothing to do with Codex.
+  const roots = transcriptRoots()
+  if (!roots.length) {
+    console.error('no transcripts found — looked for ~/.claude/projects and ~/.codex/sessions')
     process.exit(1)
   }
   const model = await buildCorpus({

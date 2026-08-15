@@ -364,6 +364,24 @@ function incidentList(incidents, cap = 8) {
 </div>`)
         .join('') + (rest > 0 ? `<p class="dim" style="font-size:12px;margin:8px 0 0">+${rest} more not shown.</p>` : ''));
 }
+// The corpus-wide mix, in the header, for the same reason the caveat exists: a
+// reader who only uses one harness will otherwise read the whole report as being
+// about it. Silent for a single-harness corpus.
+function harnessSummary(h) {
+    const mix = Object.entries(h || {}).sort((a, b) => b[1] - a[1]);
+    return mix.length < 2 ? '' : ' · ' + esc(mix.map(([name, n]) => `${name} ${n}`).join(' / '));
+}
+// Which harness the card's numbers came from, stated on the card. Every rate on
+// it pools whatever the group contained, and a repo worked in from both reads as
+// whichever harness the reader arrived from — personal-page is 83% Codex by
+// session count and carries a Claude Code repo's name. Silent when there is only
+// one harness, because then the card is about that one and saying so is noise.
+function harnessNote(h) {
+    const mix = Object.entries(h || {}).sort((a, b) => b[1] - a[1]);
+    if (mix.length < 2)
+        return '';
+    return ` · <span class="dim">${esc(mix.map(([name, n]) => `${name} ${n}`).join(' / '))}</span>`;
+}
 function projectsSection(m) {
     const bySession = new Map();
     for (const s of m.sessions)
@@ -382,7 +400,7 @@ function projectsSection(m) {
             .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
         return `<details class="dd">
   <summary>
-    <span class="hd"><b>${esc(p.name)}</b><span class="sub2">${esc(p.cwd)}</span></span>
+    <span class="hd"><b>${esc(p.name)}</b><span class="sub2">${esc(p.cwd)}${harnessNote(p.harnesses)}</span></span>
     <span class="glance">
       <span><b>${p.sessions}</b> sess</span>
       <span><b>${p.turns}</b> turns</span>
@@ -719,7 +737,7 @@ export function render(m, advice) {
 <style>${css()}</style></head><body><div class="wrap">
 
 <h1>Session trends</h1>
-<div class="sub">${esc(m.meta.sessionCount)} sessions · ${esc(m.meta.turnCount)} turns · ${esc(m.meta.projectCount)} projects · ${esc(span)}${m.meta.filter.project ? ' · filter: ' + esc(m.meta.filter.project) : ''}</div>
+<div class="sub">${esc(m.meta.sessionCount)} sessions · ${esc(m.meta.turnCount)} turns · ${esc(m.meta.projectCount)} projects · ${esc(span)}${harnessSummary(m.meta.harnesses)}${m.meta.filter.project ? ' · filter: ' + esc(m.meta.filter.project) : ''}</div>
 
 ${heroSection(m)}
 ${chart(m.timeline)}

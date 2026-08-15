@@ -15,7 +15,6 @@
 // spine reads `uuid` and `timestamp` without a guard and a half-shaped record
 // surfaces as NaN in a duration rather than as an error anyone can act on.
 import { createReadStream, closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
-import { createInterface } from 'node:readline';
 import { basename, join } from 'node:path';
 // ---------------------------------------------------------------- identifying
 const ROLLOUT = /^rollout-.*\.jsonl$/;
@@ -133,8 +132,18 @@ export function listCodexSessions(root, projectFilter) {
 // state. Left in, the prompt text is a wall of open-tab paths: `hasFileRef` is
 // true for every turn because the tab list names package.json, `terse` never
 // fires, and repeat detection compares preambles instead of requests.
-const IDE_CONTEXT = /^#\s*Context from my IDE setup:/;
-const REQUEST_MARKER = /\n##\s*My request for Codex:[ \t]*\n?/;
+//
+// Two headers, not one. The file-attachment variant carries the same `## My
+// request for Codex:` marker under `# Files mentioned by the user:` and arrives
+// with a leading newline, which also defeats a `^#` anchor — so it survived
+// unstripped and the whole wrapper became the turn text: a five-word request
+// measured as 21 words and 149 characters, `terse` read false, and the -10
+// deduction for a very short prompt with no prior context never applied.
+const IDE_CONTEXT = /^\s*#\s*(Context from my IDE setup|Files mentioned by the user):/;
+// `for Codex` is optional: the corpus carries 2063 of the long form and 4 of the
+// bare `## My request:`. Anchoring on the long one left those four measured as
+// their own wrapper — 214 characters of clipboard path scoring 72.
+const REQUEST_MARKER = /\n##\s*My request(?: for Codex)?:[ \t]*\n?/;
 // `event_msg/user_message` is the one record type no injected shape produces, so
 // this should never fire. It is here because the cost of being wrong is not a
 // wrong number: a phantom human turn inherits the friction of whatever real turn
@@ -143,7 +152,30 @@ const INJECTED_PROMPT = /^\s*(<(environment_context|user_instructions|turn_abort
 const MAX_TOOL_CHARS = 20000; // matches extract's own import-scan ceiling
 const MAX_PATCH_FILES = 40;
 const str = (v) => (typeof v === 'string' ? v : '');
-const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+/**
+ * One cumulative counter, or the value it last held.
+ *
+ * Absent is not zero. A field that goes missing from one snapshot and returns
+ * in the next would otherwise fall to 0 and climb back, and usageDelta() would
+ * difference the climb as a fresh delta — counting the same tokens twice, so a
+ * field going optional in a future CLI silently doubles that column. No rollout
+ * on this machine does it today; every one of the 436 reconciles per field.
+ */
+const keep = (v, prev) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : prev;
+/**
+ * A timestamp the rest of the pipeline can do arithmetic on, or ''.
+ *
+ * Non-empty is not the same as parseable, and the spine reads `timestamp`
+ * without a guard: a bad one becomes a turn's startedAt and reaches corpus.mts's
+ * weekStart(), where `new Date(bad).toISOString()` throws RangeError from
+ * buildTimeline — *after* per-file extraction, so it lands outside the try that
+ * fills `meta.failures` and one malformed record in one rollout produces zero
+ * output for the entire corpus.
+ */
+const clock = (v) => {
+    const s = str(v);
+    return s && Number.isFinite(Date.parse(s)) ? s : '';
+};
 /** Codex's current shell tool takes `cmd`; the older one takes `command`.
  *  Reading only one of the two loses ~96% of shell invocations. */
 const cmdOf = (v) => {
@@ -245,28 +277,84 @@ function customCallBlocks(name, input) {
 }
 // ---------------------------------------------------------------- records
 const SESSION_ID_IN_NAME = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+// Four times the largest line in either corpus on this machine — 7.7 MB across
+// 2.03 GB of rollouts — and far below V8's 536,870,888-character string cap.
+const MAX_LINE_CHARS = 32 * 1024 * 1024;
+// The hold below only has to span the distance from an assistant record to the
+// token_count reporting its cost. Replaying that discipline over all 436
+// rollouts, the deepest it ever reaches is 10 — so this is a stop for a file
+// that never sends one, not a working limit.
+const MAX_HELD = 1000;
+/**
+ * The file's lines, without readline.
+ *
+ * readline accumulates a line into a single JS string, so one line past V8's
+ * cap throws `RangeError: Invalid string length` from its stream `ondata`
+ * handler — outside the async iterator's promise chain, which means
+ * `try { await extract(f) } catch {}` never sees it. corpus.mts's per-file
+ * `failures` collection cannot contain it either: the process dies with exit 1
+ * and one corrupt or concatenated rollout destroys the whole /qpact run along
+ * with every good session in it.
+ *
+ * Splitting the chunks here keeps every failure inside the loop, and the cap
+ * turns an impossible line into one dropped record. IO errors still propagate,
+ * because an unreadable file is a fact the caller needs.
+ */
+async function* readLines(file) {
+    const stream = createReadStream(file, { encoding: 'utf8' });
+    let held = '';
+    // True while the tail of an over-long line is still going past.
+    let dropping = false;
+    for await (const chunk of stream) {
+        let from = 0;
+        for (;;) {
+            const nl = chunk.indexOf('\n', from);
+            if (nl === -1)
+                break;
+            if (dropping)
+                dropping = false;
+            else {
+                const line = held + chunk.slice(from, nl);
+                yield line.endsWith('\r') ? line.slice(0, -1) : line;
+            }
+            held = '';
+            from = nl + 1;
+        }
+        if (dropping)
+            continue;
+        held += chunk.slice(from);
+        if (held.length > MAX_LINE_CHARS) {
+            held = '';
+            dropping = true;
+        }
+    }
+    if (!dropping && held)
+        yield held;
+}
 /**
  * Stream one Codex rollout as records extract.mts can read.
  *
- * Malformed content never escapes: a torn final line, a missing session_meta and
- * an empty file each degrade to fewer records rather than to an exception. IO
+ * Malformed content never escapes: a torn final line, a line too long for a JS
+ * string, an unparseable timestamp, a missing session_meta and an empty file
+ * each degrade to fewer records rather than to an exception. IO
  * errors are deliberately *not* swallowed — an unreadable file is a fact the
  * caller needs, and corpus.mts already collects it into `failures`, where
  * silently returning an empty session would instead be counted as a real
  * transcript that happened to contain no human.
  */
 export async function* codexRecords(file) {
-    const rl = createInterface({
-        input: createReadStream(file, { encoding: 'utf8' }),
-        crlfDelay: Infinity,
-    });
     let seq = 0;
     let sid = basename(file).match(SESSION_ID_IN_NAME)?.[1] || basename(file).replace(/\.jsonl$/, '');
     let sawMeta = false;
-    // Auto-review and sub-agent rollouts are real sessions with no human in them.
+    // Sub-agent and `codex exec` rollouts are real sessions with no human in them.
     // Their opening record reads like a prompt; counted as one, they add turns
-    // nobody typed and pull the corpus's friction toward a judge's verdict.
+    // nobody typed and pull the corpus's friction toward a judge's verdict. Set
+    // once, from session_meta, because it is a property of the whole rollout.
     let noHuman = false;
+    // Whether anyone has typed in this rollout yet. Read only by the auto-review
+    // guard below, which needs to distinguish "this rollout is a review run" from
+    // "a review ran inside a session that has a person in it".
+    let sawHuman = false;
     let model = '';
     let effort = '';
     let lastTs = '';
@@ -280,7 +368,16 @@ export async function* codexRecords(file) {
     // waiting for the token_count that reports what it cost; the rest are held
     // only so the stream stays in document order. Order matters because the spine
     // attributes everything to whichever turn is open when it arrives.
-    const buf = [];
+    let buf = [];
+    // Released by swapping the array out, never by shift()ing it empty: shift() is
+    // O(n), so a rollout that parks one assistant record and then queues a long
+    // run of neutrals behind it degraded from linear to quadratic — 25s at 200k
+    // records, 114s at 400k, and a 1M-record file that never finished at all.
+    const flush = () => {
+        const held = buf;
+        buf = [];
+        return held;
+    };
     const mk = (ts, type, extra = {}) => ({
         type,
         uuid: `${sid}:${seq++}`,
@@ -323,13 +420,13 @@ export async function* codexRecords(file) {
         const t = info?.total_token_usage;
         if (!t || typeof t !== 'object')
             return null;
-        const now = [
-            num(t.input_tokens),
-            num(t.cached_input_tokens),
-            num(t.cache_write_input_tokens),
-            num(t.output_tokens),
-        ];
         const prev = cum || [0, 0, 0, 0];
+        const now = [
+            keep(t.input_tokens, prev[0]),
+            keep(t.cached_input_tokens, prev[1]),
+            keep(t.cache_write_input_tokens, prev[2]),
+            keep(t.output_tokens, prev[3]),
+        ];
         cum = now;
         // Clamped rather than trusted. The counter has never been observed to go
         // backwards, but a resumed or rewritten session that reset it would
@@ -347,7 +444,7 @@ export async function* codexRecords(file) {
             cache_creation_input_tokens: dwrite,
         };
     };
-    for await (const line of rl) {
+    for await (const line of readLines(file)) {
         if (!line.trim())
             continue;
         let raw;
@@ -360,9 +457,13 @@ export async function* codexRecords(file) {
         const out = [];
         let usage = null;
         try {
-            const ts = str(raw.timestamp) || lastTs;
+            // Not `str(raw.timestamp)`: a non-empty but unparseable clock passed that
+            // guard, became a turn's startedAt, and crashed the whole corpus build in
+            // weekStart(). Falling back to the last good one keeps the record; only a
+            // record with no usable clock anywhere is unattributable.
+            const ts = clock(raw.timestamp) || lastTs;
             if (!ts)
-                continue; // nothing can be attributed to a record with no clock
+                continue;
             lastTs = ts;
             const p = raw.payload && typeof raw.payload === 'object' ? raw.payload : {};
             const kind = str(raw.type);
@@ -377,7 +478,19 @@ export async function* codexRecords(file) {
                 noHuman =
                     str(p.thread_source) === 'subagent' ||
                         !!str(p.parent_thread_id) ||
-                        (!!src && typeof src === 'object' && 'subagent' in src);
+                        (!!src && typeof src === 'object' && 'subagent' in src) ||
+                        // `codex exec` is the non-interactive entry point: the prompt is
+                        // whatever a script or a control surface passed on the command line.
+                        // All 19 exec rollouts here are machinery — runtime health probes
+                        // ("Reply with exactly OK"), app-context persona injections whose
+                        // 1.5 KB of Scope/Constraint/Response-format markup scores +10 for
+                        // "stated what done looks like" and +6 for "named a concrete file"
+                        // off the markup rather than off anything a person wrote, and a
+                        // title-generation sub-agent. Every one is a single-turn session, so
+                        // corpus.mts's zero-turn filter never sees them: unguarded, all 19
+                        // enter the corpus as fabricated `clean` members.
+                        str(src) === 'exec' ||
+                        str(p.originator) === 'codex_exec';
                 out.push(mk(ts, 'session_meta', {
                     sessionId: sid,
                     cwd: str(p.cwd) || undefined,
@@ -389,12 +502,25 @@ export async function* codexRecords(file) {
                 // The only place a model name ever appears — session_meta has no `model`
                 // field in any rollout on this machine. It can change mid-session, so it
                 // is tracked rather than read once.
-                if (str(p.model))
-                    model = str(p.model);
+                const m = str(p.model);
+                const review = m === 'codex-auto-review';
+                // This identifies an auto-review *rollout*, which is why it only counts
+                // before anyone has typed. turn_context records recur throughout a file
+                // and carry the current model, so setting an unconditional flag here
+                // latched: every later event_msg/user_message became a `codex-event`
+                // neutral for the rest of the rollout, and because neutrals still count
+                // as records the session reported a plausible size with two real typed
+                // prompts silently missing from it. Once a person has typed, the rollout
+                // has a human in it and no later turn can retract that.
+                if (review && !sawHuman)
+                    noHuman = true;
+                // `model` is tracked forward as well, so adopting a review pass's name
+                // relabels every assistant record after it — 22 of 22 in the case that
+                // surfaced this.
+                if (m && !review)
+                    model = m;
                 if (str(p.effort))
                     effort = str(p.effort);
-                if (str(p.model) === 'codex-auto-review')
-                    noHuman = true;
                 out.push(neutral(ts, { cwd: str(p.cwd) || undefined }));
             }
             else if (kind === 'event_msg' && pt === 'token_count') {
@@ -420,6 +546,7 @@ export async function* codexRecords(file) {
                         content.push(textBlock(text));
                     if (hasImage)
                         content.push({ type: 'image' });
+                    sawHuman = true;
                     const steering = taskOpen && taskHumans > 0;
                     taskHumans++;
                     // Codex has no queued_command record, so steering is inferred from
@@ -519,31 +646,41 @@ export async function* codexRecords(file) {
         }
         for (const rec of out) {
             if (rec.type === 'assistant') {
-                while (buf.length)
-                    yield buf.shift();
+                for (const held of flush())
+                    yield held;
                 buf.push(rec);
             }
             else if (rec.type === 'user' || rec.type === 'attachment') {
-                while (buf.length)
-                    yield buf.shift();
+                for (const held of flush())
+                    yield held;
                 yield rec;
             }
             else if (buf.length) {
                 buf.push(rec);
+                // Past the cap the assistant record is released without its cost rather
+                // than held for a token_count that is evidently never coming; the
+                // tokens still land, on the synthetic carrier above.
+                if (buf.length > MAX_HELD)
+                    for (const held of flush())
+                        yield held;
             }
             else {
                 yield rec;
             }
         }
         if (usage)
-            while (buf.length)
-                yield buf.shift();
+            for (const held of flush())
+                yield held;
     }
-    while (buf.length)
-        yield buf.shift();
+    for (const held of flush())
+        yield held;
     // A rollout with no session_meta still has to be identifiable: sessionId is
     // first-wins in the spine, so this only lands when nothing else supplied one,
-    // and it keeps null out of the id that reports key on.
-    if (!sawMeta && lastTs)
+    // and it keeps null out of the id that reports key on. Emitted even when no
+    // line parsed — an empty or unreadable rollout used to leave sessionId null,
+    // which is the one case the guarantee exists for. The timestamp stays empty
+    // rather than invented: the spine only advances startedAt/endedAt for a
+    // record that carries one, so a file with no clock keeps no span.
+    if (!sawMeta)
         yield mk(lastTs, 'session_meta', { sessionId: sid });
 }
