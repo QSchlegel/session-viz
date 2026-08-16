@@ -85,7 +85,13 @@ jobs:
           # not contain the base commit, so `git diff` against it would error
           # rather than report no changes — a check that passes by breaking.
           git fetch --no-tags --depth=1 origin "$BASE"
-          changed=$(git diff --name-only "$BASE"...HEAD -- plugins/session-viz/src plugins/session-viz/skills | wc -l)
+          # TWO dots, not three. `A...B` diffs from the merge base, and a
+          # --depth=1 fetch has no history to find one in, so the three-dot form
+          # silently reported zero changed files and passed — this check's first
+          # run said "plugin source unchanged" on a PR that rewrote runs.mts and
+          # added version.mts. Two dots compares the commits directly and needs
+          # no ancestry.
+          changed=$(git diff --name-only "$BASE" HEAD -- plugins/session-viz/src plugins/session-viz/skills | wc -l)
           if [ "$changed" -eq 0 ]; then echo "plugin source unchanged — no bump needed"; exit 0; fi
           before=$(git show "$BASE:plugins/session-viz/.claude-plugin/plugin.json" 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" || echo "")
           after=$(node -p "require('./plugins/session-viz/.claude-plugin/plugin.json').version")
