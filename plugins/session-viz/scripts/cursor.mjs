@@ -14,10 +14,11 @@
 // experimental and warns on import, which is suppressed below — the alternative
 // was a native dependency in a plugin that currently has none, or shelling out
 // to a `sqlite3` binary that is not on every machine this runs on.
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 // ---------------------------------------------------------------- addressing
 /**
  * A Cursor session id is `<path-to-db>#<composerId>`.
@@ -233,12 +234,31 @@ function gitRootOf(start) {
             // from. The dominant-checkout vote could not fix this, because the vote
             // is taken over what this function returns and every candidate was `~/git`.
             //
-            // A directory holding two or more child checkouts is a container. The
-            // useful label for a file beneath one is the child it sits in — grouping
-            // `~/git/DW-Apps/apps/…` under `~/git/DW-Apps` keeps eleven related
-            // sessions together instead of dissolving them into "all my repositories".
-            if (isRepoContainer(dir))
-                return below === dir ? null : below;
+            // The question is not "does this directory hold other checkouts" — it is
+            // "does THIS repo own this file". Counting child checkouts got that wrong
+            // in both directions, because `~/git` and a project that vendors its
+            // dependencies look identical from the outside: both are checkouts with
+            // several checkouts inside them.
+            //
+            // `~/git/DW-Apps/DW-gbXML` vendors four clones, so the count said
+            // container, and a session in a real repo was relabelled with a
+            // subdirectory that has no `.git` at all — reintroducing one level down
+            // the exact defect this function was written to remove. It also dropped
+            // DW-gbXML out of /qdoctor's fleet baseline while adding a non-repo to
+            // it, so a norm computed over "61 of your other repos" was counted over
+            // the wrong 61.
+            //
+            // Git already answers ownership exactly, so ask it rather than guess:
+            //
+            //   ~/git            tracks 0 files under Mybot, multisig, DW-Apps
+            //   DW-Apps/DW-gbXML tracks 37 files under gbxml-viewer
+            //
+            // A repo that tracks the path owns it. One that holds the path without
+            // tracking it is a container, and the useful label for a file beneath it
+            // is the child directory it sits in — which keeps `~/git/DW-Apps/apps/…`
+            // together instead of dissolving it into "all my repositories".
+            if (below !== dir && !repoTracks(dir, below))
+                return below;
             return dir;
         }
         below = dir;
@@ -252,26 +272,47 @@ function gitRootOf(start) {
     // attributed, and saying so beats filing it under `/Users/<name>`.
     return null;
 }
-// Directories are checked once — a corpus scan asks about the same few hundred
-// paths thousands of times, and each answer costs a readdir.
-const containerCache = new Map();
-/** Does this directory hold two or more checkouts of its own? */
-function isRepoContainer(dir) {
-    const hit = containerCache.get(dir);
+// Answers are cached per (repo, path): a corpus scan asks about the same few
+// hundred pairs thousands of times, and each answer costs a subprocess.
+const tracksCache = new Map();
+/**
+ * Does the repository at `repo` track anything under `path`?
+ *
+ * This shells out to git, which is a real cost and worth naming. The plugin has
+ * no npm dependencies and this does not add one — git is already required to
+ * have produced the repositories being asked about — but it is a subprocess,
+ * so it runs only when the walk has actually found a checkout above a
+ * subdirectory, and every answer is cached.
+ *
+ * `ls-files` is the cheap form: it reads the index, not the working tree, and
+ * `-- <path>` limits it to one subtree. It does not care whether the files are
+ * modified, only whether the repo has them.
+ *
+ * On any failure — git missing, not a repo, a timeout — this returns TRUE, so
+ * the caller keeps the repo it found. That is git's own default answer for a
+ * file under a checkout, and it is the conservative direction: the failure mode
+ * is a container occasionally keeping its own name, never a real project having
+ * its sessions relabelled with a directory that is not a project.
+ */
+function repoTracks(repo, path) {
+    const key = `${repo}\0${path}`;
+    const hit = tracksCache.get(key);
     if (hit !== undefined)
         return hit;
-    let n = 0;
+    let out = true;
     try {
-        for (const e of readdirSync(dir, { withFileTypes: true })) {
-            if (!e.isDirectory() || e.name.startsWith('.'))
-                continue;
-            if (existsSync(join(dir, e.name, '.git')) && ++n >= 2)
-                break;
-        }
+        const rel = path.startsWith(repo + '/') ? path.slice(repo.length + 1) : path;
+        const r = spawnSync('git', ['-C', repo, 'ls-files', '--', rel], {
+            encoding: 'utf8', timeout: 5000, maxBuffer: 1 << 20,
+        });
+        // status 0 with empty stdout is the informative case: git understood the
+        // question and the answer is "nothing". A non-zero status means it did not
+        // understand, which is not evidence of anything.
+        if (r.status === 0 && !r.error)
+            out = (r.stdout || '').trim().length > 0;
     }
-    catch { /* unreadable is not a container */ }
-    const out = n >= 2;
-    containerCache.set(dir, out);
+    catch { /* fall through to the conservative answer */ }
+    tracksCache.set(key, out);
     return out;
 }
 /**
