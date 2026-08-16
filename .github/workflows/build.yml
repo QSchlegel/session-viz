@@ -43,6 +43,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The picker page's script is a string until a browser reads it, so the
+      # compiler cannot see a stray backtick or a `\n` escaped once instead of
+      # twice. Both have shipped; both killed the whole page while every markup
+      # check passed, because the markup was fine. This runs the real page's
+      # real script against a stubbed stream.
+      - name: Picker
+        run: node plugins/session-viz/test/picker.mjs
+
       - name: Committed output matches source
         run: |
           if ! git diff --exit-code --stat -- plugins/session-viz/scripts; then

@@ -151,7 +151,22 @@ function sessionPayload(m, id) {
     // the worst. Resolving a share against the selection meant that on this
     // corpus 905 of 1108 sessions — 82% — could not be shared at all, and said
     // "no session starting X" as if the id were wrong rather than the lookup.
-    const digest = (m.sessions || []).find(match) ?? (m.exemplars?.worst || []).find(match);
+    const hits = (m.sessions || []).filter(match);
+    // Refuse rather than take the first. The pool this searches went from a few
+    // hundred exemplars to every session on the machine, which makes a short
+    // prefix far likelier to collide — and the payload carries verbatim prompt
+    // text, so guessing publishes someone's words from a session they did not
+    // name. projectPayload already refuses to choose between two checkouts; a
+    // wrong guess costs more here, not less.
+    if (hits.length > 1) {
+        const lines = hits.slice(0, 8).map((h) => {
+            const sid = String(h['sessionId'] ?? '');
+            return `    ${sid}  ${String(h['harness'] ?? '?')}  ${h['project'] || '(no project)'}`;
+        });
+        throw new Error(`${hits.length} sessions start with ${id} — name one exactly:\n${lines.join('\n')}` +
+            (hits.length > 8 ? `\n    … and ${hits.length - 8} more` : ''));
+    }
+    const digest = hits[0] ?? (m.exemplars?.worst || []).find(match);
     const incidents = (m.incidents || []).filter(match);
     if (!digest && !incidents.length)
         throw new Error(`no session starting ${id} in the corpus`);
@@ -225,7 +240,11 @@ const HARNESS_LABEL = {
     codex: 'Codex',
     cursor: 'Cursor',
 };
-function pickerPage(rows, nonce, shared) {
+/** Exported so the test can drive the page's own script rather than a copy of
+ *  it. A copy is the one thing a test of this must not use: the script lives
+ *  inside a template literal, where a stray backtick or a single-escaped `\n`
+ *  is a syntax error that kills the whole page — and that has happened twice. */
+export function pickerPage(rows, nonce, shared) {
     const n = (x) => x.toLocaleString('en-GB');
     return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Choose what to share — session-viz</title>
@@ -266,8 +285,11 @@ padding:1px 8px;margin:0 4px 3px 0;border:1px solid var(--line);color:var(--mute
    a finished item that keeps animating reads as still running. */
 .cells rect.at{animation:beat .9s ease-in-out infinite}
 @keyframes beat{0%,100%{opacity:1}50%{opacity:.35}}
+/* The frontier cell is already distinguished by being the only unfilled one to
+   the left of the wall, so dropping the animation loses nothing but the motion
+   — which is the whole request. */
+@media (prefers-reduced-motion: reduce){ .cells rect.at{animation:none} }
 tr.sent td{opacity:.55}
-tr.sent .tick{color:var(--ok);font-weight:600}
 .h-claude-code{border-color:#c2521a;color:#c2521a}
 .h-codex{border-color:#4a7fb5;color:#4a7fb5}
 .h-cursor{border-color:#5f8a6d;color:#5f8a6d}
@@ -275,7 +297,9 @@ tr.sent .tick{color:var(--ok);font-weight:600}
 .h-claude-code{border-color:#ff8a4c;color:#ff8a4c}
 .h-codex{border-color:#6a9fd4;color:#6a9fd4}
 .h-cursor{border-color:#4c8a63;color:#8fbc6b}}
-.done{color:var(--ok);font-size:12px}
+/* Now a badge beside the project name rather than a cell of its own, so it
+   needs the gap the checkbox column used to give it. */
+.done{color:var(--ok);font-size:12px;margin-left:7px}
 input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
 .bar{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);
 padding:14px 22px;display:flex;gap:16px;align-items:center;justify-content:center;flex-wrap:wrap}
@@ -401,7 +425,7 @@ go.addEventListener('click',async()=>{
     if(!r.ok||!r.body) throw new Error('the local helper refused');
     // NDJSON: read as it arrives. A chunk can split a line and can carry
     // several, so the tail is held back until its newline shows up.
-    const rd=r.body.getReader(), dec=new TextDecoder(); let buf='',err=null;
+    const rd=r.body.getReader(), dec=new TextDecoder(); let buf='',err=null,ended=false;
     for(;;){
       const {value,done}=await rd.read();
       if(value) buf+=dec.decode(value,{stream:true});
@@ -416,11 +440,17 @@ go.addEventListener('click',async()=>{
           cells[e.i]?.classList.remove('at'); cells[e.i]?.classList.add('on');
           const tr=rowFor(e.i); if(tr) tr.classList.add('sent');
           shared=e.count;
-        }else if(e.type==='error'){ err=e.error; shared=e.shared }
+        }else if(e.type==='end'){ ended=true; shared=e.shared }
+        else if(e.type==='error'){ err=e.error; shared=e.shared }
       }
       if(done) break;
     }
     if(err) throw new Error(err);
+    // The stream ending is not the same as the work finishing. A closed tab, a
+    // killed helper or a dropped socket all end the read cleanly, and without
+    // this the page would call that success and tell somebody every project
+    // went out. Only the server's own 'end' says it did.
+    if(!ended) throw new Error('the helper stopped before it finished');
     msg.style.borderColor='var(--ok)';
     msg.textContent='Shared '+shared+' — you can close this tab.';
     lbl.textContent='Done';
@@ -428,10 +458,19 @@ go.addEventListener('click',async()=>{
     // Whatever landed before the failure stays marked. Clearing the cells would
     // tell somebody nothing was published when some of it was.
     go.querySelectorAll('rect.at').forEach(c=>c.classList.remove('at'));
+    // The ones that succeeded are unchecked, because the button now says "share
+    // the rest" and rebuilds its list from what is ticked. Leaving them ticked
+    // would publish them a second time — the opposite of what the label offers.
+    boxes.forEach(b=>{ if(b.closest('tr')?.classList.contains('sent')) b.checked=false });
+    tally();
     msg.style.borderColor='var(--accent)';
     msg.textContent=((e&&e.message)||'the local helper did not answer')+
       (shared?' — '+shared+' already went out and can be revoked':'');
-    go.disabled=false; go.textContent='Share the rest';
+    // The label inside the button, not the button itself: writing textContent
+    // on the button would replace the cell wall with a string and erase the
+    // very record of what landed that the line above promises is kept.
+    // (No backticks in here — this whole page is a template literal.)
+    lbl.textContent='Share the rest';
   }
 });
 </script></body></html>`;
@@ -517,11 +556,27 @@ async function runPicker(cfg) {
                 // work — the exact opposite of the point.
                 'x-accel-buffering': 'no',
             });
-            const emit = (o) => { res.write(JSON.stringify(o) + '\n'); };
+            // A closed tab is a withdrawn instruction, not a network hiccup. Publishing
+            // the rest of somebody's prompt text after they shut the page would be
+            // doing the one thing this command exists to ask permission for.
+            let gone = false;
+            const abandon = () => { gone = true; };
+            res.on('close', abandon);
+            req.on('aborted', abandon);
+            // Writing to a destroyed socket emits 'error' on a response with no
+            // listener, which takes the whole helper down — and with it the loop that
+            // was about to stop anyway.
+            res.on('error', abandon);
+            const emit = (o) => { if (!gone)
+                res.write(JSON.stringify(o) + '\n'); };
             emit({ type: 'start', total: refs.length });
             const done = [];
             try {
                 for (const [i, ref] of refs.entries()) {
+                    if (gone) {
+                        console.log(`\n  page closed — stopped after ${done.length} of ${refs.length}`);
+                        return finish();
+                    }
                     const name = ref.split('/').pop() || ref;
                     emit({ type: 'begin', i, name });
                     // Same model the page was built from, so what is published is exactly
