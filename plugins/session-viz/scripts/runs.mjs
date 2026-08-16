@@ -21,6 +21,7 @@ import { harnessCoverage, transcriptRoots } from './home.mjs';
 import { codexRecords, listCodexSessions } from './codex.mjs';
 import { cursorRecords, listCursorSessions } from './cursor.mjs';
 import { repoFromSlug, repoName } from './repo.mjs';
+import { versionNote } from './version.mjs';
 // No PROJECTS constant any more. This file used to hardcode ~/.claude/projects
 // while extract.mts, corpus.mts and doctor.mts had already moved to
 // transcriptRoots() — so /qruns and /qcost reported a Claude-Code-only fleet
@@ -415,6 +416,12 @@ export function ledger(runs) {
     })).sort((x, y) => y.cread - x.cread);
     return {
         generated: new Date().toISOString().slice(0, 16).replace('T', ' '),
+        // Which build produced these numbers, carried as a field so it survives
+        // being piped. The readings change between versions as they get more
+        // correct — 0.7.0 and 0.9.0 disagree by 4.6B cache-read on the same corpus
+        // — so a figure without a version beside it cannot be compared with another
+        // figure at all.
+        ...versionNote(),
         totals: {
             runs: runs.length,
             ...Object.fromEntries(kinds),
@@ -446,9 +453,19 @@ export function ledger(runs) {
 // ---------------------------------------------------------------- cli
 const fmt = (n) => (n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) + '%' : '—');
+/**
+ * The provenance line, at the TOP of a report and not the bottom.
+ *
+ * A stale build is not a footnote: it is the reason the numbers below it differ
+ * from the ones somebody else is reading. Printed first so it is seen before
+ * the figures rather than after they have been believed.
+ */
+function stamp(L) {
+    return L.stale ? [L.line, ''] : [];
+}
 function renderLedger(L) {
     const t = L.totals, a = L.autonomous;
-    const out = [];
+    const out = stamp(L);
     out.push(`runs        ${t.runs}   human ${t.human || 0} · scheduled ${t.scheduled || 0} · subagent ${t.subagent || 0}`);
     out.push(`tokens      ${fmt(t.out)} out · ${fmt(t.cread)} cache-read · ${fmt(t.ccreate)} cache-create`);
     out.push(`harnesses   ${L.harnesses.map((h) => `${h.harness} ${h.runs} (${fmt(h.cread)} cr)`).join(' · ')}`);
@@ -491,7 +508,7 @@ function renderLedger(L) {
 function renderCost(L) {
     const t = L.totals;
     const total = t.out + t.cread + t.ccreate;
-    const out = [];
+    const out = stamp(L);
     out.push('token composition');
     for (const [label, v] of [['cache-read', t.cread], ['cache-create', t.ccreate], ['output', t.out]]) {
         const w = Math.round((v / total) * 46);

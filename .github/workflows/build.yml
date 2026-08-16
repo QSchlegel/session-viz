@@ -54,6 +54,50 @@ jobs:
             exit 1
           fi
 
+      # Two manifests declare a version and they must not disagree. They did:
+      # package.json sat at 0.5.0 while plugin.json had reached 0.8.0, three
+      # releases apart, and nothing anywhere noticed.
+      - name: Versions agree
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          plg=$(node -p "require('./plugins/session-viz/.claude-plugin/plugin.json').version")
+          if [ "$pkg" != "$plg" ]; then
+            echo "::error::package.json says $pkg, plugin.json says $plg. They name one release."
+            exit 1
+          fi
+          echo "both at $pkg"
+
+      # The version is what the plugin cache keys installs on, so shipping a
+      # changed plugin under an unchanged version puts two different tools in
+      # one directory name. That happened: nine commits landed on 0.8.0,
+      # including an entire new harness and a fix that moved 274 runs from
+      # `no_intent` to `wrote_ok`. Anyone comparing a report from either side of
+      # that got different answers with nothing to tell them why.
+      #
+      # PRs only. A push to main has no base to compare against, and rerunning
+      # this on the merge commit would fail every time.
+      - name: Version bumped when the plugin changed
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Fetched explicitly: actions/checkout gives a shallow clone that does
+          # not contain the base commit, so `git diff` against it would error
+          # rather than report no changes — a check that passes by breaking.
+          git fetch --no-tags --depth=1 origin "$BASE"
+          changed=$(git diff --name-only "$BASE"...HEAD -- plugins/session-viz/src plugins/session-viz/skills | wc -l)
+          if [ "$changed" -eq 0 ]; then echo "plugin source unchanged — no bump needed"; exit 0; fi
+          before=$(git show "$BASE:plugins/session-viz/.claude-plugin/plugin.json" 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" || echo "")
+          after=$(node -p "require('./plugins/session-viz/.claude-plugin/plugin.json').version")
+          if [ "$before" = "$after" ]; then
+            echo "::error::$changed source/skill file(s) changed but the version is still $after."
+            echo "Bump plugins/session-viz/.claude-plugin/plugin.json and package.json together."
+            echo "The plugin cache is keyed by version: an unchanged number ships new behaviour"
+            echo "into the directory the old behaviour already occupies."
+            exit 1
+          fi
+          echo "version $before -> $after"
+
       # The plugin claims to run with no dependencies. That is load-bearing:
       # it is installed by copy, so anything in `dependencies` would simply be
       # absent at runtime. devDependencies are fine — they only build it.
