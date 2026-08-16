@@ -223,16 +223,16 @@ function report({ saved, token, scope, tenant, target, actor }) {
     console.log(`  token   ${redact(token)}  scope ${scope}`);
     console.log(`  tenant  ${tenant}`);
     console.log(`  server  ${target}`);
-    console.log('\n  The MCP reads environment variables rather than this file, so for');
-    console.log('  vaults and task handoff also add to your shell profile:\n');
-    console.log(`    export SESSION_VIZ_URL=${target}`);
-    // Naming the credential they are actually holding, rather than telling
-    // somebody who just minted a collab token to go and find a collab token.
-    console.log(scope === 'collab'
-        ? '    export SESSION_VIZ_TOKEN=<the token just issued>'
-        : '    export SESSION_VIZ_TOKEN=<a collab-scoped token>');
-    if (actor)
-        console.log(`    export SESSION_VIZ_ACTOR=${actor}`);
+    // This used to print three export lines for the MCP server, on the grounds
+    // that it read environment variables rather than this file. It no longer
+    // does: .mcp.json carries a bare URL and authenticates by OAuth on its own.
+    //
+    // Following the old advice would set an Authorization header — and a header
+    // is precisely what DISABLES the client's OAuth fallback. The setup command's
+    // own closing instructions would have reintroduced the exact failure the
+    // change existed to remove.
+    console.log('\n  The MCP server needs nothing from this file. It authenticates on');
+    console.log('  first use, in the browser, the same way you just did here.');
 }
 // ---------------------------------------------------------------- oauth flow
 async function runOAuth(target, scope, actor) {
