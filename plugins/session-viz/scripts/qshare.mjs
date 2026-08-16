@@ -141,17 +141,32 @@ function projectPayload(m, name) {
         kind: 'project',
         project: p,
         incidents: mine(m.incidents),
-        exemplars: {
-            best: mine(m.exemplars?.best),
-            worst: mine(m.exemplars?.worst),
-        },
+        exemplars: { worst: mine(m.exemplars?.worst) },
         sharedAt: new Date().toISOString(),
     });
 }
 function sessionPayload(m, id) {
     const match = (r) => String(r['sessionId'] ?? '').startsWith(id);
-    const all = [...(m.exemplars?.best || []), ...(m.exemplars?.worst || [])];
-    const digest = all.find(match);
+    // `m.sessions` is every session; the exemplars are a handful picked for being
+    // the worst. Resolving a share against the selection meant that on this
+    // corpus 905 of 1108 sessions — 82% — could not be shared at all, and said
+    // "no session starting X" as if the id were wrong rather than the lookup.
+    const hits = (m.sessions || []).filter(match);
+    // Refuse rather than take the first. The pool this searches went from a few
+    // hundred exemplars to every session on the machine, which makes a short
+    // prefix far likelier to collide — and the payload carries verbatim prompt
+    // text, so guessing publishes someone's words from a session they did not
+    // name. projectPayload already refuses to choose between two checkouts; a
+    // wrong guess costs more here, not less.
+    if (hits.length > 1) {
+        const lines = hits.slice(0, 8).map((h) => {
+            const sid = String(h['sessionId'] ?? '');
+            return `    ${sid}  ${String(h['harness'] ?? '?')}  ${h['project'] || '(no project)'}`;
+        });
+        throw new Error(`${hits.length} sessions start with ${id} — name one exactly:\n${lines.join('\n')}` +
+            (hits.length > 8 ? `\n    … and ${hits.length - 8} more` : ''));
+    }
+    const digest = hits[0] ?? (m.exemplars?.worst || []).find(match);
     const incidents = (m.incidents || []).filter(match);
     if (!digest && !incidents.length)
         throw new Error(`no session starting ${id} in the corpus`);
@@ -225,7 +240,11 @@ const HARNESS_LABEL = {
     codex: 'Codex',
     cursor: 'Cursor',
 };
-function pickerPage(rows, nonce, shared) {
+/** Exported so the test can drive the page's own script rather than a copy of
+ *  it. A copy is the one thing a test of this must not use: the script lives
+ *  inside a template literal, where a stray backtick or a single-escaped `\n`
+ *  is a syntax error that kills the whole page — and that has happened twice. */
+export function pickerPage(rows, nonce, shared) {
     const n = (x) => x.toLocaleString('en-GB');
     return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Choose what to share — session-viz</title>
@@ -256,6 +275,21 @@ border:1px solid var(--warn);border-radius:999px;padding:0 6px;margin-left:6px;v
 .hz{display:inline-flex;align-items:center;gap:5px;font-size:11px;border-radius:999px;
 padding:1px 8px;margin:0 4px 3px 0;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
 .hz i{font-style:normal;font-family:var(--mono);font-size:10.5px;opacity:.75}
+/* The progress mark is the run wall in miniature — the same cell grid the
+   product uses everywhere else, filling left to right as items land. A generic
+   spinner would say "something is happening"; this says how much of it. */
+#go{display:inline-flex;align-items:center;gap:9px}
+.cells rect{fill:currentColor;opacity:.22}
+.cells rect.on{opacity:1}
+/* Only the cell at the frontier pulses. The settled ones stay settled, because
+   a finished item that keeps animating reads as still running. */
+.cells rect.at{animation:beat .9s ease-in-out infinite}
+@keyframes beat{0%,100%{opacity:1}50%{opacity:.35}}
+/* The frontier cell is already distinguished by being the only unfilled one to
+   the left of the wall, so dropping the animation loses nothing but the motion
+   — which is the whole request. */
+@media (prefers-reduced-motion: reduce){ .cells rect.at{animation:none} }
+tr.sent td{opacity:.55}
 .h-claude-code{border-color:#c2521a;color:#c2521a}
 .h-codex{border-color:#4a7fb5;color:#4a7fb5}
 .h-cursor{border-color:#5f8a6d;color:#5f8a6d}
@@ -263,7 +297,9 @@ padding:1px 8px;margin:0 4px 3px 0;border:1px solid var(--line);color:var(--mute
 .h-claude-code{border-color:#ff8a4c;color:#ff8a4c}
 .h-codex{border-color:#6a9fd4;color:#6a9fd4}
 .h-cursor{border-color:#4c8a63;color:#8fbc6b}}
-.done{color:var(--ok);font-size:12px}
+/* Now a badge beside the project name rather than a cell of its own, so it
+   needs the gap the checkbox column used to give it. */
+.done{color:var(--ok);font-size:12px;margin-left:7px}
 input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
 .bar{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);
 padding:14px 22px;display:flex;gap:16px;align-items:center;justify-content:center;flex-wrap:wrap}
@@ -295,8 +331,8 @@ leaves it.</div>
 <th class="num">Prompt text</th><th class="num">Size</th>
 </tr></thead><tbody>
 ${rows.map((r, i) => `<tr>
-<td>${shared.has(r.ref) ? '<span class="done">shared</span>' : `<input type="checkbox" id="c${i}" data-ref="${esc(r.ref)}" data-text="${r.textFields}">`}</td>
-<td><label for="c${i}"><span class="nm">${esc(r.name)}</span>${r.ambiguous ? '<span class="amb">two checkouts</span>' : ''}</label>
+<td><input type="checkbox" id="c${i}" data-ref="${esc(r.ref)}" data-text="${r.textFields}"${shared.has(r.ref) ? ' data-shared="1"' : ''}></td>
+<td><label for="c${i}"><span class="nm">${esc(r.name)}</span>${shared.has(r.ref) ? '<span class="done">shared</span>' : ''}${r.ambiguous ? '<span class="amb">two checkouts</span>' : ''}</label>
 ${r.ambiguous && r.cwd ? `<span class="pth">${esc(r.cwd)}</span>` : ''}</td>
 <td>${r.harnesses.length
         ? r.harnesses.map(([h, c]) => `<span class="hz h-${esc(h)}">${esc(HARNESS_LABEL[h] || h)}<i>${n(c)}</i></span>`).join('')
@@ -328,8 +364,13 @@ function tally(){
   // state it is in rather than only the state it would move to.
   all.checked = on.length===boxes.length && boxes.length>0;
   all.indeterminate = on.length>0 && on.length<boxes.length;
+  // A refresh and a first publication are counted apart. Re-sending a project
+  // that is already up there is a smaller act than exposing a new one, and a
+  // single total would hide which of the two somebody is about to do.
+  const up=on.filter(b=>b.dataset.shared).length;
   sum.textContent=on.length
-    ? on.length+' selected · '+t.toLocaleString('en-GB')+' fields of prompt text'
+    ? on.length+' selected'+(up?' ('+up+' already shared — will refresh)':'')+
+      ' · '+t.toLocaleString('en-GB')+' fields of prompt text'
     : 'Nothing selected';
 }
 boxes.forEach(b=>b.addEventListener('change',tally));
@@ -357,25 +398,80 @@ go.addEventListener('click',async()=>{
   const on=boxes.filter(b=>b.checked);
   const refs=on.map(b=>b.dataset.ref);
   const t=on.reduce((a,b)=>a+ +b.dataset.text,0);
-  if(!confirm('Share '+refs.length+' project(s)?\\n\\n'+t.toLocaleString('en-GB')+
+  const up=on.filter(b=>b.dataset.shared).length, fresh=refs.length-up;
+  if(!confirm('Share '+refs.length+' project(s)?\\n\\n'+
+    (up? fresh+' new, '+up+' refreshed in place.\\n\\n' : '')+
+    t.toLocaleString('en-GB')+
     ' fields of verbatim prompt text will be readable by everyone in your workspace.\\n\\n'+
     'A share can be revoked, but what a colleague has already read cannot be recalled.')) return;
-  go.disabled=true; go.textContent='Sharing…';
-  let out;
+  go.disabled=true;
+  // The mark is the run wall in miniature: one cell per project, filling left
+  // to right as each lands. Sized to the selection, so it is a measure and not
+  // a decoration — twelve cells for twelve projects, sixty-one for sixty-one.
+  const W=4,G=2,cw=refs.length*(W+G)-G;
+  go.innerHTML='<svg class="cells" width="'+cw+'" height="11" viewBox="0 0 '+cw+' 11" '+
+    'aria-hidden="true">'+refs.map((_,i)=>
+      '<rect x="'+(i*(W+G))+'" y="0" width="'+W+'" height="11" rx="1"></rect>').join('')+
+    '</svg><span id="lbl">Sharing…</span>';
+  const cells=[...go.querySelectorAll('rect')], lbl=document.getElementById('lbl');
+  // Rows dim as they go, so the page keeps saying which specific project was
+  // published rather than only how many.
+  const rowFor=i=>boxes.find(b=>b.dataset.ref===refs[i])?.closest('tr');
+  msg.style.display='block'; msg.style.borderColor='var(--line)';
+  let shared=0;
   try{
     const r=await fetch('/share?nonce=${nonce}',{method:'POST',
       headers:{'content-type':'application/json'},body:JSON.stringify({refs})});
-    out=await r.json();
-    if(!r.ok) throw new Error(out.error||'refused');
+    if(!r.ok||!r.body) throw new Error('the local helper refused');
+    // NDJSON: read as it arrives. A chunk can split a line and can carry
+    // several, so the tail is held back until its newline shows up.
+    const rd=r.body.getReader(), dec=new TextDecoder(); let buf='',err=null,ended=false;
+    for(;;){
+      const {value,done}=await rd.read();
+      if(value) buf+=dec.decode(value,{stream:true});
+      const lines=buf.split('\\n'); buf=lines.pop()||'';
+      for(const line of lines){
+        if(!line.trim()) continue;
+        let e; try{ e=JSON.parse(line) }catch{ continue }
+        if(e.type==='begin'){
+          cells[e.i]?.classList.add('at');
+          lbl.textContent=e.name+' — '+(e.i+1)+' of '+refs.length;
+        }else if(e.type==='done'){
+          cells[e.i]?.classList.remove('at'); cells[e.i]?.classList.add('on');
+          const tr=rowFor(e.i); if(tr) tr.classList.add('sent');
+          shared=e.count;
+        }else if(e.type==='end'){ ended=true; shared=e.shared }
+        else if(e.type==='error'){ err=e.error; shared=e.shared }
+      }
+      if(done) break;
+    }
+    if(err) throw new Error(err);
+    // The stream ending is not the same as the work finishing. A closed tab, a
+    // killed helper or a dropped socket all end the read cleanly, and without
+    // this the page would call that success and tell somebody every project
+    // went out. Only the server's own 'end' says it did.
+    if(!ended) throw new Error('the helper stopped before it finished');
     msg.style.borderColor='var(--ok)';
-    msg.textContent='Shared '+out.shared+' — you can close this tab.';
-    go.textContent='Done';
+    msg.textContent='Shared '+shared+' — you can close this tab.';
+    lbl.textContent='Done';
   }catch(e){
+    // Whatever landed before the failure stays marked. Clearing the cells would
+    // tell somebody nothing was published when some of it was.
+    go.querySelectorAll('rect.at').forEach(c=>c.classList.remove('at'));
+    // The ones that succeeded are unchecked, because the button now says "share
+    // the rest" and rebuilds its list from what is ticked. Leaving them ticked
+    // would publish them a second time — the opposite of what the label offers.
+    boxes.forEach(b=>{ if(b.closest('tr')?.classList.contains('sent')) b.checked=false });
+    tally();
     msg.style.borderColor='var(--accent)';
-    msg.textContent=(e&&e.message)||'the local helper did not answer';
-    go.disabled=false; go.textContent='Share selected';
+    msg.textContent=((e&&e.message)||'the local helper did not answer')+
+      (shared?' — '+shared+' already went out and can be revoked':'');
+    // The label inside the button, not the button itself: writing textContent
+    // on the button would replace the cell wall with a string and erase the
+    // very record of what landed that the line above promises is kept.
+    // (No backticks in here — this whole page is a template literal.)
+    lbl.textContent='Share the rest';
   }
-  msg.style.display='block';
 });
 </script></body></html>`;
 }
@@ -402,7 +498,13 @@ async function runPicker(cfg) {
     const model = await corpus();
     const rows = await pickRows(model);
     const existing = await api(cfg, '/v1/shares', 'GET');
-    const shared = new Set((existing.shares || []).map((s) => String(s.ref ?? '')));
+    // Filtered by kind, not just ref. The server's key is (tenant, kind, ref), so
+    // a session or a run published under a ref that happens to read like a repo
+    // name would otherwise mark that project as shared — and, before these rows
+    // became re-selectable, lock it out of ever being published.
+    const shared = new Set((existing.shares || [])
+        .filter((s) => String(s.kind ?? 'project') === 'project')
+        .map((s) => String(s.ref ?? '')));
     const nonce = crypto.randomBytes(18).toString('base64url');
     const constEq = (a, b) => {
         const x = Buffer.from(a), y = Buffer.from(b);
@@ -440,17 +542,52 @@ async function runPicker(cfg) {
             const refs = (Array.isArray(body.refs) ? body.refs : []).map(String).filter(Boolean);
             if (!refs.length)
                 return send(400, 'application/json', JSON.stringify({ error: 'nothing selected' }));
+            // Streamed as newline-delimited JSON rather than answered once at the end.
+            // Sixty-one projects is sixty-one sequential round trips, and a button
+            // that says "Sharing…" for that long with nothing behind it is
+            // indistinguishable from one that has hung. The server knows exactly
+            // which item it is on, so it says so instead of leaving the page to
+            // animate a guess.
+            res.writeHead(200, {
+                'content-type': 'application/x-ndjson',
+                'cache-control': 'no-store',
+                // Without this the response sits in a buffer until it is large enough
+                // to flush, which would deliver every progress line at once, after the
+                // work — the exact opposite of the point.
+                'x-accel-buffering': 'no',
+            });
+            // A closed tab is a withdrawn instruction, not a network hiccup. Publishing
+            // the rest of somebody's prompt text after they shut the page would be
+            // doing the one thing this command exists to ask permission for.
+            let gone = false;
+            const abandon = () => { gone = true; };
+            res.on('close', abandon);
+            req.on('aborted', abandon);
+            // Writing to a destroyed socket emits 'error' on a response with no
+            // listener, which takes the whole helper down — and with it the loop that
+            // was about to stop anyway.
+            res.on('error', abandon);
+            const emit = (o) => { if (!gone)
+                res.write(JSON.stringify(o) + '\n'); };
+            emit({ type: 'start', total: refs.length });
             const done = [];
             try {
-                for (const ref of refs) {
+                for (const [i, ref] of refs.entries()) {
+                    if (gone) {
+                        console.log(`\n  page closed — stopped after ${done.length} of ${refs.length}`);
+                        return finish();
+                    }
+                    const name = ref.split('/').pop() || ref;
+                    emit({ type: 'begin', i, name });
                     // Same model the page was built from, so what is published is exactly
                     // what the counts on screen described — and a corpus that changed
                     // mid-session cannot silently alter what leaves.
                     const payload = projectPayload(model, ref);
-                    const out = await api(cfg, '/v1/share', 'POST', { kind: 'project', ref, label: ref.split('/').pop() || ref, payload });
+                    const out = await api(cfg, '/v1/share', 'POST', { kind: 'project', ref, label: name, payload });
                     const d = describe(payload);
-                    console.log(`  shared ${out.id}  ${ref.split('/').pop()}  ${d.textFields} prompt-text field(s)`);
+                    console.log(`  shared ${out.id}  ${name}  ${d.textFields} prompt-text field(s)`);
                     done.push(String(out.id));
+                    emit({ type: 'done', i, name, id: String(out.id), textFields: d.textFields, count: done.length });
                 }
             }
             catch (e) {
@@ -458,10 +595,12 @@ async function runPicker(cfg) {
                 // five went out would leave somebody believing nothing was published.
                 const msg = `${e.message}${done.length ? ` — ${done.length} already went out` : ''}`;
                 console.log(`\n  stopped: ${msg}`);
-                send(500, 'application/json', JSON.stringify({ error: msg }));
+                emit({ type: 'error', error: msg, shared: done.length });
+                res.end();
                 return finish();
             }
-            send(200, 'application/json', JSON.stringify({ shared: done.length, ids: done }));
+            emit({ type: 'end', shared: done.length, ids: done });
+            res.end();
             console.log(`\n  ${done.length} shared. Revoke any of them with:  qshare.mjs --revoke <id>`);
             console.log('  A row can be deleted. What a colleague already read cannot be recalled.');
             finish();
