@@ -126,13 +126,35 @@ async function corpus(): Promise<CorpusModel> {
   return JSON.parse(stdout) as CorpusModel
 }
 
-/** Everything the local report shows for one project, minus the machine paths. */
+/**
+ * Everything the local report shows for one project, minus the machine paths.
+ *
+ * A project is named by its basename, so two different checkouts can answer to
+ * one name — `~/git/multisig` and `~/git/multisig-deployment/multisig`, and
+ * three more such pairs in this corpus. `.find()` returned whichever came first
+ * and discarded the rest silently, which is the worst available behaviour for a
+ * command whose whole job is publishing verbatim prompt text: you would be
+ * sharing a repository you did not choose, with nothing to notice it by.
+ *
+ * An ambiguous name is refused and every candidate printed. The full path
+ * disambiguates, because it is the thing that actually differs.
+ */
 function projectPayload(m: CorpusModel, name: string): unknown {
-  const p = m.projects.find((x) => x.name === name)
-  if (!p) throw new Error(`no project called ${name} — run without arguments to list them`)
+  const hits = m.projects.filter((x) => x.name === name || String(x['cwd'] ?? '') === name)
+  if (!hits.length) throw new Error(`no project called ${name} — run without arguments to list them`)
+  if (hits.length > 1) {
+    const lines = hits.map((h) => `    ${String(h['cwd'] ?? '(no path)')}  — ${h['sessions'] ?? '?'} sessions`)
+    throw new Error(
+      `"${name}" names ${hits.length} different checkouts, and sharing one publishes what you\n` +
+      `  typed in it — so this will not guess. Pass the path instead:\n\n${lines.join('\n')}\n`)
+  }
+  const p = hits[0]!
   const ids = new Set((p['sessionIds'] as string[] | undefined) || [])
+  // Session id only, never the project name. Name-matching collected rows
+  // belonging to the OTHER checkout of the same name, so a share of one repo
+  // carried incidents — and their prompt text — from a different one.
   const mine = (rows?: Array<Record<string, unknown>>) =>
-    (rows || []).filter((r) => r['project'] === name || ids.has(String(r['sessionId'] ?? '')))
+    (rows || []).filter((r) => ids.has(String(r['sessionId'] ?? '')))
   return stripPaths({
     kind: 'project',
     project: p,
