@@ -29,7 +29,25 @@ a repo name.
 
 ## Steps
 
-### 1. See what exists and what is already shared
+### 1. Pick visually — the usual way
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/qshare.mjs --pick
+```
+
+Opens a local page listing every project with the number that actually decides this:
+**how many fields carry verbatim prompt text.** Sorted by it, nothing selected, and
+nothing sent until the button is pressed — which asks again, with the total.
+
+The page is served from `127.0.0.1` on a port the kernel picks, guarded by a nonce, and
+shut down after one exchange. It shows absolute paths, which is safe precisely because it
+never leaves the machine — and it is how the ambiguous names get disambiguated, since each
+checkout is its own row.
+
+Tell the user the count they chose and the ids that came back. Do not paste paths into
+the chat.
+
+### 1b. Or list it in the terminal
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/scripts/qshare.mjs
