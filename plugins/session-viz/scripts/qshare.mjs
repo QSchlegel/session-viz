@@ -23,7 +23,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { loadConfig } from './home.mjs';
 import { emitJson } from './out.mjs';
@@ -176,7 +176,265 @@ async function payloadFor(kind, ref) {
         return sessionPayload(m, ref);
     throw new Error('kind must be project, session or run');
 }
+async function pickRows(m) {
+    const byName = new Map();
+    for (const p of m.projects)
+        byName.set(p.name, (byName.get(p.name) || 0) + 1);
+    const rows = [];
+    for (const p of m.projects) {
+        if (!p.name)
+            continue;
+        const ambiguous = (byName.get(p.name) || 0) > 1;
+        // An ambiguous project is addressed by path, exactly as --share demands, so
+        // the picker hands back a ref that already works.
+        const ref = ambiguous ? String(p['cwd'] ?? p.name) : p.name;
+        let bytes = 0, textFields = 0;
+        try {
+            // projectPayload against the corpus already in hand, NOT payloadFor —
+            // which rebuilds the corpus on every call. Sixty projects meant sixty
+            // full corpus runs at about a minute each, so the picker was an hour from
+            // opening and looked simply hung.
+            const d = describe(projectPayload(m, ref));
+            bytes = d.bytes;
+            textFields = d.textFields;
+        }
+        catch { /* a project whose payload will not build is shown with zeros */ }
+        rows.push({
+            ref, name: p.name, cwd: String(p['cwd'] ?? ''),
+            sessions: Number(p.sessions || 0), turns: Number(p.turns || 0),
+            bytes, textFields, ambiguous,
+        });
+    }
+    // Most prompt text first: the rows that most need a decision should be met
+    // before the reader's attention runs out.
+    return rows.sort((a, b) => b.textFields - a.textFields || b.turns - a.turns);
+}
+const esc = (s) => String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function pickerPage(rows, nonce, shared) {
+    const n = (x) => x.toLocaleString('en-GB');
+    return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Choose what to share — session-viz</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#fbfaf8;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;--line:#e6e2db;--accent:#c2521a;
+--warn:#9a6a12;--ok:#2f6b46;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+@media(prefers-color-scheme:dark){:root{--bg:#16151a;--panel:#1e1d23;--ink:#ece9e4;--muted:#9b968d;
+--line:#302e37;--accent:#ff8a4c;--warn:#e0b055;--ok:#6fbf8e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Inter,sans-serif}
+.wrap{max-width:920px;margin:0 auto;padding:36px 22px 120px}
+h1{font-size:26px;margin:0 0 6px;letter-spacing:-.01em}
+.lede{color:var(--muted);margin:0 0 26px;max-width:64ch}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+padding:0 10px 8px;font-weight:600;border-bottom:1px solid var(--line)}
+th.num,td.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+td{padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:hover td{background:var(--panel)}
+.nm{font-weight:600}
+.pth{display:block;font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:2px;word-break:break-all}
+.amb{display:inline-block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--warn);
+border:1px solid var(--warn);border-radius:999px;padding:0 6px;margin-left:6px;vertical-align:1px}
+.txt{color:var(--accent);font-weight:600}
+.done{color:var(--ok);font-size:12px}
+input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
+.bar{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);
+padding:14px 22px;display:flex;gap:16px;align-items:center;justify-content:center;flex-wrap:wrap}
+.sum{font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
+button{appearance:none;border:0;border-radius:9px;background:var(--accent);color:#fff;font:inherit;
+font-weight:600;padding:10px 20px;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+.warn{background:var(--panel);border:1px solid var(--warn);border-radius:10px;padding:13px 16px;
+margin:0 0 24px;font-size:13.5px;color:var(--muted)}
+.warn b{color:var(--ink)}
+#msg{padding:13px 16px;border-radius:10px;margin:0 0 20px;display:none;font-size:14px;
+background:var(--panel);border:1px solid var(--line)}
+</style></head><body><div class="wrap">
+<h1>Choose what to share</h1>
+<p class="lede">Each of these publishes to your workspace, readable by everyone in it.
+Nothing is selected, and nothing is sent until you press the button.</p>
+
+<div class="warn"><b>Prompt text is the number to read.</b> It counts fields carrying what
+you literally typed. Absolute paths and your username are stripped before anything leaves
+— the paths below are shown because this page is served from your own machine and never
+leaves it.</div>
+
+<div id="msg"></div>
+
+<table><thead><tr>
+<th style="width:34px"></th><th>Project</th>
+<th class="num">Sessions</th><th class="num">Turns</th>
+<th class="num">Prompt text</th><th class="num">Size</th>
+</tr></thead><tbody>
+${rows.map((r, i) => `<tr>
+<td>${shared.has(r.ref) ? '<span class="done">shared</span>' : `<input type="checkbox" id="c${i}" data-ref="${esc(r.ref)}" data-text="${r.textFields}">`}</td>
+<td><label for="c${i}"><span class="nm">${esc(r.name)}</span>${r.ambiguous ? '<span class="amb">two checkouts</span>' : ''}</label>
+${r.ambiguous && r.cwd ? `<span class="pth">${esc(r.cwd)}</span>` : ''}</td>
+<td class="num">${n(r.sessions)}</td>
+<td class="num">${n(r.turns)}</td>
+<td class="num txt">${n(r.textFields)}</td>
+<td class="num">${n(Math.round(r.bytes / 1024))} kB</td>
+</tr>`).join('')}
+</tbody></table>
+</div>
+<div class="bar">
+  <span class="sum" id="sum">Nothing selected</span>
+  <button id="go" disabled>Share selected</button>
+</div>
+<script>
+const boxes=[...document.querySelectorAll('input[type=checkbox]')];
+const sum=document.getElementById('sum'), go=document.getElementById('go'), msg=document.getElementById('msg');
+// textContent throughout. Nothing here is untrusted today, but a page that
+// assembles markup from data is a page that will do it with untrusted data
+// later, and this one renders project names.
+function tally(){
+  const on=boxes.filter(b=>b.checked);
+  const t=on.reduce((a,b)=>a+ +b.dataset.text,0);
+  go.disabled=!on.length;
+  sum.textContent=on.length
+    ? on.length+' selected · '+t.toLocaleString('en-GB')+' fields of prompt text'
+    : 'Nothing selected';
+}
+boxes.forEach(b=>b.addEventListener('change',tally));
+go.addEventListener('click',async()=>{
+  const on=boxes.filter(b=>b.checked);
+  const refs=on.map(b=>b.dataset.ref);
+  const t=on.reduce((a,b)=>a+ +b.dataset.text,0);
+  if(!confirm('Share '+refs.length+' project(s)?\\n\\n'+t.toLocaleString('en-GB')+
+    ' fields of verbatim prompt text will be readable by everyone in your workspace.\\n\\n'+
+    'A share can be revoked, but what a colleague has already read cannot be recalled.')) return;
+  go.disabled=true; go.textContent='Sharing…';
+  let out;
+  try{
+    const r=await fetch('/share?nonce=${nonce}',{method:'POST',
+      headers:{'content-type':'application/json'},body:JSON.stringify({refs})});
+    out=await r.json();
+    if(!r.ok) throw new Error(out.error||'refused');
+    msg.style.borderColor='var(--ok)';
+    msg.textContent='Shared '+out.shared+' — you can close this tab.';
+    go.textContent='Done';
+  }catch(e){
+    msg.style.borderColor='var(--accent)';
+    msg.textContent=(e&&e.message)||'the local helper did not answer';
+    go.disabled=false; go.textContent='Share selected';
+  }
+  msg.style.display='block';
+});
+</script></body></html>`;
+}
 // ---------------------------------------------------------------- cli
+/**
+ * Serve the picker on loopback and perform whatever it sends back.
+ *
+ * The same shape qsetup already uses for its OAuth callback: bound to 127.0.0.1
+ * only, on a port the kernel picks, a nonce required and compared in constant
+ * time, shut down after the exchange, abandoned after ten minutes.
+ *
+ * The nonce is doing real work here, not ceremony. This process holds a
+ * collab-scoped token, and the endpoint it exposes publishes with it — so any
+ * page in any tab could POST to a guessable loopback port and share on the
+ * user's behalf without them seeing anything. The nonce is only ever printed
+ * into the page this process served.
+ */
+async function runPicker(cfg) {
+    const http = await import('node:http');
+    const crypto = await import('node:crypto');
+    // Built once, here, and reused for both the counts and every share the page
+    // asks for. It is the expensive step by a wide margin.
+    console.log('  reading the corpus and counting what each project carries …');
+    const model = await corpus();
+    const rows = await pickRows(model);
+    const existing = await api(cfg, '/v1/shares', 'GET');
+    const shared = new Set((existing.shares || []).map((s) => String(s.ref ?? '')));
+    const nonce = crypto.randomBytes(18).toString('base64url');
+    const constEq = (a, b) => {
+        const x = Buffer.from(a), y = Buffer.from(b);
+        return x.length === y.length && crypto.timingSafeEqual(x, y);
+    };
+    await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => { if (settled)
+            return; settled = true; server.close(); resolve(); };
+        const server = http.createServer(async (req, res) => {
+            const u = new URL(req.url || '/', 'http://127.0.0.1');
+            const send = (code, type, body) => {
+                res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
+                res.end(body);
+            };
+            if (req.method === 'GET' && u.pathname === '/') {
+                return send(200, 'text/html; charset=utf-8', pickerPage(rows, nonce, shared));
+            }
+            if (req.method !== 'POST' || u.pathname !== '/share')
+                return send(404, 'text/plain', 'not here');
+            if (!constEq(u.searchParams.get('nonce') || '', nonce)) {
+                console.log('\n  refused a request whose nonce did not match — nothing was shared');
+                return send(403, 'application/json', JSON.stringify({ error: 'nonce did not match' }));
+            }
+            let body;
+            try {
+                const chunks = [];
+                for await (const c of req)
+                    chunks.push(c);
+                body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            }
+            catch {
+                return send(400, 'application/json', JSON.stringify({ error: 'unreadable request' }));
+            }
+            const refs = (Array.isArray(body.refs) ? body.refs : []).map(String).filter(Boolean);
+            if (!refs.length)
+                return send(400, 'application/json', JSON.stringify({ error: 'nothing selected' }));
+            const done = [];
+            try {
+                for (const ref of refs) {
+                    // Same model the page was built from, so what is published is exactly
+                    // what the counts on screen described — and a corpus that changed
+                    // mid-session cannot silently alter what leaves.
+                    const payload = projectPayload(model, ref);
+                    const out = await api(cfg, '/v1/share', 'POST', { kind: 'project', ref, label: ref.split('/').pop() || ref, payload });
+                    const d = describe(payload);
+                    console.log(`  shared ${out.id}  ${ref.split('/').pop()}  ${d.textFields} prompt-text field(s)`);
+                    done.push(String(out.id));
+                }
+            }
+            catch (e) {
+                // Partial success is reported as such. Saying "failed" after three of
+                // five went out would leave somebody believing nothing was published.
+                const msg = `${e.message}${done.length ? ` — ${done.length} already went out` : ''}`;
+                console.log(`\n  stopped: ${msg}`);
+                send(500, 'application/json', JSON.stringify({ error: msg }));
+                return finish();
+            }
+            send(200, 'application/json', JSON.stringify({ shared: done.length, ids: done }));
+            console.log(`\n  ${done.length} shared. Revoke any of them with:  qshare.mjs --revoke <id>`);
+            console.log('  A row can be deleted. What a colleague already read cannot be recalled.');
+            finish();
+        });
+        server.listen(0, '127.0.0.1', () => {
+            const port = server.address().port;
+            const link = `http://127.0.0.1:${port}/`;
+            console.log(`\n  opening ${link}`);
+            console.log('  nothing is selected, and nothing is sent until you press the button');
+            openBrowser(link);
+        });
+        // Abandoned rather than left listening. An open port that publishes on
+        // request should not outlive the person's attention.
+        setTimeout(() => { if (!settled) {
+            console.log('\n  timed out after 10 minutes — nothing was shared');
+            finish();
+        } }, 10 * 60_000).unref();
+    });
+}
+function openBrowser(url) {
+    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    try {
+        // spawn, never a shell string: the URL carries a nonce.
+        spawn(cmd, [url], { stdio: 'ignore', detached: true }).unref();
+    }
+    catch {
+        console.log('  (could not open a browser — visit the address above)');
+    }
+}
 const isMain = process.argv[1] && process.argv[1].endsWith('qshare.mjs');
 if (isMain) {
     const argv = process.argv.slice(2);
@@ -184,6 +442,10 @@ if (isMain) {
     const yes = argv.includes('--yes');
     try {
         const cfg = config();
+        if (argv.includes('--pick')) {
+            await runPicker(cfg);
+            process.exit(0);
+        }
         const rev = flag('--revoke');
         if (rev >= 0) {
             const id = argv[rev + 1];
