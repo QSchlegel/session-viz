@@ -128,6 +128,11 @@ in the environment skips the file entirely.
 `SESSION_VIZ_URL`, `SESSION_VIZ_TOKEN` and `SESSION_VIZ_ACTOR` still take precedence when
 set, so a CI environment overrides the file without touching it.
 
-The MCP server is the exception: it is configured from environment variables in
-`.mcp.json` and cannot read this file. `qsetup` prints the export lines to add to a shell
-profile for that, and they need a **collab**-scoped token rather than the contrib one.
+The MCP server needs none of this. `.mcp.json` carries a bare URL, and the client
+authenticates itself: 401, discovery, registration, then the same consent screen in the
+browser. Nothing to export, nothing to paste.
+
+That is a change. It used to take `SESSION_VIZ_TOKEN` from an `Authorization` header in
+`.mcp.json`, and a header is exactly what disables a client's OAuth — so setting those
+variables for the MCP's benefit now breaks the connection instead of making it. If a shell
+profile still exports them for that reason, remove them.
