@@ -199,10 +199,17 @@ async function pickRows(m) {
             textFields = d.textFields;
         }
         catch { /* a project whose payload will not build is shown with zeros */ }
+        // Already on every project as a per-harness session count. Shown because a
+        // project is rarely one harness — the busiest here is 205 Cursor sessions
+        // beside 11 Claude Code and 9 Codex — and "which agent produced this" is
+        // part of deciding whether a colleague should read it.
+        const harnesses = Object.entries(p['harnesses'] || {})
+            .map(([k, v]) => [k, Number(v) || 0])
+            .sort((a, b) => b[1] - a[1]);
         rows.push({
             ref, name: p.name, cwd: String(p['cwd'] ?? ''),
             sessions: Number(p.sessions || 0), turns: Number(p.turns || 0),
-            bytes, textFields, ambiguous,
+            bytes, textFields, ambiguous, harnesses,
         });
     }
     // Most prompt text first: the rows that most need a decision should be met
@@ -211,6 +218,13 @@ async function pickRows(m) {
 }
 const esc = (s) => String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/** How each harness is written for a person. Unknown ids pass through as-is,
+ *  so a harness added later shows up rather than disappearing. */
+const HARNESS_LABEL = {
+    'claude-code': 'Claude Code',
+    codex: 'Codex',
+    cursor: 'Cursor',
+};
 function pickerPage(rows, nonce, shared) {
     const n = (x) => x.toLocaleString('en-GB');
     return `<!doctype html>
@@ -237,6 +251,18 @@ tr:hover td{background:var(--panel)}
 .amb{display:inline-block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--warn);
 border:1px solid var(--warn);border-radius:999px;padding:0 6px;margin-left:6px;vertical-align:1px}
 .txt{color:var(--accent);font-weight:600}
+/* One chip per harness, with its session count. Colour distinguishes them at a
+   glance; the label carries the meaning, so it still reads without colour. */
+.hz{display:inline-flex;align-items:center;gap:5px;font-size:11px;border-radius:999px;
+padding:1px 8px;margin:0 4px 3px 0;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.hz i{font-style:normal;font-family:var(--mono);font-size:10.5px;opacity:.75}
+.h-claude-code{border-color:#c2521a;color:#c2521a}
+.h-codex{border-color:#4a7fb5;color:#4a7fb5}
+.h-cursor{border-color:#5f8a6d;color:#5f8a6d}
+@media(prefers-color-scheme:dark){
+.h-claude-code{border-color:#ff8a4c;color:#ff8a4c}
+.h-codex{border-color:#6a9fd4;color:#6a9fd4}
+.h-cursor{border-color:#4c8a63;color:#8fbc6b}}
 .done{color:var(--ok);font-size:12px}
 input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
 .bar{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);
@@ -263,7 +289,8 @@ leaves it.</div>
 <div id="msg"></div>
 
 <table><thead><tr>
-<th style="width:34px"></th><th>Project</th>
+<th style="width:34px"><input type="checkbox" id="all" title="Select all"></th><th>Project</th>
+<th>Source</th>
 <th class="num">Sessions</th><th class="num">Turns</th>
 <th class="num">Prompt text</th><th class="num">Size</th>
 </tr></thead><tbody>
@@ -271,6 +298,9 @@ ${rows.map((r, i) => `<tr>
 <td>${shared.has(r.ref) ? '<span class="done">shared</span>' : `<input type="checkbox" id="c${i}" data-ref="${esc(r.ref)}" data-text="${r.textFields}">`}</td>
 <td><label for="c${i}"><span class="nm">${esc(r.name)}</span>${r.ambiguous ? '<span class="amb">two checkouts</span>' : ''}</label>
 ${r.ambiguous && r.cwd ? `<span class="pth">${esc(r.cwd)}</span>` : ''}</td>
+<td>${r.harnesses.length
+        ? r.harnesses.map(([h, c]) => `<span class="hz h-${esc(h)}">${esc(HARNESS_LABEL[h] || h)}<i>${n(c)}</i></span>`).join('')
+        : '<span class="pth">—</span>'}</td>
 <td class="num">${n(r.sessions)}</td>
 <td class="num">${n(r.turns)}</td>
 <td class="num txt">${n(r.textFields)}</td>
@@ -283,7 +313,9 @@ ${r.ambiguous && r.cwd ? `<span class="pth">${esc(r.cwd)}</span>` : ''}</td>
   <button id="go" disabled>Share selected</button>
 </div>
 <script>
-const boxes=[...document.querySelectorAll('input[type=checkbox]')];
+// The header box is excluded by [data-ref] — it selects rows, it is not one.
+const boxes=[...document.querySelectorAll('input[type=checkbox][data-ref]')];
+const all=document.getElementById('all');
 const sum=document.getElementById('sum'), go=document.getElementById('go'), msg=document.getElementById('msg');
 // textContent throughout. Nothing here is untrusted today, but a page that
 // assembles markup from data is a page that will do it with untrusted data
@@ -292,11 +324,35 @@ function tally(){
   const on=boxes.filter(b=>b.checked);
   const t=on.reduce((a,b)=>a+ +b.dataset.text,0);
   go.disabled=!on.length;
+  // Indeterminate when the selection is partial, so "select all" reports the
+  // state it is in rather than only the state it would move to.
+  all.checked = on.length===boxes.length && boxes.length>0;
+  all.indeterminate = on.length>0 && on.length<boxes.length;
   sum.textContent=on.length
     ? on.length+' selected · '+t.toLocaleString('en-GB')+' fields of prompt text'
     : 'Nothing selected';
 }
 boxes.forEach(b=>b.addEventListener('change',tally));
+all.addEventListener('change',()=>{
+  // Selecting everything here means publishing every project on the machine,
+  // so it warns on the way in rather than only at the button. Turning it OFF
+  // asks nothing — clearing a selection needs no defending.
+  if(all.checked){
+    const t=boxes.reduce((a,b)=>a+ +b.dataset.text,0);
+    // Double-escaped, like the confirm below it. A single \\n is consumed by the
+    // TEMPLATE LITERAL this page is built from, so it emits a real newline into
+    // the middle of a JS string — a syntax error that kills the whole script,
+    // taking the working parts down with it. The page still rendered, and every
+    // checkbox silently did nothing.
+    if(!confirm('Select all '+boxes.length+' projects?\\n\\nThat is '+t.toLocaleString('en-GB')+
+      ' fields of verbatim prompt text across every project on this machine.\\n\\n'+
+      'You will still be asked once more before anything is sent.')){
+      all.checked=false; return;
+    }
+  }
+  boxes.forEach(b=>{ b.checked=all.checked });
+  tally();
+});
 go.addEventListener('click',async()=>{
   const on=boxes.filter(b=>b.checked);
   const refs=on.map(b=>b.dataset.ref);
