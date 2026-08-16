@@ -102,7 +102,14 @@ overlapping weeks the comparison is refused rather than estimated.
 
 ## Requirements
 
-Node 18+ to run it. No runtime dependencies.
+Node 18+ for Claude Code and Codex. **Node 22+ to read Cursor**, which keeps its history in SQLite and
+is reached through `node:sqlite` — built in from 22, and absent before it.
+
+Below 22 nothing breaks and nothing is silently missing: Cursor is reported in the coverage block of
+every report as present-but-unreadable, with the reason. That is a different sentence from "you do not
+use Cursor", and the two should never look the same.
+
+No runtime dependencies at any version.
 
 ## Building
 
