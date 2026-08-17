@@ -51,6 +51,12 @@ jobs:
       - name: Picker
         run: node plugins/session-viz/test/picker.mjs
 
+      # /qcontrib prints "0 repo name(s)" above the values it is about to send,
+      # and a contribution cannot be recalled. This is the test that guards that
+      # sentence.
+      - name: Findings
+        run: node plugins/session-viz/test/finding.mjs
+
       - name: Committed output matches source
         run: |
           if ! git diff --exit-code --stat -- plugins/session-viz/scripts; then

@@ -185,28 +185,40 @@ async function postBatch(cfg, findings) {
     };
     if (cfg.actor)
         headers['x-actor'] = cfg.actor;
-    let wait = 500;
-    for (let attempt = 1;; attempt++) {
-        let r;
-        try {
-            r = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ findings }) });
-        }
-        catch (e) {
-            // There is no rate limit on the other end of this — client backoff is the
-            // only brake that exists on either side, so a retry loop without one is a
-            // self-inflicted flood rather than a resilience feature.
-            if (attempt >= 4)
-                throw e;
-            await new Promise((res) => setTimeout(res, wait));
-            wait *= 2;
-            continue;
+    // NOT retried, deliberately.
+    //
+    // /v1/contrib takes no idempotency key and does no deduplication, and this
+    // client records what it sent only after a reply arrives. So a connection
+    // that drops AFTER the server has committed the batch is indistinguishable
+    // from one that drops before — and retrying turns the first case into
+    // double-counted findings in an aggregate nobody can later unpick, under a
+    // schema version that cannot tell the copies apart.
+    //
+    // A retry loop is the right shape once the server can recognise a repeat.
+    // Until then, an honest "unknown, look before you re-run" beats a resilience
+    // feature that silently corrupts the thing it is protecting. The batches are
+    // small and re-running after a check is cheap.
+    let r;
+    try {
+        r = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ findings }) });
+    }
+    catch (e) {
+        throw new Error(`${e.message}\n` +
+            `  ${findings.length} finding(s) may or may not have been stored — the connection\n` +
+            '  dropped without an answer, and this endpoint cannot recognise a repeat.\n' +
+            '  Nothing was recorded as sent. Check the workspace before re-running.');
+    }
+    {
+        // Status before body. fetch resolves as soon as the headers land, so a 5xx
+        // whose body stalls or never closes would hang here — and the one thing
+        // this path must always manage is telling somebody that the fate of their
+        // contribution is unknown.
+        if (r.status >= 500) {
+            throw new Error(`HTTP ${r.status} — ${findings.length} finding(s) of unknown fate, for the same\n` +
+                '  reason as above: a 5xx can follow a commit as easily as precede one.\n' +
+                '  Nothing was recorded as sent.');
         }
         const body = (await r.json().catch(() => ({})));
-        if (r.status >= 500 && attempt < 4) {
-            await new Promise((res) => setTimeout(res, wait));
-            wait *= 2;
-            continue;
-        }
         if (r.status === 403) {
             throw new Error(`${body.error || 'forbidden'} — this workspace's server has not been widened to accept ` +
                 'a collab token here. Mint a contrib token with: /qsetup --scope contrib');

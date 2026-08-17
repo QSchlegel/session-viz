@@ -10,7 +10,7 @@
 //
 // So: one resolver, honoured everywhere, with an override that a confined
 // harness can actually set.
-import { mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync, statSync, accessSync, constants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { cursorDb, cursorGlobalStorage, cursorReadable } from './cursor.mjs';
@@ -119,8 +119,46 @@ export function loadConfig() {
 const STATE_FILE = 'contrib.json';
 export const statePaths = () => configDirs().map((d) => join(d, STATE_FILE));
 export const stateTarget = () => join(dirname(configTarget()), STATE_FILE);
+/** 0 for anything unreadable, so a file we cannot stat simply loses. */
+const mtime = (p) => {
+    try {
+        return statSync(p).mtimeMs;
+    }
+    catch {
+        return 0;
+    }
+};
+/** Whether saveState would be able to write here — the question that decides
+ *  which ledger is the live one. Pessimistic: unknown counts as no. */
+const writable = (p) => {
+    try {
+        accessSync(p, constants.W_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+};
 export function loadState() {
-    const p = statePaths().find((q) => existsSync(q));
+    // Read the ledger that saveState will WRITE next, which is not necessarily
+    // the first one that exists.
+    //
+    // saveState stops at the first candidate it can write. When the preferred
+    // directory turns read-only the ledger moves to a later path, and a reader
+    // taking the first that merely EXISTS goes on opening the stale copy left
+    // behind — so every finding already sent reads as unsent and is contributed
+    // a second time, into an aggregate nobody can unpick.
+    //
+    // Resolved by writability rather than by mtime alone: these candidates belong
+    // to DIFFERENT config directories, so "newest" can mean another workspace's
+    // ledger, and reading that one would skip findings never sent from here. The
+    // preferred path wins whenever it is the one that will be written to; mtime
+    // only breaks the tie among the fallbacks.
+    const here = stateTarget();
+    const found = statePaths().filter((q) => existsSync(q));
+    const p = (found.includes(here) && writable(here))
+        ? here
+        : found.sort((a, b) => mtime(b) - mtime(a))[0];
     if (!p)
         return null;
     // A corrupt ledger reads as "nothing sent", which re-sends rather than

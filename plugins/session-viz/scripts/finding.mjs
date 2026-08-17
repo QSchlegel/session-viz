@@ -49,15 +49,66 @@ export const contribSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-
 export function taskClass(run) {
     if (run.kind === 'human')
         return 'human';
+    // Slugged like every other branch. An unnormalised family — a capital, a
+    // space, anything past 64 characters — fails validateFinding, so the run is
+    // held back rather than contributed: silently, and for a reason nobody
+    // reading the output could guess.
     if (run.kind === 'subagent')
-        return run.family || 'other';
+        return run.family ? contribSlug(run.family) : 'other';
     if (run.task)
-        return contribSlug(run.task);
+        return withoutRepo(contribSlug(run.task), run.repo);
     // A Codex run with no human turns and no scheduled-task name: classified
     // 'scheduled' by the ledger, but carrying neither a task nor a family. The
     // one field with no source at all, so it gets a stated literal rather than an
     // empty string that would fail the regex and reject the whole finding.
     return 'unattended';
+}
+/**
+ * A scheduled task is very often named after the repo it runs in — `acme-api`
+ * in `acme-api`. That name is author-written, so it lands in `task_class`, and
+ * `task_class` is the one column of the nine that a person chose the text of.
+ *
+ * This is not a hypothetical tidy-up. The command prints **"0 repo name(s) —
+ * the schema has no field for one"** immediately above the values it is about
+ * to send. That sentence has to be true, and without this it is true only of
+ * the eight fields nobody was worried about. A contribution cannot be recalled,
+ * so the assurance has to hold at the moment it is made.
+ *
+ * The repo name is removed rather than the whole class dropped: `acme-api-seo`
+ * still carries that it was an SEO job, which is the part the fleet report is
+ * actually about.
+ */
+export function withoutRepo(slug, repo) {
+    if (!repo)
+        return slug;
+    // Both separators are normalised to one before the comparison, so a repo
+    // `acme_api` is still found inside a task named `acme_api_daily`. Only the
+    // stripped result adopts that normalisation — a class that never contained
+    // the repo name is returned exactly as it came in.
+    const flat = (s) => s.replace(/_/g, '-');
+    const r = flat(contribSlug(repo));
+    if (!r || r === 'unknown')
+        return slug;
+    // Bounded by segment edges, so `api` cannot maul `apiary`, and matched as a
+    // whole run of segments, so a two-word repo is caught as the two words it is.
+    //
+    // Repeated to a fixed point, because one pass cannot remove ADJACENT matches:
+    // the separator between two occurrences is consumed by the first of them, so
+    // `acme-api-acme-api-seo` came out as `acme-api-seo` and shipped the very
+    // name this function exists to remove. Bounded by the shrinking length, so it
+    // always terminates.
+    let cur = flat(slug);
+    for (;;) {
+        const next = `-${cur}-`.split(`-${r}-`).join('-').replace(/^-+|-+$/g, '');
+        if (next === cur)
+            break;
+        cur = next;
+        if (!cur)
+            break;
+    }
+    if (cur === flat(slug))
+        return slug; // nothing matched; leave it untouched
+    return cur ? cur.slice(0, 64) : 'repo-named';
 }
 /**
  * The projection. Written out field by field, on purpose — see the header.
