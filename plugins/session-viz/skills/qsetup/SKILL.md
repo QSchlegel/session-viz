@@ -6,8 +6,11 @@ disable-model-invocation: true
 
 # qsetup
 
-Sign in in the browser, and a token arrives on disk. Nothing else in the plugin needs it —
-every other command works entirely offline against transcripts already on disk.
+Sign in in the browser, and a token arrives on disk. Three commands read that file —
+`/qcontrib`, `/qshare` and `/qfeed`, the ones that talk to the hosted side. `/qteam` needs
+the hosted side too but authenticates its own MCP connection and never opens the file. The
+six local commands never open it either: they parse transcripts already on this disk and
+send nothing anywhere.
 
 ## Why nobody types a token
 
@@ -51,14 +54,19 @@ terminal finishes on its own.
 If the machine is headless, the printed URL works from anywhere that can reach its
 loopback — which is to say, from that machine.
 
-Two scopes exist, they are not interchangeable, and they are not equally available:
+Two scopes exist, they are not equally available, and one is strictly the wider of the two:
 
 | scope | for | who can approve |
 |---|---|---|
 | `contrib` | sending findings — plane A, person-blind aggregates | any member |
 | `collab` | vaults, task handoff and the MCP — plane B, identity-bearing | admins only |
 
-`contrib` is the default. Ask for the other explicitly:
+`contrib` is the default, and it is the default because any active member can approve one:
+connecting a machine must not be an admin-only act. A `collab` token is accepted at the
+plane A door as well, so an admin who already holds one does not need a second token to run
+`/qcontrib`. The reverse does not hold — a `contrib` token is refused at plane B.
+
+Ask for the wider one explicitly:
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/scripts/qsetup.mjs --scope collab
@@ -78,6 +86,13 @@ If the output carries a `note` about the preferred location not being writable, 
 path it settled on — that is a sandboxed harness, and the next command needs to find the
 same file.
 
+In the browser flow a non-zero exit means nothing was written: declining the consent
+screen, the five-minute deadline and a failed exchange all end that way, and none of them
+quietly offers the text box instead. Say which of the three happened and offer to run it
+again. The `--paste` fallback is the exception — it exits 0 even when it timed out — so
+there, read the `saved` line and not the status code. Either way, never report a connection
+that the output does not show.
+
 ## Other flags
 
 ```bash
@@ -91,6 +106,25 @@ cases: a self-hosted server too old to have `/authorize` — which the plugin de
 own and falls back to without being asked — and an admin installing a token they were
 handed rather than one they are about to approve.
 
+`--show` reads the file and only the file. A machine that works from `SESSION_VIZ_TOKEN` in
+the environment has no file, and this prints the paths it looked in rather than the
+credential actually in force.
+
+## A deployment that is not the public one
+
+Setup signs in against `SESSION_VIZ_URL` when it is set, the `url` already in the config
+when it is not, and `https://cloud.session-viz.com` otherwise:
+
+```bash
+SESSION_VIZ_URL=https://sv.example.internal node ${CLAUDE_PLUGIN_ROOT}/scripts/qsetup.mjs
+```
+
+Set it for that one run. The host it verified against is written into `config.json`, so
+every later command reads the destination from there — and leaving the variable exported
+afterwards is what breaks them, for the reason under **What it writes** below. On the
+`--paste` page the same field is editable, and the host that page verifies is the host it
+writes.
+
 ## What it writes
 
 One `config.json`, mode `0600` in a `0700` directory:
@@ -100,10 +134,22 @@ One `config.json`, mode `0600` in a `0700` directory:
   "url": "https://cloud.session-viz.com",
   "token": "svt_…",
   "scope": "contrib",
-  "tenant": "t_example-com",
+  "tenant": "t_9b874215460c5c93",
+  "actor": "claude-code",
   "savedAt": "…"
 }
 ```
+
+`tenant` comes back from the server, keyed to the token, and is opaque on purpose: `t_` and
+sixteen hex characters of a hash of the address that signed up. It was derived from the
+email domain once, which put two strangers who shared a domain in one workspace. Read it
+back as an identifier, never as a company name, and never tell a user that a colleague on
+the same domain will land in this workspace — an invite is what puts them there.
+
+`actor` is whichever harness ran setup, or `SESSION_VIZ_ACTOR` when that is set. It travels
+as the `x-actor` header on later calls, and in the browser flow it is also the label the new
+token carries in the workspace list — otherwise four machines arrive as four rows called
+"plugin". It is the one optional field: absent when no harness could be identified.
 
 The location is not tied to any one harness — this plugin runs under Codex and others
 too, and a machine that never had Claude Code installed has no `~/.claude` to write to.
@@ -125,14 +171,32 @@ path above fails with `EPERM` and no amount of retrying helps. Point
 including a config that already exists somewhere unreachable. Setting `SESSION_VIZ_TOKEN`
 in the environment skips the file entirely.
 
-`SESSION_VIZ_URL`, `SESSION_VIZ_TOKEN` and `SESSION_VIZ_ACTOR` still take precedence when
-set, so a CI environment overrides the file without touching it.
+**The environment overrides the file, but a URL and the token sent to it count as one
+credential, not two fields.** `SESSION_VIZ_TOKEN` wins wherever it is set, and it brings the
+destination with it: the target is then `SESSION_VIZ_URL`, or the public host when that is
+unset — never the `url` sitting in the file. `SESSION_VIZ_URL` on its own, with a token in
+the file, is refused outright rather than sending a live workspace token to whatever that
+variable happens to name; set both, or neither. `SESSION_VIZ_ACTOR` is the only one of the
+three that overrides per field, and it decides a label, not a credential.
 
-The MCP server needs none of this. `.mcp.json` carries a bare URL, and the client
-authenticates itself: 401, discovery, registration, then the same consent screen in the
-browser. Nothing to export, nothing to paste.
+So a CI environment exports `SESSION_VIZ_TOKEN`, plus `SESSION_VIZ_URL` beside it when the
+host is not the public one. Exporting the URL alone — in a shell profile, say, left over
+from pointing setup at a self-hosted deployment — makes every command that needs the token
+stop with that refusal.
 
-That is a change. It used to take `SESSION_VIZ_TOKEN` from an `Authorization` header in
-`.mcp.json`, and a header is exactly what disables a client's OAuth — so setting those
-variables for the MCP's benefit now breaks the connection instead of making it. If a shell
-profile still exports them for that reason, remove them.
+The MCP server needs none of this. `.mcp.json` carries a bare URL and no `env` block, so
+there is nothing to export — nothing on that path reads those variables at all.
+
+And today the client gets no further than asking. It does the first half itself: 401,
+discovery, registration. Then `/authorize` issues codes to one hardcoded client id — the
+CLI's own `session-viz-cli` — so a client that registered a moment earlier is turned away
+with `unknown client_id` on the server's own error page, not a consent screen. It refuses
+the advertised scopes too: discovery offers `vault:read`, `task:write` and the rest, while
+the consent screen accepts only `contrib` and `collab`. Registration succeeds and buys
+nothing.
+
+Say that plainly. It fails every time, not sometimes, so do not tell anyone to watch for a
+browser prompt or to try again: they will wait on a prompt that is never coming and then go
+looking for a tool that never appeared. Until the allowlist widens, browser sign-in to the
+hosted MCP server does not complete. Leave the MCP out of setup, and say its OAuth path is
+not live yet rather than walking someone into a refusal.

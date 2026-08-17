@@ -33,10 +33,17 @@ you report; it is the difference between evidence and a hunch.
 ## The check that matters most
 
 `permissionCoversWrite`. A scheduled or headless run cannot answer a permission
-prompt, so without a Write entry in `permissions.allow` it dies at the first
-write — after doing all the work. This is the most common cause of a cron task
-that runs for weeks and ships nothing, and `/qruns` will show the same failure
-from the other end.
+prompt, so without a Write or Edit entry in `permissions.allow` it dies at the
+first write — after doing all the work. This is the most common cause of a cron
+task that runs for weeks and ships nothing, and `/qruns` will show the same
+failure from the other end.
+
+**It reads only this repo's `.claude/settings.json` and `.claude/settings.local.json`.**
+User-level settings are not consulted, so a machine-wide allow entry shows here
+as `none cover Write`. Say that when you report it. A repo whose runs are in fact
+permitted is not a repo to go and change, and telling someone their cron job is
+about to die when it is not spends the credibility this check needs the one time
+it is right.
 
 ## Steps
 

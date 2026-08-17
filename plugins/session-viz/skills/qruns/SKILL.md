@@ -19,7 +19,9 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/runs.mjs
 node ${CLAUDE_PLUGIN_ROOT}/scripts/runs.mjs --json > /tmp/qruns.json
 ```
 
-About five seconds for ~1,200 runs. `--since 30d` narrows the window.
+Tens of seconds for a few thousand runs — it reads every transcript on the
+machine, and the Cursor root is one multi-gigabyte SQLite database rather than a
+tree of files. `--since 30d` narrows the window.
 
 ## Read it in this order
 
@@ -44,6 +46,11 @@ About five seconds for ~1,200 runs. `--since 30d` narrows the window.
 - **Never call `wrote_ok` "delivered".** No filesystem probe runs, so a write is
   a tool-result observation. The distinction matters the moment someone asks
   whether the file is really there.
+- **Read the `not in these numbers` block out loud when it appears.** It prints
+  only when a harness is missing or its token data is partial, and is silent
+  otherwise — so when it is there, a whole harness may be absent from the ledger
+  above. A stalled task that never shows up because its harness was not read is
+  the exact failure this page exists to catch, reported as an all-clear.
 - Subagent families come from a first-message heuristic. Say so when you quote a
   per-family number.
 - If a task is stalled, say what it cost and how long it has been stalled. "17

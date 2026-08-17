@@ -3,10 +3,17 @@
 Eleven commands over the transcripts your coding agents already write to your disk.
 
 Six of them send nothing anywhere: they read the transcripts, compute locally, and open an HTML
-report. The other five need an account, and exactly one of those — `/qcontrib` — contributes to
-anything shared, in nine bounded columns with no prompts, no paths and no repo names in them. The
-hosted side is entirely optional, and the six local commands work with no account, no token and no
-network.
+report. The other five need an account, and two of those put something about your work on a wire.
+They are not the same kind of send, and the difference is the whole design:
+
+- `/qcontrib` feeds the cross-tenant shared reference, in nine bounded columns — no prompts, no
+  paths, no repo names, nothing finer than an ISO week. Person-blind by construction.
+- `/qshare` publishes one project, session or run to **your own workspace**, for colleagues to
+  read. That payload carries verbatim prompt text on purpose, and it names you.
+
+`/qsetup` moves a credential and nothing else; `/qfeed` files task titles and briefs you have read
+first; `/qteam` is the hosted MCP. The hosted side is entirely optional, and the six local commands
+work with no account, no token and no network.
 
 **It reads three harnesses and installs into three.** Those are different lists, in one way worth
 knowing: reading is automatic, installing is per-harness. A Claude Code install still analyses your
@@ -31,10 +38,19 @@ claude plugin install session-viz@session-viz
 Two steps on purpose: `install` cannot resolve a plugin from a marketplace this machine has never
 added.
 
+The plugin cache is keyed by version, so an update does not replace anything: the new version
+lands in its own directory and a harness already running keeps executing the old one, indefinitely
+and without complaint. That matters because these commands report different numbers between
+versions — not unstable numbers, better readings of the same corpus. `/qruns` carries the version
+that produced its ledger as a field, and prints a warning above the figures when a newer version is
+installed on this machine and is not what ran; restart the harness and the newer copy is picked up.
+That check is a directory listing under the cache, never a request — it reports what you already
+installed, never what the marketplace has. The other commands do not carry the stamp yet.
+
 ### Codex, Cursor
 
 Both read the same skill format Claude Code does — a directory holding a `SKILL.md` with `name`
-and `description` frontmatter — so the same ten commands work there. What is *not* portable is the
+and `description` frontmatter — so all eleven commands work there. What is *not* portable is the
 line inside each one that runs the analysis: it says `${CLAUDE_PLUGIN_ROOT}`, a variable only
 Claude Code sets, which anywhere else expands to nothing and fails on a path that never existed.
 
@@ -84,7 +100,7 @@ surface out of the numbers.
 | `/qcost` | Where the tokens actually went |
 | `/qship` | Prompts you keep retyping, split into rituals and misses |
 | `/qdoctor` | This repo's config, measured against your other repos |
-| `/qsetup` | Connect this machine — paste the token into a page, not a shell |
+| `/qsetup` | Connect this machine — sign in in the browser, no token typed or pasted |
 | `/qshare` | Choose what your team can see — nothing by default |
 | `/qfeed` | File tasks from findings that passed a gate — and only those |
 | `/qteam` | Shared vaults and task handoff (needs the hosted side) |

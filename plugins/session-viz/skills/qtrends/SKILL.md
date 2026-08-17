@@ -71,12 +71,20 @@ For a quick look without the report, drop `--json` for a text summary.
 ### 2. Report the shape in chat — briefly
 
 Read `/tmp/qtrends-brief.json` and state, in no more than four lines: corpus
-size and span, the trend direction with its two rework figures, the largest
-incident category, and one thing you will look into. Terse — the detail belongs
-in the report.
+size and span, the trend, the largest incident category, and one thing you will
+look into. Terse — the detail belongs in the report.
 
 Use the computed numbers verbatim. `trend.direction` is already derived; do not
 re-derive a different one from `timeline`.
+
+**`trend` is a union and the refusing half is the common one.** When
+`trend.measurable` is `false` the object holds only `why` — there is no
+`direction`, no `reworkRate`, no week ranges to quote. That is the branch a
+narrow `--since` lands in: a direction needs six active weeks and 100 turns on
+each end, so `--since 30d` will usually not have one. Quote `trend.why` and
+report the span without a slope. Do not compute a direction yourself to fill the
+hole; two weeks of data producing a confident-sounding trend is the exact thing
+the floor exists to prevent.
 
 ### 3. Write the reading
 
@@ -98,8 +106,10 @@ Rules for each field:
 - **supported** — every entry cites a number from the model or a specific
   exemplar. `taxonomy.<tag>.count`, `timeline`, `projects[].reworkRate`,
   `exemplars.*`. No entry may rest on a signal whose `reliable` is `false`.
-- **changes** — quote `trend.reworkRate.from` and `.to` and the week ranges.
-  If `trend.direction` is `flat`, say it is flat; do not narrate a slope.
+- **changes** — quote `trend.reworkRate.from` and `.to` and the week ranges,
+  which exist only when `trend.measurable` is `true`. If `trend.direction` is
+  `flat`, say it is flat; do not narrate a slope. If the trend is not
+  measurable, this field holds one entry — `trend.why` — and nothing else.
 - **recommendations** — the exemplars are the richest material here. Read
   `exemplars.repeats` as a set and say what those prompts have in common;
   read `exemplars.corrections` for what the preceding turn left ambiguous.

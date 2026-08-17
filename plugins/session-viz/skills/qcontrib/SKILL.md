@@ -24,9 +24,11 @@ The nine fields are: `kind`, `task_class`, `cli_band`, `iso_week`, `terminal_sta
 log2 buckets of a count. The only field the caller chooses is `task_class`, and step 1
 lists its literal values before anything is sent.
 
-Two runs are never contributed: one already in this machine's ledger (the endpoint has no
-dedupe, so a second send would double the tenant's row count) and one touched in the last
-thirty minutes (a live session would be frozen as `zombie` forever, with no update path).
+Two runs are held back: one already in this machine's ledger (the endpoint has no dedupe,
+so a second send would double the tenant's row count) and one touched in the last thirty
+minutes (a live session would be frozen as `zombie` forever, with no update path).
+`--force` overrides the first of those, and prints the duplicate count before sending. The
+thirty-minute hold is not overridable by any flag.
 
 ## Steps
 
@@ -86,6 +88,12 @@ send answer 200 while the step stays unticked forever.
 
 ## Requires
 
-A workspace token from `/qsetup`. Either scope works: `contrib` is what `/qsetup` mints by
-default, and `collab` is accepted where the server has been widened for it. The command
-introspects the token first and names the fix if it cannot be used.
+A workspace token from `/qsetup`. Both scopes are accepted here: `contrib`, which
+`/qsetup` mints by default, and `collab`, which is strictly more privileged and is
+therefore not refused at the lower door. One token can serve this command and `/qshare`
+alike. The command introspects the token before sending and names the fix if it cannot be
+used.
+
+A shared `CONTRIB_TOKEN` is refused by this command even though the endpoint accepts one:
+it stamps no tenant, so the send answers 200, the rows belong to nobody, and the console's
+"Send your first findings" step stays unticked forever.

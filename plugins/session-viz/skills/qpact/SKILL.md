@@ -27,9 +27,13 @@ the HTML, not an automatic compaction. Do not claim to have compacted anything.
 node ${CLAUDE_PLUGIN_ROOT}/scripts/extract.mjs --json > /tmp/qpact-spine.json
 ```
 
-With no argument it resolves the most recently modified transcript, which is the
-live session. Pass `--project <name>` to disambiguate, or a session-id prefix to
-target a specific one. Prompts are secret-redacted by default.
+With no argument it resolves the newest transcript **written by the harness this
+is running under**, which is the live session. Newest-overall is only the
+fallback for when nothing identifies the harness — on a machine with two of them
+a rollout written a minute ago in the other one would otherwise win, and the
+report would describe a foreign session as "this session". Pass `--project
+<name>` to disambiguate, or a session-id prefix to target a specific one.
+Prompts are secret-redacted by default.
 
 This collapses a transcript that is often tens of megabytes into a few hundred
 kilobytes — human turns are only 2–4% of records. Read the JSON, not the raw

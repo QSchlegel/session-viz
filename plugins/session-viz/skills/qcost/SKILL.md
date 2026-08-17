@@ -39,8 +39,13 @@ not. Say that plainly rather than letting both look equally important.
 - **No currency.** The rate card is not part of the snapshot, and a dollar figure
   derived from an assumed price is an assumption rendered as a fact. If the user
   wants money, ask them for their rate card and show the arithmetic.
-- Quote linear share and the log view together when explaining composition. A
-  linear bar hides output entirely; a log chart hides the dominance. Either
-  alone misleads.
+- **Quote the integers beside the percentages.** There is one chart and it is
+  linear: output rounds to `0%` and its bar is clamped to a single cell, so the
+  composition block on its own reads as "output is nothing". Give the token
+  counts too, or the one number a person can actually act on disappears.
+- **Read the `not in these numbers` block out loud.** It only prints when a
+  harness is missing or its token data is partial, which is exactly when a
+  composition percentage will be taken for a bill. A total that silently
+  excludes a whole harness is the failure this screen is most likely to cause.
 - Cache-read is not waste. It is the cost of the context the agent needed. The
   question is whether it needed all of it.
