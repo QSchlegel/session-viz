@@ -1,7 +1,11 @@
 ---
 name: qdoctor
 description: Audit this repository's Claude Code configuration against how the user's other repos are set up — CLAUDE.md, slash commands, hooks, and whether permissions cover Write. Use when the user runs /qdoctor, asks whether a repo is set up properly, why headless or scheduled runs fail on permissions, or wants to compare configuration across projects.
-disable-model-invocation: true
+# Model-invocable, unlike the eight commands that are not. The rule: a skill may be
+# reached without the user typing its name IFF it only reads this machine and prints
+# to stdout. This one does. /qpact and /qtrends open a browser window, /qship --write
+# writes files, and the five network commands send something — all of those stay
+# behind an explicit slash command.
 ---
 
 # qdoctor

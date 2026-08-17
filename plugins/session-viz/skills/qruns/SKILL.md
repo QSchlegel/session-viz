@@ -1,7 +1,11 @@
 ---
 name: qruns
 description: The delivery ledger for autonomous work — every scheduled run, subagent and workflow agent on this machine, with what it actually shipped. Shows which recurring tasks produce nothing, which runs died on a permission prompt, and how each one terminated. Use when the user runs /qruns, asks what their agents or cron jobs are doing, why a scheduled task is not producing output, or wants to see subagent activity.
-disable-model-invocation: true
+# Model-invocable, unlike the eight commands that are not. The rule: a skill may be
+# reached without the user typing its name IFF it only reads this machine and prints
+# to stdout. This one does. /qpact and /qtrends open a browser window, /qship --write
+# writes files, and the five network commands send something — all of those stay
+# behind an explicit slash command.
 ---
 
 # qruns

@@ -1,10 +1,12 @@
 # session-viz
 
-Ten commands over the transcripts your coding agents already write to your disk.
+Eleven commands over the transcripts your coding agents already write to your disk.
 
-Nothing is sent anywhere. It reads the transcripts, computes locally, and opens an HTML report.
-There is a hosted side, and it is entirely optional — every command below works with no account,
-no token and no network.
+Six of them send nothing anywhere: they read the transcripts, compute locally, and open an HTML
+report. The other five need an account, and exactly one of those — `/qcontrib` — contributes to
+anything shared, in nine bounded columns with no prompts, no paths and no repo names in them. The
+hosted side is entirely optional, and the six local commands work with no account, no token and no
+network.
 
 **It reads three harnesses and installs into three.** Those are different lists, in one way worth
 knowing: reading is automatic, installing is per-harness. A Claude Code install still analyses your
@@ -86,6 +88,7 @@ surface out of the numbers.
 | `/qshare` | Choose what your team can see — nothing by default |
 | `/qfeed` | File tasks from findings that passed a gate — and only those |
 | `/qteam` | Shared vaults and task handoff (needs the hosted side) |
+| `/qcontrib` | Contribute the delivery ledger as nine bounded columns — run it bare to see what would leave, and what stays |
 
 ## What it refuses to tell you
 

@@ -25,37 +25,12 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { loadConfig } from './home.mjs';
 import { emitJson } from './out.mjs';
+// The token is still resolved by home.mts rather than hardcoded — cloud.mts is
+// where that lives now, so this finds it wherever /qsetup was able to put it,
+// which under a sandboxed harness is not necessarily the preferred location.
+import { config, api } from './cloud.mjs';
 const run = promisify(execFile);
-function config() {
-    const env = process.env.SESSION_VIZ_TOKEN;
-    // Resolved by home.mts rather than hardcoded, so this finds the token
-    // wherever /qsetup was able to put it — which under a sandboxed harness is
-    // not necessarily the preferred location.
-    const file = loadConfig() || {};
-    const url = process.env.SESSION_VIZ_URL || file.url || 'https://cloud.session-viz.com';
-    const token = env || file.token;
-    if (!token) {
-        throw new Error('no token — run /qsetup first, or set SESSION_VIZ_TOKEN');
-    }
-    const actor = process.env.SESSION_VIZ_ACTOR || file.actor;
-    return actor ? { url, token, actor } : { url, token };
-}
-const api = async (cfg, path, method = 'GET', body) => {
-    const headers = { authorization: `Bearer ${cfg.token}` };
-    if (body)
-        headers['content-type'] = 'application/json';
-    if (cfg.actor)
-        headers['x-actor'] = cfg.actor;
-    const r = await fetch(cfg.url.replace(/\/$/, '') + path, {
-        method, headers, body: body ? JSON.stringify(body) : undefined,
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok)
-        throw new Error(j.error || `HTTP ${r.status}`);
-    return j;
-};
 // ---------------------------------------------------------------- redaction
 const HOME = homedir();
 /**

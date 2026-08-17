@@ -27,34 +27,14 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
-import { loadConfig } from './home.mjs';
 import { emitJson } from './out.mjs';
+// config() and api() used to be declared here, byte-identical to the copies in
+// qshare.mts. One module now: two commands that read the same token file must
+// not be able to disagree about where it is or which headers it carries.
+import { config, api } from './cloud.mjs';
 const run = promisify(execFile);
 const HERE = new URL('.', import.meta.url).pathname;
 const BIG = { maxBuffer: 64 * 1024 * 1024 };
-function config() {
-    const file = loadConfig() || {};
-    const url = process.env.SESSION_VIZ_URL || file.url || 'https://cloud.session-viz.com';
-    const token = process.env.SESSION_VIZ_TOKEN || file.token;
-    if (!token)
-        throw new Error('no token — run /qsetup first, or set SESSION_VIZ_TOKEN');
-    const actor = process.env.SESSION_VIZ_ACTOR || file.actor;
-    return actor ? { url, token, actor } : { url, token };
-}
-const api = async (cfg, path, method = 'GET', body) => {
-    const headers = { authorization: `Bearer ${cfg.token}` };
-    if (body)
-        headers['content-type'] = 'application/json';
-    if (cfg.actor)
-        headers['x-actor'] = cfg.actor;
-    const r = await fetch(cfg.url.replace(/\/$/, '') + path, {
-        method, headers, body: body ? JSON.stringify(body) : undefined,
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok)
-        throw new Error(j.error || `HTTP ${r.status}`);
-    return j;
-};
 const json = async (script, args) => {
     const { stdout } = await run('node', [join(HERE, script), ...args], BIG);
     return JSON.parse(stdout);
