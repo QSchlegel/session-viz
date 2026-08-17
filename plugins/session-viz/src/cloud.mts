@@ -47,7 +47,14 @@ export function config(): Config {
       '  Set both, or neither.')
   }
 
-  const url = (envToken ? envUrl : undefined) || file.url || 'https://cloud.session-viz.com'
+  // Symmetric to the refusal above, and just as necessary: a token from the
+  // environment must not inherit a URL from the file either. Where the token is
+  // supplied explicitly, the destination is the one supplied with it or the
+  // public default — never a host left over in a config written for some other
+  // workspace.
+  const url = envToken
+    ? (envUrl || 'https://cloud.session-viz.com')
+    : (file.url || 'https://cloud.session-viz.com')
   const token = envToken || file.token
   if (!token) throw new Error('no token — run /qsetup first, or set SESSION_VIZ_TOKEN')
   const actor = process.env.SESSION_VIZ_ACTOR || file.actor

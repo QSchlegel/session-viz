@@ -91,10 +91,24 @@ export function withoutRepo(slug, repo) {
         return slug;
     // Bounded by segment edges, so `api` cannot maul `apiary`, and matched as a
     // whole run of segments, so a two-word repo is caught as the two words it is.
-    const out = `-${flat(slug)}-`.split(`-${r}-`).join('-').replace(/^-+|-+$/g, '');
-    if (out === flat(slug))
+    //
+    // Repeated to a fixed point, because one pass cannot remove ADJACENT matches:
+    // the separator between two occurrences is consumed by the first of them, so
+    // `acme-api-acme-api-seo` came out as `acme-api-seo` and shipped the very
+    // name this function exists to remove. Bounded by the shrinking length, so it
+    // always terminates.
+    let cur = flat(slug);
+    for (;;) {
+        const next = `-${cur}-`.split(`-${r}-`).join('-').replace(/^-+|-+$/g, '');
+        if (next === cur)
+            break;
+        cur = next;
+        if (!cur)
+            break;
+    }
+    if (cur === flat(slug))
         return slug; // nothing matched; leave it untouched
-    return out ? out.slice(0, 64) : 'repo-named';
+    return cur ? cur.slice(0, 64) : 'repo-named';
 }
 /**
  * The projection. Written out field by field, on purpose — see the header.

@@ -209,12 +209,16 @@ async function postBatch(cfg, findings) {
             '  Nothing was recorded as sent. Check the workspace before re-running.');
     }
     {
-        const body = (await r.json().catch(() => ({})));
+        // Status before body. fetch resolves as soon as the headers land, so a 5xx
+        // whose body stalls or never closes would hang here — and the one thing
+        // this path must always manage is telling somebody that the fate of their
+        // contribution is unknown.
         if (r.status >= 500) {
             throw new Error(`HTTP ${r.status} — ${findings.length} finding(s) of unknown fate, for the same\n` +
                 '  reason as above: a 5xx can follow a commit as easily as precede one.\n' +
                 '  Nothing was recorded as sent.');
         }
+        const body = (await r.json().catch(() => ({})));
         if (r.status === 403) {
             throw new Error(`${body.error || 'forbidden'} — this workspace's server has not been widened to accept ` +
                 'a collab token here. Mint a contrib token with: /qsetup --scope contrib');
