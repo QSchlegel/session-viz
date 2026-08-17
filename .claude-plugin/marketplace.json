@@ -8,7 +8,7 @@
     {
       "name": "session-viz",
       "source": "./plugins/session-viz",
-      "description": "Ten commands over the transcripts Claude Code already writes: /qpact /qtrends /qruns /qcost /qship /qdoctor /qsetup /qshare /qfeed /qteam",
+      "description": "Eleven commands over the transcripts Claude Code already writes: /qpact /qtrends /qruns /qcost /qship /qdoctor /qsetup /qshare /qfeed /qteam /qcontrib",
       "category": "productivity"
     }
   ]

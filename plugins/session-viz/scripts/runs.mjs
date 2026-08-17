@@ -111,7 +111,7 @@ async function scanRecords(source) {
         structured: 0, structuredFail: 0,
         intentWrite: 0, wroteOk: 0, writeDenied: 0,
         permission: false, auth: false, loops: 0,
-        toolCounts: new Map(),
+        toolCounts: new Map(), version: null,
     };
     const names = new Map();
     let lastKey = null;
@@ -121,6 +121,12 @@ async function scanRecords(source) {
         // last-write-wins read would lose it the moment any later record omits it.
         if (!r.cwd && o.cwd)
             r.cwd = o.cwd;
+        // First version wins, for the same reason cwd does. Codex writes it once on
+        // session_meta, so a last-write-wins read loses it to the next record that
+        // omits it — and a lost version silently becomes the '0.0.x' fallback,
+        // which is a legal cli_band and therefore never surfaces as an error.
+        if (!r.version && o.version)
+            r.version = o.version;
         if (ts) {
             if (!r.started)
                 r.started = ts;
@@ -342,6 +348,7 @@ export async function collectRuns({ since = null } = {}) {
                 task: s.schedName ? slug(s.schedName) : null,
                 family: isSub ? familyOf(s.firstText) : null,
                 week: isoWeek(s.started), started: s.started,
+                ended: s.lastRecord, cliVersion: s.version,
                 terminal: terminalState(s), delivery: deliveryState(s),
                 errorClass: s.permission ? 'permission' : s.auth ? 'auth' : s.toolErr ? 'tool_error' : 'none',
                 out: s.out, cread: s.cread, ccreate: s.ccreate, cin: s.cin,

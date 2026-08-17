@@ -28,35 +28,15 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
-import { loadConfig } from './home.mjs'
 import { emitJson } from './out.mjs'
+// config() and api() used to be declared here, byte-identical to the copies in
+// qshare.mts. One module now: two commands that read the same token file must
+// not be able to disagree about where it is or which headers it carries.
+import { config, api } from './cloud.mjs'
 
 const run = promisify(execFile)
 const HERE = new URL('.', import.meta.url).pathname
 const BIG = { maxBuffer: 64 * 1024 * 1024 }
-
-interface Config { url: string; token: string; actor?: string }
-
-function config(): Config {
-  const file: Partial<Config> = loadConfig<Config>() || {}
-  const url = process.env.SESSION_VIZ_URL || file.url || 'https://cloud.session-viz.com'
-  const token = process.env.SESSION_VIZ_TOKEN || file.token
-  if (!token) throw new Error('no token — run /qsetup first, or set SESSION_VIZ_TOKEN')
-  const actor = process.env.SESSION_VIZ_ACTOR || file.actor
-  return actor ? { url, token, actor } : { url, token }
-}
-
-const api = async (cfg: Config, path: string, method = 'GET', body?: unknown): Promise<any> => {
-  const headers: Record<string, string> = { authorization: `Bearer ${cfg.token}` }
-  if (body) headers['content-type'] = 'application/json'
-  if (cfg.actor) headers['x-actor'] = cfg.actor
-  const r = await fetch(cfg.url.replace(/\/$/, '') + path, {
-    method, headers, body: body ? JSON.stringify(body) : undefined,
-  })
-  const j = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error((j as { error?: string }).error || `HTTP ${r.status}`)
-  return j
-}
 
 // ---------------------------------------------------------------- candidates
 

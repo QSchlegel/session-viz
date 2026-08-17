@@ -1,7 +1,11 @@
 ---
 name: qcost
 description: Where the tokens actually go — cache-read versus generated output, and how much context each agent family replays per run. Use when the user runs /qcost, asks about token spend, why their bill is high, what an agent costs, or wants to reduce context usage.
-disable-model-invocation: true
+# Model-invocable, unlike the eight commands that are not. The rule: a skill may be
+# reached without the user typing its name IFF it only reads this machine and prints
+# to stdout. This one does. /qpact and /qtrends open a browser window, /qship --write
+# writes files, and the five network commands send something — all of those stay
+# behind an explicit slash command.
 ---
 
 # qcost

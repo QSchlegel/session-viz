@@ -72,8 +72,7 @@ export interface SavedTo {
  * one keeps whatever permissions it had — the same omission once left session
  * reports world-readable in /tmp. Hence the explicit chmod.
  */
-export function saveConfig(data: unknown): SavedTo {
-  const targets = [configTarget(), ...configPaths().filter((p) => p !== configTarget())]
+function writeJson(targets: string[], what: string, data: unknown): SavedTo {
   const refused: string[] = []
   for (const path of targets) {
     try {
@@ -92,16 +91,58 @@ export function saveConfig(data: unknown): SavedTo {
     }
   }
   throw new Error(
-    `cannot write the config — permission denied at ${refused.join(', ')}. ` +
+    `cannot write the ${what} — permission denied at ${refused.join(', ')}. ` +
     'A sandboxed harness usually cannot write outside its workspace: set ' +
     'SESSION_VIZ_HOME to a directory it can write, or set SESSION_VIZ_TOKEN ' +
     'in the environment and skip the file entirely.')
+}
+
+export function saveConfig(data: unknown): SavedTo {
+  return writeJson([configTarget(), ...configPaths().filter((p) => p !== configTarget())], 'config', data)
 }
 
 export function loadConfig<T>(): T | null {
   const p = findConfig()
   if (!p) return null
   try { return JSON.parse(readFileSync(p, 'utf8')) as T } catch { return null }
+}
+
+// ---------------------------------------------------------------- state
+
+/**
+ * The one piece of state that is not the token: what this machine has already
+ * contributed.
+ *
+ * It is separate from config.json because losing it must be survivable in a way
+ * that losing the token is not — and because it is written on every /qcontrib
+ * send, while the token is written once. A crashed write must not be able to
+ * take the credential with it.
+ *
+ * It lives beside the config for the same reason /qshare and /qsetup agree on
+ * config.json: a second directory is a second answer to "have I sent this
+ * already", and the wrong answer there posts the whole corpus a second time.
+ * /v1/contrib has no unique constraint and no idempotency key, so a duplicate
+ * send is not wasteful, it silently doubles the tenant's row count and moves
+ * the k-anonymity gate the shared reference is computed behind.
+ */
+const STATE_FILE = 'contrib.json'
+
+export const statePaths = (): string[] => configDirs().map((d) => join(d, STATE_FILE))
+
+export const stateTarget = (): string => join(dirname(configTarget()), STATE_FILE)
+
+export function loadState<T>(): T | null {
+  const p = statePaths().find((q) => existsSync(q))
+  if (!p) return null
+  // A corrupt ledger reads as "nothing sent", which re-sends rather than
+  // skipping. That is the survivable direction: the alternative is a parse
+  // error that makes the command unrunnable until somebody deletes a file.
+  try { return JSON.parse(readFileSync(p, 'utf8')) as T } catch { return null }
+}
+
+export function saveState(data: unknown): SavedTo {
+  const first = stateTarget()
+  return writeJson([first, ...statePaths().filter((p) => p !== first)], 'contribution ledger', data)
 }
 
 // ---------------------------------------------------------------- harnesses

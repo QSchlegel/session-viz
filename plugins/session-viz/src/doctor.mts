@@ -17,6 +17,7 @@ import { readdirSync, existsSync, readFileSync, createReadStream } from 'node:fs
 import { join, basename } from 'node:path'
 import { createInterface } from 'node:readline'
 import { listSessions } from './extract.mjs'
+import { findConfig, loadState } from './home.mjs'
 import { emitJson } from './out.mjs'
 import { repoRoot } from './repo.mjs'
 import { isCursorTranscript } from './cursor.mjs'
@@ -230,6 +231,37 @@ export function audit(target: string, fleet: Fingerprint[]): AuditResult {
   return { me, findings, comparedAgainst: others.length }
 }
 
+// ---------------------------------------------------------------- routing
+
+/**
+ * Which of the eleven commands to run next, grouped by what each one touches.
+ *
+ * This is here because "there are a lot of commands and I do not know which one
+ * to use" is a real report, and the answer was not written down anywhere a
+ * person would look. /qdoctor is already the "what is wrong with this setup"
+ * surface and already reads local state, so it is where the question belongs.
+ *
+ * The arrow line is derived from state on disk, never from a guess: no config
+ * means the token step has not happened, and a config with no contribution
+ * ledger beside it means this machine has never contributed. A recommendation
+ * that cannot point at the evidence for itself is an advertisement.
+ */
+function next(): string {
+  const out = ['', 'what to run next', '',
+    '  reads only this machine   /qcost /qtrends /qruns /qpact /qship /qdoctor',
+    '  contributes bands         /qcontrib',
+    '  your workspace            /qsetup /qfeed /qshare /qteam']
+
+  const cfg = findConfig()
+  const sent = Object.keys((loadState<{ sent?: Record<string, unknown> }>() || {}).sent || {}).length
+  if (!cfg) {
+    out.push('', '  → /qsetup      no workspace is connected on this machine yet')
+  } else if (!sent) {
+    out.push('', '  → /qcontrib    a token is set up and nothing has been contributed from here yet')
+  }
+  return out.join('\n')
+}
+
 // ---------------------------------------------------------------- cli
 
 const isMain = process.argv[1] && process.argv[1].endsWith('doctor.mjs')
@@ -268,8 +300,12 @@ if (isMain) {
   console.log(`config      CLAUDE.md ${r.me.hasClaudeMd ? `yes (${r.me.claudeMdRules} rules)` : 'no'} · ${r.me.commands} commands · ${r.me.skills} skills · ${r.me.hooks} hooks`)
   console.log(`permissions ${r.me.permissionAllow} allow entries${r.me.permissionCoversWrite ? ', covers Write' : ', none cover Write'}`)
   console.log(`compared    against ${r.comparedAgainst} other repos of yours\n`)
-  if (!r.findings.length) { console.log('nothing to flag — this repo matches or exceeds your fleet on every check.'); process.exit(0) }
-  for (const f of r.findings) console.log(`  [${f.level}] ${f.text}`)
-  console.log('\n  "gap" means at least half your other repos do this and enough of them exist')
-  console.log('  to call it a norm. "note" is an observation with too little behind it.')
+  if (!r.findings.length) {
+    console.log('nothing to flag — this repo matches or exceeds your fleet on every check.')
+  } else {
+    for (const f of r.findings) console.log(`  [${f.level}] ${f.text}`)
+    console.log('\n  "gap" means at least half your other repos do this and enough of them exist')
+    console.log('  to call it a norm. "note" is an observation with too little behind it.')
+  }
+  console.log(next())
 }

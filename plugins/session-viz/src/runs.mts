@@ -70,6 +70,12 @@ interface TranscriptRecord {
   type?: string
   timestamp?: string
   cwd?: string
+  /** The harness CLI's own version, written top-level on the record. Claude
+   *  Code stamps it on every record; codex.mts normalises `cli_version` onto
+   *  the same field. Read here — not just in extract.mts — because it is the
+   *  only source for a contribution's `cli_band`, and a Run without it collapses
+   *  the whole error-by-band table in the shared reference into one '0.0.x' bar. */
+  version?: string
   message?: TranscriptMessage
 }
 
@@ -103,6 +109,7 @@ interface RunScan {
   auth: boolean
   loops: number
   toolCounts: Map<string, number>
+  version: string | null
 }
 
 export type RunKind = 'human' | 'scheduled' | 'subagent'
@@ -130,6 +137,15 @@ export interface Run {
   family: Family | null
   week: string
   started: string
+  /** Timestamp of the LAST record, assistant or not. `agentMin` deliberately
+   *  ignores a human reopening a session; this does not, because the question it
+   *  answers is "has anything touched this transcript recently" — which is what
+   *  keeps a live session out of a contribution that can never be updated. */
+  ended: string | null
+  /** The harness CLI's version as the transcript recorded it, unbanded. Kept raw
+   *  because Run is a facts type: banding it to '2.1.x' here would put a wire
+   *  format for one consumer into the model every other command reads. */
+  cliVersion: string | null
   terminal: TerminalState
   delivery: DeliveryState
   errorClass: ErrorClass
@@ -233,7 +249,7 @@ async function scanRecords(source: AsyncIterable<TranscriptRecord>): Promise<Run
     structured: 0, structuredFail: 0,
     intentWrite: 0, wroteOk: 0, writeDenied: 0,
     permission: false, auth: false, loops: 0,
-    toolCounts: new Map(),
+    toolCounts: new Map(), version: null,
   }
   const names = new Map<string, string>()
   let lastKey: string | null = null
@@ -242,6 +258,11 @@ async function scanRecords(source: AsyncIterable<TranscriptRecord>): Promise<Run
     // First cwd wins. Codex records it on session_meta and nowhere else, so a
     // last-write-wins read would lose it the moment any later record omits it.
     if (!r.cwd && o.cwd) r.cwd = o.cwd
+    // First version wins, for the same reason cwd does. Codex writes it once on
+    // session_meta, so a last-write-wins read loses it to the next record that
+    // omits it — and a lost version silently becomes the '0.0.x' fallback,
+    // which is a legal cli_band and therefore never surfaces as an error.
+    if (!r.version && o.version) r.version = o.version
     if (ts) { if (!r.started) r.started = ts; r.lastRecord = ts }
 
     if (o.type === 'assistant') {
@@ -416,6 +437,7 @@ export async function collectRuns({ since = null }: { since?: number | null } = 
         task: s.schedName ? slug(s.schedName) : null,
         family: isSub ? familyOf(s.firstText) : null,
         week: isoWeek(s.started), started: s.started,
+        ended: s.lastRecord, cliVersion: s.version,
         terminal: terminalState(s), delivery: deliveryState(s),
         errorClass: s.permission ? 'permission' : s.auth ? 'auth' : s.toolErr ? 'tool_error' : 'none',
         out: s.out, cread: s.cread, ccreate: s.ccreate, cin: s.cin,

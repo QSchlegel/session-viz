@@ -233,6 +233,11 @@ function report({ saved, token, scope, tenant, target, actor }) {
     // change existed to remove.
     console.log('\n  The MCP server needs nothing from this file. It authenticates on');
     console.log('  first use, in the browser, the same way you just did here.');
+    // The step after setup used to have no name here, which is the whole reason a
+    // correctly connected workspace still read "1 step left" in the console with
+    // nothing on screen saying which of eleven commands would clear it.
+    console.log('\n  next    /qcontrib shows what this machine would contribute, and what');
+    console.log('          stays on it. Nothing leaves until you say so.');
 }
 // ---------------------------------------------------------------- oauth flow
 async function runOAuth(target, scope, actor) {
