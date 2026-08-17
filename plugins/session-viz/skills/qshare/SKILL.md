@@ -17,11 +17,23 @@ of verbatim prompt text**. Sharing a project means sharing what you typed in it.
 
 Two things happen before anything leaves:
 
-1. **Machine-local detail is stripped.** An absolute path becomes a repo name; a home
-   directory becomes `~/`. Repo names survive — that is deliberate — but the route to them
-   does not, because a parent folder can name a client and a username is not analysis.
-2. **You cannot share what you have not reviewed.** `--share` refuses without `--yes`, and
-   tells you how many prompt-text fields are in the payload first.
+1. **Your home directory is stripped, and `cwd` is cut to its last segment.** Every
+   occurrence of `$HOME` in every string becomes `~`, including one quoted mid-sentence in
+   prompt text — that is where the username usually survives. The `cwd` field alone is
+   reduced to a repo name. Repo names themselves survive, deliberately.
+
+   **What this does not do:** a path outside your home directory is not touched.
+   `/srv/work/acme/keys.env` leaves verbatim, and so does anything under a mounted or
+   shared root. The review's `0 absolute home path(s)` line counts home paths and only
+   home paths — it is not a statement about every path in the payload. If this machine
+   keeps work outside `$HOME`, read `--review` before deciding.
+2. **Nothing is sent without a second, separate act.** `--share` refuses without `--yes`,
+   and prints the byte count, the prompt-text count and the home-path count before it
+   refuses, so the first refusal is also the review. `--pick` opens with nothing selected
+   and confirms at the button with the count for what you selected; ticking select-all
+   confirms once more on the way in, because that one means every project on the machine.
+   But the picker never prints the payload — `--review` is the only thing that shows the
+   literal bytes, and it is the only way to read the prompt text before a colleague does.
 
 A share lands in **plane B**: identity-bearing, tenant-scoped, and it names you. It never
 touches the person-blind telemetry and structurally cannot — that schema has no field for
@@ -58,7 +70,7 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/qshare.mjs
 Do this before the first share of any kind. It prints the exact JSON that would be sent.
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/qshare.mjs --review project dw-ai-support
+node ${CLAUDE_PLUGIN_ROOT}/scripts/qshare.mjs --review project my-project
 ```
 
 Report the byte count and the prompt-text count to the user in one line. Do **not** paste
@@ -68,7 +80,7 @@ transcript is the opposite of the point.
 ### 3. Share it
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/qshare.mjs --share project dw-ai-support --yes
+node ${CLAUDE_PLUGIN_ROOT}/scripts/qshare.mjs --share project my-project --yes
 ```
 
 Add `--label "Support bot"` to show a different name to the team.
@@ -92,5 +104,18 @@ colleague has already read cannot be recalled.** A tool that implies otherwise i
 
 ## Requires
 
-A token from `/qsetup`. Sharing needs a **collab**-scoped token, not the `contrib` one —
-they are different planes and each is refused where the other belongs.
+A **collab**-scoped token. `/qsetup` mints `contrib` by default and `/v1/share` refuses
+it — `this token is scoped 'contrib' and this route needs 'collab'`. Ask for the other
+explicitly:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/qsetup.mjs --scope collab
+```
+
+**Only a workspace admin can approve one.** A member who runs that command gets a refusal
+on the consent screen, not a token. If that happens, say so and stop — re-running without
+the flag would quietly hand back a `contrib` token, and the next `--share` would fail on
+the same 401 with nothing new to read.
+
+It is not symmetric the other way: a `collab` token *is* accepted at `/v1/contrib`, so one
+token can both share and contribute. A `contrib` token reaches plane A only.
