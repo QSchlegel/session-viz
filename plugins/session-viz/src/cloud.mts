@@ -31,8 +31,24 @@ export interface Config {
  */
 export function config(): Config {
   const file: Partial<Config> = loadConfig<Config>() || {}
-  const url = process.env.SESSION_VIZ_URL || file.url || 'https://cloud.session-viz.com'
-  const token = process.env.SESSION_VIZ_TOKEN || file.token
+  const envToken = process.env.SESSION_VIZ_TOKEN
+  const envUrl = process.env.SESSION_VIZ_URL
+
+  // A URL and the token sent to it are ONE credential and come from ONE source.
+  // Resolved per field, `SESSION_VIZ_URL=http://elsewhere` with no token beside
+  // it picked the token out of the config file and put a live bearer for this
+  // workspace into a request to whatever that URL named. The doc comment above
+  // already stated the rule; the code resolved the two independently and broke
+  // it anyway.
+  if (envUrl && !envToken && file.token) {
+    throw new Error(
+      'SESSION_VIZ_URL is set but SESSION_VIZ_TOKEN is not.\n' +
+      '  Refusing to send the token from your config file to a different host.\n' +
+      '  Set both, or neither.')
+  }
+
+  const url = (envToken ? envUrl : undefined) || file.url || 'https://cloud.session-viz.com'
+  const token = envToken || file.token
   if (!token) throw new Error('no token — run /qsetup first, or set SESSION_VIZ_TOKEN')
   const actor = process.env.SESSION_VIZ_ACTOR || file.actor
   const scope = file.scope

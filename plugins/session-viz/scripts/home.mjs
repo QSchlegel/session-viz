@@ -119,8 +119,25 @@ export function loadConfig() {
 const STATE_FILE = 'contrib.json';
 export const statePaths = () => configDirs().map((d) => join(d, STATE_FILE));
 export const stateTarget = () => join(dirname(configTarget()), STATE_FILE);
+/** 0 for anything unreadable, so a file we cannot stat simply loses. */
+const mtime = (p) => {
+    try {
+        return statSync(p).mtimeMs;
+    }
+    catch {
+        return 0;
+    }
+};
 export function loadState() {
-    const p = statePaths().find((q) => existsSync(q));
+    // Newest wins, not first-in-the-list. saveState walks the same candidates and
+    // stops at the first it can actually WRITE, so when the preferred directory
+    // turns read-only the ledger moves to a later one — and a reader taking the
+    // first that merely EXISTS goes on opening the stale copy left behind. For
+    // this file that means every finding already sent reads as unsent, and is
+    // contributed a second time into an aggregate that cannot be unpicked.
+    const p = statePaths()
+        .filter((q) => existsSync(q))
+        .sort((a, b) => mtime(b) - mtime(a))[0];
     if (!p)
         return null;
     // A corrupt ledger reads as "nothing sent", which re-sends rather than
