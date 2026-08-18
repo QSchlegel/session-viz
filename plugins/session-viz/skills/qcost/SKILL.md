@@ -14,6 +14,30 @@ description: Where the tokens actually go — cache-read versus generated output
 node ${CLAUDE_PLUGIN_ROOT}/scripts/runs.mjs --cost
 ```
 
+## Before quoting money: get the rate card
+
+```bash
+curl -fsS --max-time 5 "${SESSION_VIZ_URL:-https://cloud.session-viz.com}/v1/prices"
+```
+
+Optional, and failure is not an error. This command reads only this machine, and
+that stays true — the rate card is the one thing it cannot derive locally, so it
+asks, and carries on without it. Offline, self-hosted with no workspace, or the
+endpoint down: no currency, exactly as before.
+
+The response carries its own age, which is the part that matters:
+
+| field | what to do with it |
+|---|---|
+| `models` empty | No card. Quote no money. |
+| `stale: true` | Say how old (`ageDays`) and quote no money. Offer to refresh. |
+| `lastAttemptOk: false` | A refresh has been failing. Say so — `fetchedAt` is still honest, but someone should look. |
+| otherwise | Quote money, labelled with `fetchedAt` and `source`. |
+
+`fetchedAt` is the last *success* and `lastAttemptAt` the last *look*; they are
+different questions and a stale card usually shows it here first. The card is
+refreshed weekly by a cron in the cloud, from the published pricing page.
+
 ## The thing this exists to show
 
 Output — text the model generated — is a rounding error on the bill. Almost
@@ -36,9 +60,25 @@ not. Say that plainly rather than letting both look equally important.
 
 ## Rules
 
-- **No currency.** The rate card is not part of the snapshot, and a dollar figure
-  derived from an assumed price is an assumption rendered as a fact. If the user
-  wants money, ask them for their rate card and show the arithmetic.
+- **Money only from a dated rate card.** A dollar figure derived from an assumed
+  price is an assumption rendered as a fact, so the rule was never "no currency"
+  — it was "no *unsourced* currency". A fetched, dated, sourced card clears that
+  bar. Check for one before quoting anything (below), and if there is none, say
+  there is none rather than reaching for a remembered number: prices move, and
+  the ones you remember are the ones most likely to be stale. Sonnet 5's $3/$15
+  became $2/$10 permanently, and a cached answer got that wrong in this repo.
+- **A list price is not the bill.** Even a fresh card is Anthropic API list
+  pricing. A Claude Code subscription is not billed per token, so any figure is
+  an API-equivalent cost — what these tokens *would* cost through the API — and
+  must be labelled that way. Reporting it as spend is the same error the old
+  no-currency rule existed to prevent, just with a better source.
+- **Price per model, or say you didn't.** The corpus spans models; `models` in
+  the spine says which. Pricing a mixed corpus at one model's rate is an
+  assumption, so either do it per model or state the one you applied and that it
+  is an upper or lower bound.
+- **Cache writes have two prices.** 5-minute and 1-hour TTL differ by 1.6×. The
+  snapshot does not record which was used, so name the assumption when it matters
+  — on this corpus the gap between them is thousands of dollars.
 - **Quote the integers beside the percentages.** There is one chart and it is
   linear: output rounds to `0%` and its bar is clamped to a single cell, so the
   composition block on its own reads as "output is nothing". Give the token
