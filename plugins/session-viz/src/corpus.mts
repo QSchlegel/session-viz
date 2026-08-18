@@ -24,6 +24,7 @@ import { extract, listSessions } from './extract.mjs'
 import type { FrictionKind, ScoreBand, Session, SessionFile, SessionTurn, TokenTotals, TurnSignals, TurnToolCall } from './extract.mjs'
 import { harnessCoverage, transcriptRoots } from './home.mjs'
 import { repoName, repoRoot, worktreeOf } from './repo.mjs'
+import { layoutGraph } from './graph.mjs'
 
 // ---------------------------------------------------------------- types
 
@@ -1073,91 +1074,6 @@ function buildGraph(byRepo: Map<string, Session[]>): CorpusGraph {
     },
     isolated: repos.filter((r) => !connected.has(r.name)).map((r) => r.name),
   }
-}
-
-// Force-directed layout, computed here rather than in the browser so the page
-// stays static and the same corpus always draws the same picture. Seeding on a
-// circle by index keeps it free of randomness — Math.random would make every
-// regeneration a different graph and every diff meaningless.
-function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], { width = 1000, height = 620, iterations = 400 }: LayoutOptions = {}): GraphLayout {
-  const n = nodes.length
-  if (!n) return { width, height, positions: {} }
-  const pos = nodes.map((_, i) => {
-    const a = (i / n) * Math.PI * 2
-    return { x: width / 2 + Math.cos(a) * width * 0.32, y: height / 2 + Math.sin(a) * height * 0.32 }
-  })
-  const index = new Map<string, number>(nodes.map((nd, i) => [nd.id, i]))
-  const k = Math.sqrt((width * height) / n) * 0.55
-  // Hubs should not be flung to the rim by sheer edge count, so attraction is
-  // damped by degree; repos additionally pull toward the middle.
-  const deg = nodes.map((nd) => Math.max(1, nd.degree))
-
-  for (let it = 0; it < iterations; it++) {
-    const temp = (1 - it / iterations) * (width * 0.06) + 0.5
-    const dx = new Array<number>(n).fill(0)
-    const dy = new Array<number>(n).fill(0)
-
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        let ex = pos[i]!.x - pos[j]!.x
-        let ey = pos[i]!.y - pos[j]!.y
-        let d2 = ex * ex + ey * ey
-        if (d2 < 0.01) {
-          ex = (i % 7) - 3 + 0.5
-          ey = (j % 5) - 2 + 0.5
-          d2 = ex * ex + ey * ey
-        }
-        const d = Math.sqrt(d2)
-        const f = (k * k) / d
-        dx[i]! += (ex / d) * f
-        dy[i]! += (ey / d) * f
-        dx[j]! -= (ex / d) * f
-        dy[j]! -= (ey / d) * f
-      }
-    }
-
-    for (const e of edges) {
-      const i = index.get(e.source)
-      const j = index.get(e.target)
-      if (i === undefined || j === undefined) continue
-      const ex = pos[i]!.x - pos[j]!.x
-      const ey = pos[i]!.y - pos[j]!.y
-      const d = Math.sqrt(ex * ex + ey * ey) || 0.01
-      const f = (d * d) / k / Math.sqrt(Math.min(deg[i]!, deg[j]!))
-      dx[i]! -= (ex / d) * f
-      dy[i]! += -(ey / d) * f
-      dx[j]! += (ex / d) * f
-      dy[j]! += (ey / d) * f
-    }
-
-    for (let i = 0; i < n; i++) {
-      dx[i]! += (width / 2 - pos[i]!.x) * 0.012
-      dy[i]! += (height / 2 - pos[i]!.y) * 0.012
-      const d = Math.sqrt(dx[i]! * dx[i]! + dy[i]! * dy[i]!) || 1
-      const step = Math.min(d, temp)
-      pos[i]!.x += (dx[i]! / d) * step
-      pos[i]!.y += (dy[i]! / d) * step
-    }
-  }
-
-  // Fit to the viewport with room for labels.
-  const pad = 56
-  const xs = pos.map((p) => p.x)
-  const ys = pos.map((p) => p.y)
-  const minX = Math.min(...xs)
-  const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
-  const sx = (width - pad * 2) / Math.max(1, maxX - minX)
-  const sy = (height - pad * 2) / Math.max(1, maxY - minY)
-  const positions: Record<string, { x: number; y: number }> = {}
-  nodes.forEach((nd, i) => {
-    positions[nd.id] = {
-      x: +(pad + (pos[i]!.x - minX) * sx).toFixed(1),
-      y: +(pad + (pos[i]!.y - minY) * sy).toFixed(1),
-    }
-  })
-  return { width, height, positions }
 }
 
 // ---------------------------------------------------------------- exemplars

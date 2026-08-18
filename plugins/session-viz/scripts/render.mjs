@@ -10,6 +10,12 @@ import { readFileSync, writeFileSync, chmodSync, realpathSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { version } from './version.mjs';
+import { unlinkSync, readdirSync, statSync } from 'node:fs';
+import { jsonForScript } from './html.mjs';
+import { deriveGraph, mergeAuthored, layoutGraph } from './graph.mjs';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n));
 const fmtDur = (ms) => {
@@ -133,6 +139,47 @@ button.copy.done{background:var(--ok)}
 .empty{color:var(--muted);font-style:italic;padding:20px;text-align:center}
 footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono);
   border-top:1px solid var(--line);padding-top:14px}
+/* knowledge graph */
+.gwrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:0;border:1px solid var(--line);
+  border-radius:10px;overflow:hidden;margin:10px 0 0}
+@media (max-width:900px){.gwrap{grid-template-columns:1fr}}
+.glegend{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:16px;align-items:center;padding:9px 14px;
+  border-bottom:1px solid var(--line);font-size:12.5px}
+.ghalf{display:inline-flex;align-items:center;gap:7px}
+.gk{width:11px;height:11px;display:inline-block;background:var(--dim)}
+.gcirc{border-radius:50%}
+.gdia{transform:rotate(45deg)}
+.gbtn{margin-left:auto;border:1px solid var(--line);background:transparent;color:var(--ink);
+  font:inherit;font-size:12px;padding:3px 10px;border-radius:99px;cursor:pointer}
+.gbtn.off{opacity:.55}
+.gcanvas{overflow:auto;background:var(--kg-bg,#16151a)}
+#qkg{display:block;width:100%;height:auto}
+.ge{stroke:#6b6b76;stroke-opacity:.34;fill:none}
+.ge.authored{stroke:#b07acb;stroke-opacity:.5}
+.ge.dash{stroke-dasharray:4 4}
+.ge.hot{stroke-opacity:.95;stroke-width:1.8}
+.ge.mute,.gn.mute{opacity:.1}
+.gn{cursor:pointer}
+.gn .gs{stroke:#16151a;stroke-width:1.5}
+.gn.authored .gs{stroke:#e8e6f2;stroke-width:1.2;stroke-dasharray:3 2}
+.gn text{font-size:9.5px;fill:#d8d6dc;text-anchor:middle;paint-order:stroke;stroke:#16151a;
+  stroke-width:3px;stroke-linejoin:round;pointer-events:none}
+.gside{padding:14px 16px;border-left:1px solid var(--line);font-size:13px;overflow:auto;max-height:620px}
+@media (max-width:900px){.gside{border-left:0;border-top:1px solid var(--line);max-height:none}}
+.gside h4{margin:0 0 6px;font-size:14px}
+/* Full-width stamp, never a subtle badge: which layer a node belongs to is the
+   first thing a reader needs and the easiest thing to miss. */
+.gstamp{display:block;padding:5px 8px;border-radius:5px;font-size:11.5px;margin:0 0 9px}
+.gstamp.derived{background:rgba(21,128,61,.12);border:1px solid rgba(21,128,61,.45)}
+.gstamp.authored{background:rgba(147,51,234,.12);border:1px solid rgba(147,51,234,.45)}
+.gfoot{margin:12px 0 0;font-size:12.5px}
+.glbl{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  font-weight:640;margin:12px 0 5px}
+.gsup,.gnot{margin:0;padding-left:18px}
+.gsup li,.gnot li{margin:2px 0}
+.gnot li{color:var(--dim)}
+.gmismatch{background:#b91c1c;color:#fff;padding:10px 14px;border-radius:8px;margin:0 0 14px;font-size:13.5px}
+
 `;
 }
 function renderIntents(intent) {
@@ -189,7 +236,97 @@ function renderScore(session) {
   </div>
 </div>`;
 }
-export function render(session, intent) {
+// ---------------------------------------------------------------- graph
+// Reuses the corpus renderer's palette so the two pages share one vocabulary
+// rather than inventing a second. Colour encodes kind WITHIN a layer; it never
+// carries the derived/authored distinction, which is shape's job.
+const KIND_COLOR = {
+    session: '#e0894a', harness: '#68b3b3', repo: '#e0894a', model: '#6a9fd4',
+    tool: '#8fbc6b', mcp: '#68b3b3', skill: '#d9b45c', cli: '#8fbc6b',
+    package: '#6a9fd4', stack: '#c47ab0', ext: '#c47ab0', slash: '#d9b45c',
+    mode: '#a0a0a8', friction: '#d06a5a', turn: '#9a9aa4',
+    decision: '#15803d', defect: '#dc2626', guard: '#b45309',
+    thread: '#9333ea', subsystem: '#2563eb', question: '#78716c', concept: '#78716c',
+};
+// Rendered unconditionally, whether or not the corresponding nodes exist. A
+// caveat that disappears when quiet is one nobody trusts on its return.
+const NOT_SAID = [
+    'No file appears here. The spine records that a file was touched, never which one.',
+    'A package, CLI tool, stack file, extension or skill is attributed to the session, never to a turn.',
+    'A repeat points at the first identical prompt, not at the previous one. It is a star, not a chain.',
+    'A slash command attaches to the turn that was open when it was issued, which is the preceding human turn.',
+    'An interruption is a count on a turn, not a point inside it. Which tool call it hit is not recorded.',
+];
+function renderGraph(session, intent) {
+    const derived = deriveGraph(session);
+    const merged = mergeAuthored(derived, intent?.graph, session.turns.length);
+    const { nodes, edges } = merged;
+    if (!nodes.length)
+        return '';
+    const W = 1000;
+    const H = 620;
+    const layout = layoutGraph(nodes, edges, { width: W, height: H });
+    const pos = layout.positions;
+    const maxDeg = Math.max(1, ...nodes.map((n) => n.degree));
+    const radius = (n) => (n.kind === 'session' ? 7 : 4) + Math.sqrt(n.degree / maxDeg) * (n.kind === 'session' ? 13 : 8);
+    const line = (e, i) => {
+        const a = pos[e.source];
+        const b = pos[e.target];
+        if (!a || !b)
+            return ''; // an endpoint the gates removed; never draw a stub
+        return `<line class="ge ${e.layer}${e.dashed ? ' dash' : ''}" data-i="${i}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`;
+    };
+    const dot = (n) => {
+        const p = pos[n.id];
+        if (!p)
+            return '';
+        const r = radius(n);
+        const col = KIND_COLOR[n.kind] || '#78716c';
+        // Shape, not colour, carries the layer: a diamond survives greyscale,
+        // colour-blindness, and a stylesheet that failed to load.
+        const body = n.layer === 'authored'
+            ? `<polygon class="gs" points="${p.x},${p.y - r} ${p.x + r},${p.y} ${p.x},${p.y + r} ${p.x - r},${p.y}" fill="${col}"/>`
+            : `<circle class="gs" cx="${p.x}" cy="${p.y}" r="${r}" fill="${col}"/>`;
+        return `<g class="gn ${n.layer}" data-id="${esc(n.id)}" tabindex="0">${body}<text x="${p.x}" y="${p.y + r + 11}">${esc(n.label)}</text></g>`;
+    };
+    const derivedCount = nodes.filter((n) => n.layer === 'derived').length;
+    const authoredCount = nodes.length - derivedCount;
+    const drops = [...derived.suppressed, ...merged.dropped];
+    const suppressedHtml = drops.length
+        ? `<ul class="gsup">${drops
+            .map((d) => `<li><b>${esc(String(d.dropped))}</b> ${esc(d.what)} not drawn &mdash; ${esc(d.why)}.</li>`)
+            .join('')}</ul>`
+        : '<p class="dim">Nothing was suppressed: every node the rules produced is on the page.</p>';
+    const payload = {
+        nodes: nodes.map((n) => ({
+            id: n.id, kind: n.kind, label: n.label, layer: n.layer,
+            note: n.note || null, measured: n.measured || null, turns: n.turns || null, degree: n.degree,
+        })),
+        edges: edges.map((e) => ({ s: e.source, t: e.target, rel: e.rel || null, layer: e.layer })),
+    };
+    return `<h2>Knowledge graph</h2>
+<div class="gwrap">
+  <div class="glegend">
+    <span class="ghalf"><b>Measured from the transcript</b> <i class="gk gcirc"></i> ${derivedCount} nodes</span>
+    <span class="ghalf"><b>Written by the model</b> <i class="gk gdia"></i> ${authoredCount} nodes</span>
+    <button id="gtog" class="gbtn">Hide the model's layer</button>
+  </div>
+  <div class="gcanvas"><svg viewBox="0 0 ${W} ${H}" id="qkg" role="img" aria-label="Session knowledge graph">
+    <g id="gedges">${edges.map(line).join('')}</g>
+    <g id="gnodes">${nodes.map(dot).join('')}</g>
+  </svg></div>
+  <aside id="gside" class="gside"><p class="dim">Hover or focus a node. A measured node prints the field it came from; a written one says so.</p></aside>
+</div>
+<div class="gfoot">
+  <div class="glbl">What the gates dropped</div>
+  ${suppressedHtml}
+  <div class="glbl">What this picture cannot say</div>
+  <ul class="gnot">${NOT_SAID.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
+</div>
+<script>window.__qkg=${jsonForScript(payload)};</script>
+`;
+}
+export function render(session, intent, meta) {
     const t = session.totals;
     const maxDur = Math.max(1, ...session.turns.map((x) => x.durationMs));
     const compactLine = intent?.compactInstruction ? `/compact ${intent.compactInstruction}` : null;
@@ -262,8 +399,12 @@ ${intent?.tldr ? `<h2>TL;DR</h2><div class="card">${esc(intent.tldr)}</div>` : '
 <h2>Session shape</h2>
 <div class="stats">${stats}</div>
 
+${intent?.sessionId && session.sessionId && intent.sessionId !== session.sessionId
+        ? `<div class="gmismatch"><b>These two files describe different sessions.</b> The spine is ${esc(String(session.sessionId).slice(0, 8))} and the intent was written for ${esc(String(intent.sessionId).slice(0, 8))}. The analysis below mixes them. Re-run step 3.</div>`
+        : ''}
 ${renderIntents(intent)}
 ${renderQuality(intent)}
+${renderGraph(session, intent)}
 
 <h2>Turns</h2>
 <div class="filters">
@@ -275,7 +416,7 @@ ${renderQuality(intent)}
 </div>
 ${turns || '<div class="empty">No human turns found.</div>'}
 
-<footer>generated by /qpact · ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} · ${esc(String(t.records))} records analysed · prompts redacted for secrets</footer>
+<footer>generated by /qpact · ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} · ${esc(String(t.records))} records analysed · prompts redacted for secrets${meta?.fingerprint ? ` · fingerprint <b>${esc(meta.fingerprint)}</b>` : ''}${typeof meta?.spineAgeMin === 'number' ? ` · spine extracted ${esc(String(meta.spineAgeMin))} min ago` : ''}</footer>
 </div>
 <script>
 const cp=document.getElementById('cp');
@@ -294,6 +435,61 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
     t.style.display = f==='all' || t.dataset[f]==='1' ? '' : 'none';
   });
 });
+
+// --- knowledge graph: hover isolates a neighbourhood, the toggle subtracts the
+// model's layer. The toggle is the real answer to "which is which": it is
+// checkable rather than asserted.
+(function(){
+  var d=window.__qkg; if(!d) return;
+  var side=document.getElementById('gside'), tog=document.getElementById('gtog');
+  var nodes={}, adj={};
+  d.nodes.forEach(function(n){ nodes[n.id]=n; adj[n.id]=[]; });
+  d.edges.forEach(function(e,i){ if(adj[e.s])adj[e.s].push(i); if(adj[e.t])adj[e.t].push(i); });
+  var gEls=[].slice.call(document.querySelectorAll('#gnodes .gn'));
+  var eEls=[].slice.call(document.querySelectorAll('#gedges .ge'));
+  var hidden=false, pinned=null;
+  function esc(x){var p=document.createElement('p');p.textContent=x==null?'':String(x);return p.innerHTML;}
+  function card(id){
+    var n=nodes[id]; if(!n) return;
+    var rel=adj[id].map(function(i){var e=d.edges[i];var o=e.s===id?e.t:e.s;
+      return '<li>'+(e.s===id?'&rarr; ':'&larr; ')+esc((nodes[o]||{}).label||o)+(e.rel?' <i>'+esc(e.rel)+'</i>':'')+'</li>';}).join('');
+    side.innerHTML='<h4>'+esc(n.label)+'</h4>'+
+      '<span class="gstamp '+n.layer+'">'+(n.layer==='derived'
+        ? esc(n.measured||'Measured from the transcript.')
+        : "Written by the model at /qpact step 3. Not measured.")+'</span>'+
+      (n.note?'<p>'+esc(n.note)+'</p>':'')+
+      (n.turns&&n.turns.length?'<p class="dim">turn '+n.turns.join(', ')+'</p>':'')+
+      '<ul class="gsup">'+rel+'</ul>';
+  }
+  function paint(id){
+    var near=null;
+    if(id){ near={}; near[id]=1; adj[id].forEach(function(i){near[d.edges[i].s]=1;near[d.edges[i].t]=1;}); }
+    gEls.forEach(function(g){
+      var n=nodes[g.getAttribute('data-id')]||{};
+      var off=(hidden&&n.layer==='authored')||(near&&!near[g.getAttribute('data-id')]);
+      g.classList.toggle('mute',!!off);
+    });
+    eEls.forEach(function(l,i){
+      var e=d.edges[i]||{};
+      var off=(hidden&&e.layer==='authored')||(near&&e.s!==id&&e.t!==id);
+      l.classList.toggle('mute',!!off);
+      l.classList.toggle('hot',!!(id&&(e.s===id||e.t===id)&&!off));
+    });
+    if(id)card(id); else side.innerHTML='<p class="dim">Hover or focus a node. A measured node prints the field it came from; a written one says so.</p>';
+  }
+  gEls.forEach(function(g){
+    var id=g.getAttribute('data-id');
+    g.addEventListener('mouseenter',function(){paint(id);});
+    g.addEventListener('focus',function(){paint(id);});
+    g.addEventListener('mouseleave',function(){paint(pinned);});
+    g.addEventListener('click',function(ev){ev.stopPropagation();pinned=pinned===id?null:id;paint(pinned);});
+  });
+  if(tog)tog.addEventListener('click',function(){
+    hidden=!hidden; tog.classList.toggle('off',hidden);
+    tog.textContent=hidden?"Show the model's layer":"Hide the model's layer";
+    paint(pinned);
+  });
+})();
 </script></body></html>`;
 }
 // ---------------------------------------------------------------- cli
@@ -329,11 +525,86 @@ if (isMain) {
     const session = JSON.parse(readFileSync(spinePath, 'utf8'));
     const intentPath = opt('--intent');
     const intent = intentPath ? JSON.parse(readFileSync(intentPath, 'utf8')) : null;
-    const out = opt('-o') || opt('--out') || `/tmp/qpact-${(session.sessionId || 'session').slice(0, 8)}.html`;
+    // Content-hashed filename: the load-bearing staleness mechanism.
+    //
+    // Hash the INPUTS, not the output -- the footer carries a wall clock, so
+    // hashing rendered bytes would mint a new URL on every run even when the
+    // analysis is identical, filling /tmp and destroying the useful property that
+    // the same analysis is the same URL.
+    //
+    // The renderer's OWN bytes are in the hash, and that is not belt-and-braces.
+    // version() reads the plugin manifest -- the release version, not the build --
+    // and returns 'unknown' with no manifest. Editing render.mts within one
+    // version would otherwise leave the path byte-identical, and `open` on an
+    // unchanged path focuses the existing tab without reloading. That is exactly
+    // the environment this feature is developed in, so the bug would survive
+    // where it is most likely to be seen.
+    const selfBytes = () => {
+        try {
+            const here = realPath(fileURLToPath(import.meta.url));
+            const dir = dirname(here);
+            return ['render.mjs', 'graph.mjs']
+                .map((f) => {
+                try {
+                    return readFileSync(join(dir, f), 'utf8');
+                }
+                catch {
+                    return '';
+                }
+            })
+                .join('');
+        }
+        catch {
+            return '';
+        }
+    };
+    const sid8 = (session.sessionId || 'session').slice(0, 8);
+    const hash8 = crypto
+        .createHash('sha256')
+        .update(readFileSync(spinePath, 'utf8'))
+        .update(intentPath ? readFileSync(intentPath, 'utf8') : '')
+        .update(version())
+        .update(selfBytes())
+        .digest('hex')
+        .slice(0, 8);
+    const explicitOut = opt('-o') || opt('--out');
+    const out = explicitOut || `/tmp/qpact-${sid8}-${hash8}.html`;
     // 0600: the page embeds verbatim prompt text and lands in a shared /tmp.
-    writeFileSync(out, render(session, intent), { mode: 0o600 });
+    const spineAgeMin = (() => {
+        try {
+            return Math.round((Date.now() - statSync(spinePath).mtimeMs) / 60000);
+        }
+        catch {
+            return undefined;
+        }
+    })();
+    writeFileSync(out, render(session, intent, { fingerprint: hash8, spineAgeMin }), { mode: 0o600 });
     chmodSync(out, 0o600); // writeFileSync honours mode only when it creates the file
+    // Remove superseded pages for this session. Be precise about what this buys:
+    // it stops a stale URL being re-servable and keeps /tmp from filling. It does
+    // NOT close or reload a tab that is already open -- an unlinked file leaves
+    // the loaded DOM exactly where it is. Nothing here can close that tab; the
+    // hash in the filename and the fingerprint below are what let a reader
+    // DETECT one, which is the weaker and honest claim.
+    if (!explicitOut) {
+        try {
+            for (const f of readdirSync('/tmp'))
+                if (f.startsWith(`qpact-${sid8}-`) && f.endsWith('.html') && f !== `qpact-${sid8}-${hash8}.html`)
+                    try {
+                        unlinkSync(join('/tmp', f));
+                    }
+                    catch {
+                        /* another run may have taken it already */
+                    }
+        }
+        catch {
+            /* no /tmp listing; the hashed name still does the work */
+        }
+    }
+    if (intent && intent.sessionId && session.sessionId && intent.sessionId !== session.sessionId)
+        console.error(`warning: intent.sessionId (${intent.sessionId.slice(0, 8)}) does not match the spine (${session.sessionId.slice(0, 8)}) -- the page says so too`);
     console.log(out);
+    console.log(`fingerprint ${hash8} - compare this against the footer of the page you are looking at`);
     if (argv.includes('--open')) {
         const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
         execFile(cmd, [out], (err) => {

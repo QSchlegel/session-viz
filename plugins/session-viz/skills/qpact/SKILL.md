@@ -58,11 +58,22 @@ Write `/tmp/qpact-intent.json`:
 
 ```json
 {
+  "sessionId": "copy this verbatim from the spine — the page checks it",
   "tldr": "One paragraph: what this session was actually for, and where it drifted.",
   "compactInstruction": "Focus instructions for /compact — name the specific architecture, decisions and open threads to preserve, and what to drop.",
   "intents": [
     {"title": "…", "status": "done|partial|abandoned|ongoing", "turns": [0,1], "summary": "…"}
   ],
+  "graph": {
+    "concepts": [
+      {"id": "oauth-only", "label": "OAuth only, no manual tokens", "group": "decision",
+       "note": "Stated flatly at turn 23 and held for the rest of the session.",
+       "turns": [23], "anchors": ["tool:Edit", "slash:/qsetup"]}
+    ],
+    "relations": [
+      {"from": "oauth-only", "to": "concept-id-or-derived-id", "label": "blocked by", "dashed": true}
+    ]
+  },
   "quality": {
     "verdict": "One or two sentences, anchored on the measured numbers.",
     "strengths": ["…"],
@@ -83,6 +94,30 @@ metrics say nothing, say nothing rather than inventing a critique.
 For `compactInstruction`, write what a summariser needs in order to continue the
 work: subsystems touched, decisions made and why, unresolved threads. Name things
 concretely. Explicitly say what to drop.
+
+### 3b. The graph field — optional, and separate from what was measured
+
+The page already draws a graph from the spine alone: harness, repo, models, tools,
+MCP servers, skills, packages, slash commands, permission modes, friction kinds,
+and the turns that carried a signal. You do not need to restate any of that.
+
+`graph` is for what the transcript cannot say — the decisions, defects, guards and
+open threads you concluded. It is drawn as **diamonds**, dashed, with a stamp on
+every panel reading "Written by the model. Not measured.", and one toggle hides the
+whole layer so a reader can look at the residue.
+
+- `id` — required, `^[a-z0-9][a-z0-9_-]{0,63}$`. Namespaced to `concept:<id>` on the
+  way in, so it can never collide with or impersonate a measured node.
+- `label` — required, truncated at 60 chars.
+- `group` — one of `decision | defect | guard | thread | subsystem | question`.
+  Anything else falls back to `concept` and is counted in the dropped report.
+- `anchors` — ids of **derived** nodes (`tool:Edit`, `mcp:railway`, `turn:23`).
+  This is the only way the authored layer touches the skeleton. Unknown ids are
+  dropped and counted, never invented.
+- Caps: 60 concepts, 120 relations. Overflow is dropped and reported on the page.
+
+Everything dropped is stated under the graph with a count and a reason. Do not
+try to work around a cap — the report is what makes the picture trustworthy.
 
 ### 4. Render and open
 
