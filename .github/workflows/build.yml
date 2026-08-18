@@ -73,6 +73,15 @@ jobs:
       - name: Graph
         run: node plugins/session-viz/test/graph.mjs
 
+      # /qlive sends turn shape to a workspace console. Two rules carry the
+      # whole feature: the trailing turn is never sent (extract closes it
+      # artificially, so it looks finished when it is not), and the live ledger
+      # is never contrib.json (loadState reads an unrecognised shape as
+      # "nothing sent", which re-contributes the corpus into an endpoint with
+      # no idempotency key).
+      - name: Live
+        run: node plugins/session-viz/test/qlive.mjs
+
       - name: Committed output matches source
         run: |
           if ! git diff --exit-code --stat -- plugins/session-viz/scripts; then
