@@ -174,6 +174,45 @@ export function saveState(data: unknown): SavedTo {
   return writeJson([first, ...statePaths().filter((p) => p !== first)], 'contribution ledger', data)
 }
 
+// ---------------------------------------------------------------- live state
+
+/**
+ * /qlive's own ledger, deliberately NOT contrib.json.
+ *
+ * loadState/saveState read and write ONE file, whole: saveState serialises the
+ * entire object through an in-place write. Routing the live on/off record
+ * through them would overwrite the contribution ledger with a different shape,
+ * and loadState treats an unrecognised ledger as null — "nothing sent" — so
+ * every finding already contributed would read as unsent and go again. The
+ * contrib endpoint has no unique constraint and no idempotency key, so that is
+ * not a wasted request: it silently doubles the tenant's row count and moves
+ * the k-anonymity gate the shared reference is computed behind.
+ *
+ * The two also have different write patterns. /qcontrib is a long corpus scan
+ * that saves once at the end; /qlive writes on every closed turn. Sharing a
+ * file would mean the frequent writer clobbering the careful one.
+ */
+const LIVE_FILE = 'live.json'
+
+export const livePaths = (): string[] => configDirs().map((d) => join(d, LIVE_FILE))
+
+export const liveTarget = (): string => join(dirname(configTarget()), LIVE_FILE)
+
+export function loadLiveState<T>(): T | null {
+  const here = liveTarget()
+  const found = livePaths().filter((q) => existsSync(q))
+  const p = (found.includes(here) && writable(here))
+    ? here
+    : found.sort((a, b) => mtime(b) - mtime(a))[0]
+  if (!p) return null
+  try { return JSON.parse(readFileSync(p, 'utf8')) as T } catch { return null }
+}
+
+export function saveLiveState(data: unknown): SavedTo {
+  const first = liveTarget()
+  return writeJson([first, ...livePaths().filter((p) => p !== first)], 'live reporting state', data)
+}
+
 // ---------------------------------------------------------------- harnesses
 
 export interface TranscriptRoot {
