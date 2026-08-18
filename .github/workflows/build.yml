@@ -57,6 +57,16 @@ jobs:
       - name: Findings
         run: node plugins/session-viz/test/finding.mjs
 
+      # JSON.stringify escapes what JSON needs escaped, and HTML is not JSON: it
+      # leaves `<` alone. A graph node id carrying `</script>` would end the
+      # script element early and the rest of the page would parse as markup.
+      # Node ids are built from artifacts harvested out of tool-call inputs, and
+      # a skill name is copied with no character constraint at all — so nothing
+      # upstream guarantees this cannot happen. This renders the real page and
+      # asserts against the emitted document, not against the helper.
+      - name: Script escaping
+        run: node plugins/session-viz/test/script-escape.mjs
+
       - name: Committed output matches source
         run: |
           if ! git diff --exit-code --stat -- plugins/session-viz/scripts; then

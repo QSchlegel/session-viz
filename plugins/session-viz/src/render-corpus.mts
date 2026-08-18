@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, chmodSync, realpathSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { jsonForScript } from './html.mjs'
 
 // ---------------------------------------------------------------- model shape
 //
@@ -999,7 +1000,7 @@ function graphSection(m: CorpusModel): string {
 <thead><tr><th>Topic</th><th class="r">Repos</th><th>Where</th></tr></thead>
 <tbody>${bridgeRows}</tbody></table></div>
 
-<script>window.__kgAdj=${JSON.stringify(adj)};</script>`
+<script>window.__kgAdj=${jsonForScript(adj)};</script>`
 }
 
 // ---------------------------------------------------------------- models

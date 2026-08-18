@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, chmodSync, realpathSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { jsonForScript } from './html.mjs';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(1) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
 // Accepts undefined because several callers read optional rates off pairs that
@@ -650,7 +651,7 @@ function graphSection(m) {
 <thead><tr><th>Topic</th><th class="r">Repos</th><th>Where</th></tr></thead>
 <tbody>${bridgeRows}</tbody></table></div>
 
-<script>window.__kgAdj=${JSON.stringify(adj)};</script>`;
+<script>window.__kgAdj=${jsonForScript(adj)};</script>`;
 }
 // ---------------------------------------------------------------- models
 // Distinct hues rather than a sequential ramp: models are categories, and a
