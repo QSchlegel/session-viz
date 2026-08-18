@@ -67,6 +67,12 @@ jobs:
       - name: Script escaping
         run: node plugins/session-viz/test/script-escape.mjs
 
+      # The graph's gates decide which turns reach the page, and a gate that
+      # drops a node another edge still points at leaves a stub hanging in the
+      # SVG. This renders the real page and asserts against the emitted payload.
+      - name: Graph
+        run: node plugins/session-viz/test/graph.mjs
+
       - name: Committed output matches source
         run: |
           if ! git diff --exit-code --stat -- plugins/session-viz/scripts; then
