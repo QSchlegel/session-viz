@@ -660,8 +660,17 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   function esc(x){var p=document.createElement('p');p.textContent=x==null?'':String(x);return p.innerHTML;}
   function card(id){
     var n=nodes[id]; if(!n) return;
-    var rel=adj[id].map(function(i){var e=d.edges[i];var o=e.s===id?e.t:e.s;
-      return '<li>'+(e.s===id?'&rarr; ':'&larr; ')+esc((nodes[o]||{}).label||o)+(e.rel?' <i>'+esc(e.rel)+'</i>':'')+'</li>';}).join('');
+    // Only the relations that exist in the frame being displayed. The panel
+    // listing an edge to a node the scrubber has not reached yet is the same
+    // lie as drawing the line would be, just in prose -- and the count is
+    // printed rather than the rest being dropped in silence.
+    var at=function(x){var n=nodes[x];return n&&typeof n.at==='number'?n.at:-1;};
+    var live=adj[id].filter(function(i){var e=d.edges[i];
+      return e.at<=upto&&at(e.s)<=upto&&at(e.t)<=upto;});
+    var held=adj[id].length-live.length;
+    var rel=live.map(function(i){var e=d.edges[i];var o=e.s===id?e.t:e.s;
+      return '<li>'+(e.s===id?'&rarr; ':'&larr; ')+esc((nodes[o]||{}).label||o)+(e.rel?' <i>'+esc(e.rel)+'</i>':'')+'</li>';}).join('')
+      +(held?'<li class="dim">'+held+' more, not yet at turn '+upto+'</li>':'');
     side.innerHTML='<h4>'+esc(n.label)+'</h4>'+
       '<span class="gstamp '+n.layer+'">'+(n.layer==='derived'
         ? esc(n.measured||'Measured from the transcript.')

@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, chmodSync, realpathSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { jsonForScript } from './html.mjs'
+import type { GraphLayout } from './graph.mjs'
 
 // ---------------------------------------------------------------- model shape
 //
@@ -154,7 +155,11 @@ interface GraphEdge {
 interface Graph {
   nodes: GraphNode[]
   edges: GraphEdge[]
-  layout: { width: number; height: number; positions: Record<string, { x: number; y: number }> }
+  /** The real thing from graph.mjs rather than a second copy of its shape -- a
+   *  hand-written duplicate is exactly how `scale` was added to layoutGraph and
+   *  then silently never arrived here. The fields it has gained since are
+   *  optional, because a corpus JSON written before them is still on disk. */
+  layout: Pick<GraphLayout, 'width' | 'height' | 'positions'> & Partial<GraphLayout>
   related: Array<{ a: string; b: string; score: number; shared: string[] }>
   bridges: Array<{ topic: string; kind: string; repos: string[] }>
   gate: { minRepos: number; universalAt: number; repoCount: number }
@@ -909,12 +914,19 @@ function graphSection(m: CorpusModel): string {
   const g = m.graph
   if (!g || !g.nodes.length) return '<div class="empty">No shared topics found across projects.</div>'
 
-  const { width, height, positions } = g.layout
+  const { width, height, positions, scale } = g.layout
   // Sized by link count, as Obsidian does — a node's importance in a graph view
   // is how much it connects. Repos get a floor so the anchors stay findable.
+  //
+  // Multiplied by the layout's own fit factor, because radii live in the same
+  // coordinate space as the positions: once a corpus is large enough for the
+  // fit to drop below 1, full-size dots on compressed spacing are overlapping
+  // blobs at exactly the density that forced the compression. Floored, so a
+  // node never scales down to a hairline.
   const maxDeg = Math.max(1, ...g.nodes.map((n) => n.degree))
+  const fit = typeof scale === 'number' && scale > 0 ? scale : 1
   const radius = (n: GraphNode) =>
-    (n.kind === 'repo' ? 6 : 3.2) + Math.sqrt(n.degree / maxDeg) * (n.kind === 'repo' ? 13 : 8)
+    Math.max(2.2, ((n.kind === 'repo' ? 6 : 3.2) + Math.sqrt(n.degree / maxDeg) * (n.kind === 'repo' ? 13 : 8)) * fit)
 
   // Adjacency is emitted for the hover behaviour so the page can dim everything
   // that is not a neighbour — the whole point of the picture is "what connects
