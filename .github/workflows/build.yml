@@ -82,6 +82,14 @@ jobs:
       - name: Graph view
         run: node plugins/session-viz/test/graph-view.mjs
 
+      # The page's glass layer and the /qbl backlog. Both shipped with suites
+      # that nothing ran, which is the same as shipping without them.
+      - name: Glass
+        run: node plugins/session-viz/test/glass.mjs
+
+      - name: Backlog
+        run: node plugins/session-viz/test/qbl.mjs
+
       # /qlive sends turn shape to a workspace console. Two rules carry the
       # whole feature: the trailing turn is never sent (extract closes it
       # artificially, so it looks finished when it is not), and the live ledger

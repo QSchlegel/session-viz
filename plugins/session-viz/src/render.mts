@@ -195,6 +195,18 @@ function css(): string {
   color-scheme:light;
   --kg-bg:#f3f0ea; --kg-halo:#f3f0ea; --kg-ring:#f3f0ea; --kg-label:#26251f;
   --kg-edge:#8d8779; --kg-edge-au:#7c3aed; --alarm:#b3261e; --alarm-ink:#fff;
+  /* The drifting field behind the page, mixed out of the palette this theme
+     already declares so it follows the theme instead of being a second picture.
+
+     Much weaker than the dark theme, and that is not timidity: #fbfaf8 sits at
+     96% of white, so any tint on it can only subtract luminance, and every
+     foreground on the page loses contrast in proportion. --warn starts at
+     4.53:1 on the flat background -- three hundredths above AA -- so the whole
+     light-theme budget is however much darkening that one token can absorb.
+     The numbers these weights produce are asserted in test/glass.mjs. */
+  --aura-1:color-mix(in srgb,var(--accent) 6%,transparent);
+  --aura-2:color-mix(in srgb,var(--k-subsystem) 5%,transparent);
+  --aura-3:color-mix(in srgb,var(--k-decision) 5%,transparent);
   ${kindVars(KIND_LIGHT)}
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
@@ -204,6 +216,13 @@ function css(): string {
   color-scheme:dark;
   --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
   --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
+  /* Twice the light theme, and it can afford it: #16151a leaves the whole range
+     above it, so a tint here lifts the background toward the text rather than
+     away from it, and every foreground still clears AA at the brightest point
+     the field reaches. A weight that reads on #fbfaf8 is invisible here. */
+  --aura-1:color-mix(in srgb,var(--accent) 13%,transparent);
+  --aura-2:color-mix(in srgb,var(--k-subsystem) 10%,transparent);
+  --aura-3:color-mix(in srgb,var(--k-decision) 10%,transparent);
   ${kindVars(KIND_DARK)}
 }}
 :root[data-theme=dark]{
@@ -213,6 +232,9 @@ function css(): string {
   color-scheme:dark;
   --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
   --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
+  --aura-1:color-mix(in srgb,var(--accent) 13%,transparent);
+  --aura-2:color-mix(in srgb,var(--k-subsystem) 10%,transparent);
+  --aura-3:color-mix(in srgb,var(--k-decision) 10%,transparent);
   ${kindVars(KIND_DARK)}
 }
 *{box-sizing:border-box}
@@ -383,6 +405,116 @@ ${kindRules()}
 .gsup li,.gnot li{margin:2px 0}
 .gnot li{color:var(--dim)}
 .gmismatch{background:var(--alarm);color:var(--alarm-ink);padding:10px 14px;border-radius:8px;margin:0 0 14px;font-size:13.5px}
+
+/* glass ------------------------------------------------------------------
+   A drifting colour field behind the page, and translucent surfaces over it.
+
+   The field is two fixed pseudo-elements. Nothing animates but \`transform\` on a
+   promoted layer, so every frame is the same rasterised texture moved by the
+   compositor -- no repaint, no script, no canvas, no image. Animating the
+   gradient stops instead would repaint the whole viewport on every frame of a
+   page that is also running a force-directed graph.
+
+   Placed last on purpose: these rules restate backgrounds that earlier rules
+   set solid, so they have to win on order rather than on specificity, which
+   would mean inventing selectors the markup does not have. */
+body::before,body::after{
+  content:'';position:fixed;z-index:-1;pointer-events:none;
+  /* 160% of the viewport in each axis. The layer translates by up to 6% of its
+     own box and the untinted edge of a viewport-sized layer would swing into
+     shot. */
+  inset:-30%;
+  will-change:transform;
+}
+/* If color-mix is unsupported the --aura-* tokens are invalid at computed-value
+   time, which takes background-image with them and resolves it to \`none\`. The
+   page is then the flat --bg it was before -- no half-painted field. */
+body::before{
+  background-image:
+    radial-gradient(42% 48% at 14% 10%,var(--aura-1),transparent),
+    radial-gradient(46% 52% at 88% 26%,var(--aura-2),transparent),
+    radial-gradient(52% 46% at 44% 90%,var(--aura-3),transparent);
+  animation:auraA 47s ease-in-out infinite;
+}
+body::after{
+  background-image:
+    radial-gradient(48% 54% at 74% 74%,var(--aura-1),transparent),
+    radial-gradient(40% 46% at 24% 50%,var(--aura-2),transparent);
+  animation:auraB 71s ease-in-out infinite;
+}
+/* 47 and 71 are coprime, so the two layers take fifty-five minutes to return to
+   the same phase. A field that visibly loops is a field the reader starts
+   watching instead of reading past. */
+@keyframes auraA{
+  0%,100%{transform:translate3d(-4%,-3%,0) scale(1.04)}
+  34%{transform:translate3d(5%,3%,0) scale(1.1)}
+  67%{transform:translate3d(-2%,6%,0) scale(1.06)}
+}
+@keyframes auraB{
+  0%,100%{transform:translate3d(3%,4%,0) scale(1.08)}
+  34%{transform:translate3d(-5%,-2%,0) scale(1.03)}
+  67%{transform:translate3d(4%,-5%,0) scale(1.06)}
+}
+/* Stopped, not slowed. */
+@media (prefers-reduced-motion:reduce){
+  body::before,body::after{animation:none;transform:none;will-change:auto}
+}
+
+/* Translucency is opt-in on support, because a translucent panel over an
+   unblurred moving field is worse than no glass at all. The solid --panel rules
+   above stay the default and this block only fires where the blur exists to
+   make it legible.
+
+   color-mix is written inline here rather than through a custom property, and
+   that is the whole safety argument: inline it fails at PARSE time, the
+   declaration is dropped, and the solid background above survives. Through a
+   token it would fail at computed-value time, resolve to \`unset\`, and leave the
+   surface transparent -- the exact failure this block exists to avoid. */
+@supports (backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px)){
+  /* Everything named here has a bounded count on the page: a handful of cards,
+     one stats grid, one graph, one theme button, five filters. .turn is
+     deliberately NOT in this list -- there is one per human turn and sessions
+     with several hundred are ordinary, and a compositor asked for three hundred
+     separate backdrop rasters drops frames on the scroll. Turns get the
+     translucency without the blur, which over a field this smooth is the part
+     that was doing the work anyway. */
+  .card,.stats,.gwrap,#theme,.filters button{
+    -webkit-backdrop-filter:blur(18px) saturate(1.2);
+    backdrop-filter:blur(18px) saturate(1.2);
+  }
+  .card,.turn,.gwrap,#theme,.filters button{
+    background:color-mix(in srgb,var(--panel) 80%,transparent);
+  }
+  /* The compact line keeps its accent wash; it is the one card on the page that
+     is coloured to be copied from. */
+  .compact{background:color-mix(in srgb,var(--accent-soft) 80%,transparent)}
+  /* .stats paints only the 1px grid gaps, so it is the layer that carries the
+     blur and .stat is the readable surface over it. */
+  .stats{background:color-mix(in srgb,var(--line) 55%,transparent)}
+  .stat{background:color-mix(in srgb,var(--panel) 78%,transparent)}
+  .card,.turn,.stats,.gwrap{
+    box-shadow:0 1px 2px color-mix(in srgb,var(--ink) 6%,transparent),
+               0 14px 34px color-mix(in srgb,var(--ink) 7%,transparent);
+  }
+  /* Restated here, inside the glass, and NOT because .gwrap would otherwise
+     leak through it -- .gcanvas already declares this above. It is restated so
+     that the last word on the canvas's background is spoken next to the rules
+     that made everything around it translucent, and so that removing the
+     earlier declaration does not quietly make the canvas transparent.
+
+     Why it must stay opaque: .gcanvas paints --kg-bg, and every node label is
+     drawn with a halo stroked in --kg-halo, which is the same colour. Make the
+     canvas translucent and those halos become opaque patches of a colour that
+     is no longer behind them -- the labels would be outlined in the wrong
+     background. The graph is a data surface; it stays opaque, along with the
+     zoom controls that float over it, and the glass is the chrome around it.
+
+     The same reasoning keeps .body pre and .tool on their solid --bg: they sit
+     inside a .turn that is already translucent, and a third alpha stacked on
+     the first two makes the reader's contrast a product of three numbers
+     instead of two. They are simply left out of every list above. */
+  .gcanvas{background:var(--kg-bg)}
+}
 
 `
 }
