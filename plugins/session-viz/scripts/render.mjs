@@ -69,6 +69,7 @@ function css() {
   --bg:#fbfaf8; --panel:#fff; --ink:#1c1b19; --muted:#6b6862; --dim:#6b6862; --line:#e6e2db;
   --accent:#c2521a; --accent-soft:#fdf0e8; --ok:#2f6b46; --warn:#9a6a12; --bad:#b3261e;
   --bar:#d9d4cb; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
   --kg-bg:#f3f0ea; --kg-halo:#f3f0ea; --kg-ring:#f3f0ea; --kg-label:#26251f;
   --kg-edge:#8d8779; --kg-edge-au:#7c3aed; --alarm:#b3261e; --alarm-ink:#fff;
   ${kindVars(KIND_LIGHT)}
@@ -77,6 +78,7 @@ function css() {
   --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9b968d; --dim:#9b968d; --line:#302e37;
   --accent:#ff8a4c; --accent-soft:#2a1d16; --ok:#6fbf8e; --warn:#e0b055; --bad:#ff6b5e;
   --bar:#3a3742;
+  color-scheme:dark;
   --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
   --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
   ${kindVars(KIND_DARK)}
@@ -85,6 +87,7 @@ function css() {
   --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9b968d; --dim:#9b968d; --line:#302e37;
   --accent:#ff8a4c; --accent-soft:#2a1d16; --ok:#6fbf8e; --warn:#e0b055; --bad:#ff6b5e;
   --bar:#3a3742;
+  color-scheme:dark;
   --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
   --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
   ${kindVars(KIND_DARK)}
@@ -211,7 +214,7 @@ footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono)
 .gzoom button.wide{width:auto;padding:0 9px;font-size:12px}
 .gzoom button:hover{border-color:var(--accent)}
 .gscale{position:absolute;left:11px;bottom:14px;font-family:var(--mono);font-size:11px;
-  color:var(--kg-label);opacity:.55;pointer-events:none}
+  color:var(--kg-label);opacity:.8;pointer-events:none}
 .greplay{grid-column:1/-1;display:flex;gap:12px;align-items:center;padding:9px 14px;
   border-top:1px solid var(--line);font-size:12.5px}
 .greplay input[type=range]{flex:1;min-width:110px;accent-color:var(--accent)}
@@ -427,7 +430,7 @@ function renderGraph(session, intent) {
             .join('')}</ul>`
         : '<p class="dim">Nothing was suppressed: every node the rules produced is on the page.</p>';
     const payload = {
-        w: W, h: H, maxTurn,
+        w: W, h: H, maxTurn, turns: session.turns.length,
         nodes: nodes.map((n) => ({
             id: n.id, kind: n.kind, label: n.label, layer: n.layer,
             note: n.note || null, measured: n.measured || null, turns: n.turns || null, degree: n.degree,
@@ -441,8 +444,19 @@ function renderGraph(session, intent) {
     // because the packer deliberately does not draw them the way the simulation
     // would: they are gridded, and a grid is a statement that there is no
     // structure to show, not a claim about who sits near whom.
+    const cappedEdges = derived.suppressed.some((d) => d.what === 'edges');
     const loose = layout.isolated
-        ? `<span class="ghalf dim" title="They have no edge, so the grid is an arrangement and not a measurement">${layout.isolated} connect to nothing drawn</span>`
+        ? `<span class="ghalf dim" title="${esc(cappedEdges
+            ? 'Not all of these lack an edge: the global edge cap fired on this session, so some lost theirs to it. See what the gates dropped, below.'
+            : 'They carry no edge at all, so the grid is an arrangement and not a measurement.')}">${layout.isolated} connect to nothing drawn</span>`
+        : '';
+    // Removing the floor on the fit means everything lands inside the frame, and
+    // for a very large graph that means everything lands inside the frame very
+    // small. Saying so is the difference between a picture that is dense and a
+    // picture that looks broken; the reader can then zoom, which is what the zoom
+    // is for.
+    const dense = layout.scale < 0.3
+        ? `<span class="ghalf dim" title="Packed to ${Math.round(layout.scale * 100)}% to fit the frame. Nothing is cut off; it is simply smaller than this frame can show.">too dense to read at fit &mdash; zoom in</span>`
         : '';
     return `<h2>Knowledge graph</h2>
 <div class="gwrap">
@@ -450,6 +464,7 @@ function renderGraph(session, intent) {
     <span class="ghalf"><b>Measured from the transcript</b> <i class="gk gcirc"></i> ${derivedCount} nodes</span>
     <span class="ghalf"><b>Written by the model</b> <i class="gk gdia"></i> ${authoredCount} nodes</span>
     ${loose}
+    ${dense}
     <button id="gtog" class="gbtn gpush" type="button">Hide the model's layer</button>
   </div>
   <div class="gcanvas" id="gcanvas" tabindex="0" aria-label="Knowledge graph canvas. Scroll to zoom, drag to pan, plus and minus to zoom, 0 to fit.">
@@ -467,11 +482,13 @@ function renderGraph(session, intent) {
     </div>
   </div>
   <aside id="gside" class="gside"><p class="dim">Hover or focus a node. A measured node prints the field it came from; a written one says so.</p></aside>
-  <div class="greplay">
+  ${session.turns.length > 1
+        ? `<div class="greplay">
     <button id="gplay" class="gbtn" type="button">&#9654; Replay</button>
     <input id="gscrub" type="range" min="0" max="${maxTurn}" step="1" value="${maxTurn}" aria-label="Show the graph as it stood at this turn">
-    <output id="gat" for="gscrub">all ${maxTurn + 1} turns</output>
-  </div>
+    <output id="gat" for="gscrub">all ${session.turns.length} turns</output>
+  </div>`
+        : ''}
 </div>
 <div class="gfoot">
   <div class="glbl">What the gates dropped</div>
@@ -682,7 +699,7 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
       l.classList.toggle('hot',!!(id&&(e.s===id||e.t===id)&&!off));
       if(!pre&&!gone)live++;
     });
-    if(out)out.value=(upto>=d.maxTurn?'all '+(d.maxTurn+1)+' turns':'turn '+upto+' of '+d.maxTurn)
+    if(out)out.value=(upto>=d.maxTurn?'all '+d.turns+' turns':'turn '+upto+' of '+d.maxTurn)
       +' · '+shown+' nodes, '+live+' edges';
     if(id)card(id); else side.innerHTML='<p class="dim">Hover or focus a node. A measured node prints the field it came from; a written one says so.</p>';
   }
@@ -746,7 +763,13 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   function endDrag(){ if(!dragging)return; dragging=false; canvas.classList.remove('grab'); }
   window.addEventListener('pointerup',endDrag);
   window.addEventListener('pointercancel',endDrag);
-  canvas.addEventListener('dblclick',function(){fit();});
+  canvas.addEventListener('dblclick',function(ev){
+    // Only the empty canvas resets the view. dblclick bubbles, so without this
+    // a double click on a node -- or a quick second press of the + button --
+    // threw away the zoom the reader had just dialled in.
+    if(ev.target&&ev.target.closest&&(ev.target.closest('.gn')||ev.target.closest('.gzoom')))return;
+    fit();
+  });
   [].slice.call(document.querySelectorAll('.gzoom button')).forEach(function(b){
     b.addEventListener('click',function(ev){
       ev.stopPropagation();
@@ -755,7 +778,13 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
     });
   });
   canvas.addEventListener('keydown',function(ev){
-    var step=70/k, hit=true;
+    // Ctrl/Cmd +, - and 0 are the browser's page zoom. Branching on ev.key
+    // alone took all three away from anyone who reads at 125%.
+    if(ev.ctrlKey||ev.metaKey||ev.altKey)return;
+    // A constant step, NOT 70/k. tx is in unscaled viewBox units, so dividing
+    // by the zoom shrinks the on-screen movement exactly as the canvas gets
+    // bigger -- surveying a 4x view cost sixteen times the presses.
+    var step=70, hit=true;
     if(ev.key==='+'||ev.key==='=')zoomAt(d.w/2,d.h/2,k*1.45);
     else if(ev.key==='-'||ev.key==='_')zoomAt(d.w/2,d.h/2,k/1.45);
     else if(ev.key==='0')fit();
@@ -770,7 +799,14 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   // ---- replay
   var timer=null;
   function stop(){ if(timer){clearInterval(timer);timer=null;} if(play)play.textContent='▶ Replay'; }
-  function setUpto(v){ upto=v; if(scrub)scrub.value=String(v); paint(pinned); }
+  function setUpto(v){
+    upto=v; if(scrub)scrub.value=String(v);
+    // Drop a pin the scrubber has just rewound past. Focus dims everything
+    // outside the pinned node's neighbourhood, so a pin on a node that does not
+    // exist in this frame greys out the entire frame around an absence.
+    if(pinned&&nodes[pinned]&&nodes[pinned].at>upto)pinned=null;
+    paint(pinned);
+  }
   if(scrub)scrub.addEventListener('input',function(){ stop(); setUpto(+scrub.value); });
   if(play)play.addEventListener('click',function(){
     if(timer){stop();return;}

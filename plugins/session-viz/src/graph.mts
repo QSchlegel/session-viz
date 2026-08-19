@@ -323,10 +323,15 @@ export function layoutGraph(
   // meaning into distance that was never measured.
   const singles = comps.filter((c) => c.length === 1).map((c) => nodes[c[0]!]!)
   if (singles.length) {
-    const rows = packH
-      ? Math.max(1, Math.min(singles.length, Math.floor(packH / CELL_H)))
-      : Math.ceil(Math.sqrt(singles.length))
-    const cols = Math.ceil(singles.length / rows)
+    // Rows enough to sit alongside the pack, but never fewer than a block the
+    // rough shape of the frame. Taking the pack's height alone is a trap: a
+    // component of exactly two nodes is always 60px tall -- simulate seeds both
+    // at the same y and every y-force cancels, so they never leave that line --
+    // and floor(60/66) is 0, which collapses the rail to a single row thousands
+    // of pixels wide and drags the whole fit down with it.
+    const alongside = Math.floor(packH / CELL_H)
+    const shaped = Math.ceil(Math.sqrt((singles.length * CELL_W) / (CELL_H * (width / Math.max(1, height)))))
+    const rows = Math.max(1, Math.min(singles.length, Math.max(alongside, shaped)))
     const railH = Math.min(rows, singles.length) * CELL_H
     const ox = packW ? packW + GUTTER + BOX_PAD : 0
     const oy = Math.max(0, (packH - railH) / 2)
@@ -348,10 +353,15 @@ export function layoutGraph(
   const bw = Math.max(...xs) - minX
   const bh = Math.max(...ys) - minY
   const pad = 46
-  const scale = Math.max(
-    0.2,
-    Math.min(1.35, (width - pad * 2) / Math.max(1, bw), (height - pad * 2) / Math.max(1, bh))
-  )
+  // No lower bound. A floor here overrides the fit it is wrapped around: past
+  // roughly five frames' worth of content the packed extent stops shrinking,
+  // the offsets go negative, and nodes are emitted outside the viewBox where
+  // the canvas clips them -- invisible, unreachable, and still counted as drawn
+  // by everything downstream. A graph too big to read is a graph to zoom into;
+  // a graph half off the canvas is a graph that lies about what it contains.
+  // The upper bound stays: a three-node graph blown up to fill the frame is
+  // just a big triangle.
+  const scale = Math.min(1.35, (width - pad * 2) / Math.max(1, bw), (height - pad * 2) / Math.max(1, bh))
   const offX = (width - bw * scale) / 2
   const offY = (height - bh * scale) / 2
   const positions: Record<string, { x: number; y: number }> = {}
@@ -494,12 +504,18 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
       measured: `Measured -- session.slashCommands includes ${cmd}`,
     }), 'invoked')
 
-  for (const pm of session.permissionModes || []) {
-    if (!pm.mode) continue
-    link(sessionNode, add(`mode:${pm.mode}`, 'mode', pm.mode, {
-      measured: 'Measured -- session.permissionModes entry',
-    }), 'switched to')
-  }
+  // Counted, not repeated. permissionModes is one record per switch, and this
+  // emitted an edge per record -- 319 identical session-to-mode lines on the
+  // session this was written in, all drawn on top of each other, all eating the
+  // global edge budget that the rest of the graph is then capped out of.
+  const modeCounts = new Map<string, number>()
+  for (const pm of session.permissionModes || [])
+    if (pm.mode) modeCounts.set(pm.mode, (modeCounts.get(pm.mode) || 0) + 1)
+  for (const [mode, n] of modeCounts)
+    link(sessionNode, add(`mode:${mode}`, 'mode', mode, {
+      weight: n,
+      measured: `Measured -- session.permissionModes names ${mode} in ${n} record(s)`,
+    }), n === 1 ? 'switched to' : `switched to x${n}`)
 
   // ---- tools, capped by count
   const toolTotals = new Map<string, number>()
@@ -547,7 +563,11 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
     const r = t.derived?.repeatOf
     if (typeof r === 'number' && r >= 0) repeatTargets.add(r)
   }
-  const modeHosts = new Set<number>()
+  // Which modes each host turn actually bracketed -- not merely that it
+  // bracketed one. Keeping only the turn index meant every host turn was then
+  // linked to every mode in the session, so a turn that saw one switch claimed
+  // all of them.
+  const modeHosts = new Map<number, Set<string>>()
   for (const pm of session.permissionModes || []) {
     if (!pm.ts) continue
     const at = Date.parse(pm.ts)
@@ -557,9 +577,11 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
       const e = t.endedAt ? Date.parse(t.endedAt) : NaN
       return Number.isFinite(s) && Number.isFinite(e) && at >= s && at <= e
     })
-    if (host) {
-      modeHosts.add(host.index)
-      if (pm.mode) bornAt(`mode:${pm.mode}`, host.index)
+    if (host && pm.mode) {
+      const seen = modeHosts.get(host.index) || new Set<string>()
+      seen.add(pm.mode)
+      modeHosts.set(host.index, seen)
+      bornAt(`mode:${pm.mode}`, host.index)
     }
   }
   const byTools = [...turns].sort((a, b) => (b.toolCallCount || 0) - (a.toolCallCount || 0)).slice(0, 3)
@@ -617,9 +639,8 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
     for (const cmd of t.slashCommands || [])
       if (nodes.has(`slash:${cmd}`)) link(id, `slash:${cmd}`, 'issued while this turn was open')
 
-    if (modeHosts.has(t.index))
-      for (const pm of session.permissionModes || [])
-        if (pm.mode && nodes.has(`mode:${pm.mode}`)) link(id, `mode:${pm.mode}`, 'switched here')
+    for (const mode of modeHosts.get(t.index) || [])
+      if (nodes.has(`mode:${mode}`)) link(id, `mode:${mode}`, 'switched here')
   }
 
   // ---- tool co-occurrence: the densest relation, so gated hard

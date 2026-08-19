@@ -341,5 +341,160 @@ const SKEW = base(
     drawn(html).filter((n) => n.cls.includes('authored')).every((n) => n.hi))
 }
 
+
+// ---------------------------------------------------------------- 7. at scale
+//
+// Section 1 proves the framing on ONE 23-node fixture, and that is exactly the
+// hole an adversarial review walked through: the fit was floored at 0.2, so
+// past roughly five frames' worth of content it stopped shrinking, the offsets
+// went negative and nodes were emitted outside the viewBox -- clipped by the
+// canvas, unreachable by Fit, and still counted as drawn by the legend and the
+// scrubber. One fixture that never got large could not see it.
+{
+  const busy = (n) =>
+    base(
+      Array.from({ length: n }, (_, i) =>
+        turn(i, {
+          // Friction on EVERY turn, so every turn survives the gate and the
+          // packed extent really does get large. A fixture where only a third
+          // of the turns are drawn never reaches the size that broke this, and
+          // the assertion passes without looking.
+          friction: ['roundtrip'],
+          toolCallCount: (i % 7) + 1,
+          toolCalls: [{ name: `T${i % 40}`, count: (i % 7) + 1 }],
+          model: 'claude-opus-5',
+        })),
+      { score: { ...base([]).score, costliestTurn: 0 } }
+    )
+  // 1600 and not 800: at 800 turns the fit lands on 0.206, a hair above the 0.2
+  // floor this is here to catch. A size that never quite reaches the bug is a
+  // size that proves nothing.
+  for (const n of [40, 200, 400, 1600]) {
+    const html = render(busy(n), null)
+    const nodes = drawn(html)
+    const out = nodes.filter((x) => x.x < 0 || x.y < 0 || x.x > 1000 || x.y > 620)
+    // A graph that fits by shrinking to nothing has to say so. Fitting and
+    // being readable are different claims, and only one of them is guaranteed.
+    if (n >= 1600)
+      chk('a graph packed too small to read says so rather than looking broken',
+        html.includes('too dense to read at fit'))
+    chk(`a ${n}-turn session puts nothing outside the viewBox`, out.length === 0,
+      `${out.length} of ${nodes.length} outside; x spans ${Math.min(...nodes.map((v) => v.x)).toFixed(0)} to ${Math.max(...nodes.map((v) => v.x)).toFixed(0)}`)
+  }
+}
+
+// ---------------------------------------------------------------- 8. the fit
+//
+// Called directly, because these are properties of layoutGraph and not every
+// shape that reaches it comes from deriveGraph -- the corpus renderer feeds it
+// a different graph entirely. The two-node component is the one that matters:
+// simulate seeds both nodes at the same y and every y-force cancels exactly, so
+// such a component is ALWAYS 60px tall, floor(60/66) is 0, and taking the rail
+// height from the pack alone collapsed it to one row thousands of pixels wide.
+{
+  const { layoutGraph } = await import('../scripts/graph.mjs')
+  const iso = (n) => Array.from({ length: n }, (_, i) => ({ id: `n${i}`, degree: 0 }))
+  const chain = (n) => ({
+    nodes: Array.from({ length: n }, (_, i) => ({ id: `c${i}`, degree: 2 })),
+    edges: Array.from({ length: n - 1 }, (_, i) => ({ source: `c${i}`, target: `c${i + 1}` })),
+  })
+  const shapes = [
+    ['200 unconnected, no edges at all', iso(200), []],
+    ['200 unconnected plus one two-node component', iso(200), [{ source: 'n0', target: 'n1' }]],
+    ['40 unconnected plus one two-node component', iso(40), [{ source: 'n0', target: 'n1' }]],
+    ['820 unconnected', iso(820), []],
+    ['an 80-node chain', chain(80).nodes, chain(80).edges],
+    ['a 400-node chain', chain(400).nodes, chain(400).edges],
+    ['a single node', iso(1), []],
+    ['nothing at all', [], []],
+  ]
+  for (const [name, nodes, edges] of shapes) {
+    const L = layoutGraph(nodes, edges, { width: 1000, height: 620 })
+    const ps = Object.values(L.positions)
+    const out = ps.filter((p) => p.x < 0 || p.y < 0 || p.x > 1000 || p.y > 620)
+    const finite = ps.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+    chk(`${name}: every node lands inside the frame`,
+      out.length === 0 && finite && ps.length === nodes.length,
+      `${out.length} outside, ${ps.length} placed of ${nodes.length}, scale ${L.scale}`)
+  }
+}
+
+// ---------------------------------------------------------------- 9. degenerate
+{
+  const one = base([turn(0, { friction: ['roundtrip'] })])
+  const html1 = render(one, null)
+  chk('a one-turn session offers no replay, because there is nothing to replay',
+    !html1.includes('id="gscrub"') && !html1.includes('id="gplay"'))
+  chk('and never says "all 1 turns" by adding one to an index', !/all 1 turns/.test(html1))
+  const none = base([])
+  const html0 = render(none, null)
+  chk('a zero-turn session still draws its session node', html0.includes('<h2>Knowledge graph</h2>'))
+  chk('and offers no scrubber either', !html0.includes('id="gscrub"'))
+
+  const many = render(base([turn(0, { friction: ['roundtrip'] }), turn(1, { friction: ['roundtrip'] })]), null)
+  chk('two turns is enough to replay', many.includes('id="gscrub"'))
+  chk('and the count is the number of turns, not the last index',
+    many.includes('>all 2 turns<'))
+}
+
+// ---------------------------------------------------------------- 10. modes
+//
+// permissionModes holds one record per switch. An edge per record drew 319
+// identical lines on top of each other on the session this was written in, and
+// every one of them spent the global edge budget the rest of the graph is then
+// capped out of.
+{
+  const s = base(
+    [
+      turn(0, { friction: ['roundtrip'], startedAt: '2026-01-01T00:00:00Z', endedAt: '2026-01-01T00:01:00Z' }),
+      turn(1, { friction: ['roundtrip'], startedAt: '2026-01-01T00:02:00Z', endedAt: '2026-01-01T00:03:00Z' }),
+    ],
+    {
+      permissionModes: [
+        ...Array.from({ length: 40 }, () => ({ ts: '2026-01-01T00:00:30Z', mode: 'normal' })),
+        { ts: '2026-01-01T00:02:30Z', mode: 'acceptEdits' },
+      ],
+    }
+  )
+  const g = payloadOf(render(s, null))
+  const sid = `session:${s.sessionId}`
+  const toNormal = g.edges.filter((e) => e.s === sid && e.t === 'mode:normal')
+  chk('forty records of one mode make one edge, not forty', toNormal.length === 1, `${toNormal.length} edges`)
+  chk('and the edge says how many records it stands for', /x40/.test(toNormal[0].rel || ''), toNormal[0].rel)
+
+  // The cross product: turn 0 brackets `normal` and turn 1 brackets
+  // `acceptEdits`, so neither may claim the other's.
+  const t0 = g.edges.filter((e) => e.s === 'turn:0' && e.t.startsWith('mode:')).map((e) => e.t)
+  const t1 = g.edges.filter((e) => e.s === 'turn:1' && e.t.startsWith('mode:')).map((e) => e.t)
+  chk('a host turn is linked only to the mode it actually bracketed',
+    t0.length === 1 && t0[0] === 'mode:normal' && t1.length === 1 && t1[0] === 'mode:acceptEdits',
+    `turn 0 -> ${t0.join(',')} | turn 1 -> ${t1.join(',')}`)
+}
+
+// ---------------------------------------------------------------- 11. controls
+{
+  const html = render(SKEW, null)
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+  // Without color-scheme, a page forced to dark keeps a light replay slider,
+  // light scrollbars and light focus rings, because those are painted by the
+  // browser and not by this stylesheet.
+  chk('the page declares its colour scheme to the browser, both ways',
+    // The semicolon matters: `@media (prefers-color-scheme:dark)` is a query,
+    // not a declaration, and counting it made this pass on two of three blocks.
+    (style.match(/color-scheme:light;/g) || []).length === 1 &&
+      (style.match(/color-scheme:dark;/g) || []).length === 2,
+    `${(style.match(/color-scheme:light;/g) || []).length} light, ${(style.match(/color-scheme:dark;/g) || []).length} dark declarations`)
+  chk('a double click on a node or a button does not reset the view',
+    html.includes("ev.target.closest('.gn')") && html.includes("ev.target.closest('.gzoom')"))
+  chk("the browser's own zoom shortcuts are left alone",
+    html.includes('if(ev.ctrlKey||ev.metaKey||ev.altKey)return;'))
+  chk('the arrow-key pan step does not shrink as the canvas grows',
+    html.includes('var step=70, hit=true;'))
+  chk('rewinding past a pinned node drops the pin',
+    html.includes('if(pinned&&nodes[pinned]&&nodes[pinned].at>upto)pinned=null;'))
+  chk('the zoom readout is legible rather than a whisper',
+    style.includes('color:var(--kg-label);opacity:.8'))
+}
+
 console.log(failed ? `\n${failed} failed` : '\nall passed')
 process.exit(failed ? 1 : 0)
