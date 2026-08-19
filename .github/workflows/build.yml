@@ -73,6 +73,15 @@ jobs:
       - name: Graph
         run: node plugins/session-viz/test/graph.mjs
 
+      # The graph's framing, theme, zoom and replay. The layout bug this guards
+      # against does not look like a bug in any single number: one simulation
+      # over every node lets the unconnected ones settle on a wide ring, the
+      # ring sets the bounding box, and the connected component -- the entire
+      # content of the picture -- normalises down to half a percent of the
+      # frame. Remove the per-component packing and five assertions here go red.
+      - name: Graph view
+        run: node plugins/session-viz/test/graph-view.mjs
+
       # /qlive sends turn shape to a workspace console. Two rules carry the
       # whole feature: the trailing turn is never sent (extract closes it
       # artificially, so it looks finished when it is not), and the live ledger

@@ -35,6 +35,13 @@ export interface GraphNode {
   turns?: number[]
   /** Verbatim statement of the field this node came from. Derived nodes only. */
   measured?: string
+  /**
+   * The turn at which this node first became true, for replay. `null` means the
+   * spine cannot attribute it to a turn -- packages, CLI tools, stack files,
+   * extensions and skills are aggregated per SESSION, so there is no moment to
+   * point at. Those are present from the start rather than given an invented one.
+   */
+  firstTurn?: number | null
 }
 
 export interface GraphEdge {
@@ -45,12 +52,25 @@ export interface GraphEdge {
   layer: GraphLayer
   dashed?: boolean
   weight?: number
+  /** The turn at which the relation first held. Never earlier than both ends. */
+  firstTurn?: number | null
 }
 
 export interface GraphLayout {
   width: number
   height: number
   positions: Record<string, { x: number; y: number }>
+  /**
+   * The uniform factor the packed layout was multiplied by to fit the frame.
+   * Returned because node radii live in the same coordinate space as positions:
+   * a renderer that scales one and not the other draws overlapping blobs at
+   * exactly the densities where that matters most.
+   */
+  scale: number
+  /** Connected components the packer had to place. */
+  components: number
+  /** Nodes carrying no edge at all. These are what used to set the bounding box. */
+  isolated: number
 }
 
 export interface LayoutOptions {
@@ -83,13 +103,43 @@ export interface DerivedGraph {
 // Moved here from corpus.mts so the two renderers share one implementation. A
 // second copy of an 80-line simulation that drifts from the first is the same
 // staleness failure this file exists to answer, one level up.
-export function layoutGraph(
+//
+// -- Why this is not one simulation over every node -------------------------
+// A node with no edge feels only repulsion and the weak pull to centre, so it
+// settles out on a wide ring. A connected component feels its springs and pulls
+// into a knot. Put both in one box and the ring sets the bounding box while the
+// knot -- the entire content of the picture -- normalises down into a few
+// percent of the frame. That is what "the standalone nodes skew the whole
+// image" was: the simulation was right and the framing was wrong.
+//
+// So each connected component is simulated in its OWN box, sized to its node
+// count, and the components are then shelf-packed into the frame. Unconnected
+// nodes become one block laid out as a grid -- which is also the more honest
+// picture, because they have no structure and a scatter implies a geometry that
+// is not there.
+//
+// The final fit is UNIFORM. The previous version scaled x and y independently,
+// which silently stretched every layout whose aspect ratio did not match the
+// frame's; circles stayed circles only because they are drawn after the fact.
+
+interface PackedBlock {
+  w: number
+  h: number
+  ids: string[]
+  at: Array<{ x: number; y: number }>
+}
+
+/** One component, one box. Deterministic: seeded on a circle by index, never
+ *  on Math.random, so the same input always draws the same picture. */
+function simulate(
   nodes: Array<{ id: string; degree: number }>,
   edges: Array<{ source: string; target: string }>,
-  { width = 1000, height = 620, iterations = 400 }: LayoutOptions = {}
-): GraphLayout {
+  width: number,
+  height: number,
+  iterations: number
+): Array<{ x: number; y: number }> {
   const n = nodes.length
-  if (!n) return { width, height, positions: {} }
+  if (!n) return []
   const pos = nodes.map((_, i) => {
     const a = (i / n) * Math.PI * 2
     return { x: width / 2 + Math.cos(a) * width * 0.32, y: height / 2 + Math.sin(a) * height * 0.32 }
@@ -137,8 +187,16 @@ export function layoutGraph(
     }
 
     for (let i = 0; i < n; i++) {
+      // Anisotropic centring. Repulsion and springs are isotropic, so a cloud
+      // relaxes to roughly square however landscape the box it was given is --
+      // and a square component in a landscape frame is fitted on its height,
+      // leaving a third of the width empty. Pulling harder in y by the box's
+      // own aspect ratio makes the component come out the shape of its frame.
+      // Nothing is distorted by this that was ever measured: the force layout
+      // has no ground truth in its aspect, which is why the page says distance
+      // here is the packing and not a measurement.
       dx[i]! += (width / 2 - pos[i]!.x) * 0.012
-      dy[i]! += (height / 2 - pos[i]!.y) * 0.012
+      dy[i]! += (height / 2 - pos[i]!.y) * 0.012 * (width / Math.max(1, height))
       const d = Math.sqrt(dx[i]! * dx[i]! + dy[i]! * dy[i]!) || 1
       const step = Math.min(d, temp)
       pos[i]!.x += (dx[i]! / d) * step
@@ -146,23 +204,173 @@ export function layoutGraph(
     }
   }
 
-  const pad = 56
-  const xs = pos.map((p) => p.x)
-  const ys = pos.map((p) => p.y)
-  const minX = Math.min(...xs)
-  const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
-  const sx = (width - pad * 2) / Math.max(1, maxX - minX)
-  const sy = (height - pad * 2) / Math.max(1, maxY - minY)
-  const positions: Record<string, { x: number; y: number }> = {}
-  nodes.forEach((nd, i) => {
-    positions[nd.id] = {
-      x: +(pad + (pos[i]!.x - minX) * sx).toFixed(1),
-      y: +(pad + (pos[i]!.y - minY) * sy).toFixed(1),
+  return pos
+}
+
+/** Node pitch in the grid of unconnected nodes. Wide rather than square because
+ *  what collides here is labels, not dots. */
+const CELL_W = 165
+const CELL_H = 66
+/** Breathing room inside a component's box, and between packed blocks. */
+const BOX_PAD = 30
+const GUTTER = 34
+
+export function layoutGraph(
+  nodes: Array<{ id: string; degree: number }>,
+  edges: Array<{ source: string; target: string }>,
+  { width = 1000, height = 620, iterations = 400 }: LayoutOptions = {}
+): GraphLayout {
+  const n = nodes.length
+  if (!n) return { width, height, positions: {}, scale: 1, components: 0, isolated: 0 }
+
+  const index = new Map<string, number>(nodes.map((nd, i) => [nd.id, i]))
+
+  // ---- connected components
+  const parent = nodes.map((_, i) => i)
+  const find = (a: number): number => {
+    let r = a
+    while (parent[r] !== r) r = parent[r]!
+    while (parent[a] !== r) {
+      const nx = parent[a]!
+      parent[a] = r
+      a = nx
     }
-  })
-  return { width, height, positions }
+    return r
+  }
+  for (const e of edges) {
+    const a = index.get(e.source)
+    const b = index.get(e.target)
+    if (a === undefined || b === undefined) continue
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) parent[rb] = ra
+  }
+  const groups = new Map<number, number[]>()
+  for (let i = 0; i < n; i++) {
+    const r = find(i)
+    const g = groups.get(r)
+    if (g) g.push(i)
+    else groups.set(r, [i])
+  }
+  // Largest first, then by first member: a tie broken by insertion order is a
+  // tie broken by node order, which is stable across runs.
+  const comps = [...groups.values()].sort((a, b) => b.length - a.length || a[0]! - b[0]!)
+  const isolated = comps.reduce((k, c) => k + (c.length === 1 ? 1 : 0), 0)
+
+  const rootOf = new Map<string, number>()
+  nodes.forEach((nd, i) => rootOf.set(nd.id, find(i)))
+  const inside = new Map<number, Array<{ source: string; target: string }>>()
+  for (const e of edges) {
+    const r = rootOf.get(e.source)
+    if (r === undefined || rootOf.get(e.target) !== r) continue
+    const list = inside.get(r)
+    if (list) list.push(e)
+    else inside.set(r, [e])
+  }
+
+  const blocks: PackedBlock[] = []
+  for (const c of comps) {
+    if (c.length < 2) continue
+    const sub = c.map((i) => nodes[i]!)
+    // Area per component grows with node count, so a 60-node knot is not given
+    // the same box as a 3-node triangle and then blown up to match it.
+    const side = Math.max(220, Math.sqrt(sub.length) * 132)
+    const local = simulate(sub, inside.get(find(c[0]!)) || [], side, side * 0.66, iterations)
+    const xs = local.map((p) => p.x)
+    const ys = local.map((p) => p.y)
+    const minX = Math.min(...xs)
+    const minY = Math.min(...ys)
+    blocks.push({
+      w: Math.max(...xs) - minX + BOX_PAD * 2,
+      h: Math.max(...ys) - minY + BOX_PAD * 2,
+      ids: sub.map((s) => s.id),
+      at: local.map((p) => ({ x: p.x - minX + BOX_PAD, y: p.y - minY + BOX_PAD })),
+    })
+  }
+
+  // ---- shelf-pack the components, aiming at the frame's own aspect ratio.
+  // Packing to the widest block instead would stack everything in one column
+  // and leave a third of a landscape frame empty.
+  const raw = new Map<string, { x: number; y: number }>()
+  const area = blocks.reduce((a, b) => a + b.w * b.h, 0)
+  const targetW = Math.max(...blocks.map((b) => b.w), Math.sqrt(area * (width / Math.max(1, height))), 1)
+  let x = 0
+  let y = 0
+  let shelfH = 0
+  let packW = 0
+  for (const b of blocks) {
+    if (x > 0 && x + b.w > targetW) {
+      y += shelfH + GUTTER
+      x = 0
+      shelfH = 0
+    }
+    const ox = x
+    const oy = y
+    b.ids.forEach((id, i) => raw.set(id, { x: ox + b.at[i]!.x, y: oy + b.at[i]!.y }))
+    x += b.w + GUTTER
+    shelfH = Math.max(shelfH, b.h)
+    packW = Math.max(packW, x - GUTTER)
+  }
+  const packH = y + shelfH
+
+  // ---- the unconnected, as a rail beside the packed components
+  //
+  // Beside and not below: a rail sized to the height already in use keeps the
+  // result the shape of the frame, where a grid appended underneath forces a
+  // second shelf and shrinks everything to fit a column that is mostly air.
+  // A grid rather than a scatter, because these nodes share no edge with
+  // anything -- there is no geometry to draw, and pretending otherwise puts
+  // meaning into distance that was never measured.
+  const singles = comps.filter((c) => c.length === 1).map((c) => nodes[c[0]!]!)
+  if (singles.length) {
+    // Rows enough to sit alongside the pack, but never fewer than a block the
+    // rough shape of the frame. Taking the pack's height alone is a trap: a
+    // component of exactly two nodes is always 60px tall -- simulate seeds both
+    // at the same y and every y-force cancels, so they never leave that line --
+    // and floor(60/66) is 0, which collapses the rail to a single row thousands
+    // of pixels wide and drags the whole fit down with it.
+    const alongside = Math.floor(packH / CELL_H)
+    const shaped = Math.ceil(Math.sqrt((singles.length * CELL_W) / (CELL_H * (width / Math.max(1, height)))))
+    const rows = Math.max(1, Math.min(singles.length, Math.max(alongside, shaped)))
+    const railH = Math.min(rows, singles.length) * CELL_H
+    const ox = packW ? packW + GUTTER + BOX_PAD : 0
+    const oy = Math.max(0, (packH - railH) / 2)
+    // Column-major, so a column fills top to bottom before the next one starts.
+    singles.forEach((s, i) =>
+      raw.set(s.id, {
+        x: ox + Math.floor(i / rows) * CELL_W + CELL_W / 2,
+        y: oy + (i % rows) * CELL_H + CELL_H / 2,
+      })
+    )
+  }
+
+  // ---- one uniform fit over the real extent
+  const pts = [...raw.values()]
+  const xs = pts.map((p) => p.x)
+  const ys = pts.map((p) => p.y)
+  const minX = Math.min(...xs)
+  const minY = Math.min(...ys)
+  const bw = Math.max(...xs) - minX
+  const bh = Math.max(...ys) - minY
+  const pad = 46
+  // No lower bound. A floor here overrides the fit it is wrapped around: past
+  // roughly five frames' worth of content the packed extent stops shrinking,
+  // the offsets go negative, and nodes are emitted outside the viewBox where
+  // the canvas clips them -- invisible, unreachable, and still counted as drawn
+  // by everything downstream. A graph too big to read is a graph to zoom into;
+  // a graph half off the canvas is a graph that lies about what it contains.
+  // The upper bound stays: a three-node graph blown up to fill the frame is
+  // just a big triangle.
+  const scale = Math.min(1.35, (width - pad * 2) / Math.max(1, bw), (height - pad * 2) / Math.max(1, bh))
+  const offX = (width - bw * scale) / 2
+  const offY = (height - bh * scale) / 2
+  const positions: Record<string, { x: number; y: number }> = {}
+  for (const [id, p] of raw)
+    positions[id] = {
+      x: +(offX + (p.x - minX) * scale).toFixed(1),
+      y: +(offY + (p.y - minY) * scale).toFixed(1),
+    }
+  return { width, height, positions, scale: +scale.toFixed(3), components: comps.length, isolated }
 }
 
 // ---------------------------------------------------------------- derived
@@ -231,8 +439,22 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
     edges.push({ source, target, rel, layer: 'derived', ...extra })
   }
 
+  // When each node first became true, for replay.
+  //
+  // Only the turn stream can answer this, so anything the spine aggregates per
+  // SESSION -- packages, CLI tools, stack files, extensions, skills -- never
+  // reaches this map and ends up `null`. That is deliberate: the alternative is
+  // to invent a moment, and the page already promises those are attributed to
+  // the session and never to a turn. A null is drawn from the start and says so.
+  const birth = new Map<string, number>()
+  const bornAt = (id: string, at: number): void => {
+    const cur = birth.get(id)
+    if (cur === undefined || at < cur) birth.set(id, at)
+  }
+
   const turns = session.turns || []
   const art = session.artifacts || {}
+  const firstIdx = turns.length ? Math.min(...turns.map((t) => t.index)) : 0
 
   // The session node is unconditional. It is what makes the graph never empty,
   // even for a zero-turn session.
@@ -282,12 +504,18 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
       measured: `Measured -- session.slashCommands includes ${cmd}`,
     }), 'invoked')
 
-  for (const pm of session.permissionModes || []) {
-    if (!pm.mode) continue
-    link(sessionNode, add(`mode:${pm.mode}`, 'mode', pm.mode, {
-      measured: 'Measured -- session.permissionModes entry',
-    }), 'switched to')
-  }
+  // Counted, not repeated. permissionModes is one record per switch, and this
+  // emitted an edge per record -- 319 identical session-to-mode lines on the
+  // session this was written in, all drawn on top of each other, all eating the
+  // global edge budget that the rest of the graph is then capped out of.
+  const modeCounts = new Map<string, number>()
+  for (const pm of session.permissionModes || [])
+    if (pm.mode) modeCounts.set(pm.mode, (modeCounts.get(pm.mode) || 0) + 1)
+  for (const [mode, n] of modeCounts)
+    link(sessionNode, add(`mode:${mode}`, 'mode', mode, {
+      weight: n,
+      measured: `Measured -- session.permissionModes names ${mode} in ${n} record(s)`,
+    }), n === 1 ? 'switched to' : `switched to x${n}`)
 
   // ---- tools, capped by count
   const toolTotals = new Map<string, number>()
@@ -307,6 +535,21 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
       measured: `Measured -- ${toolTotals.get(name)} call(s) across the session`,
     })
 
+  // Births, over EVERY turn rather than only the drawn ones. A tool first
+  // called in a turn the gate removed still first appeared then, and a replay
+  // that showed it later would be reporting the gate, not the session.
+  for (const t of turns) {
+    bornAt(`turn:${t.index}`, t.index)
+    for (const c of t.toolCalls || []) {
+      if (keptTools.has(c.name)) bornAt(`tool:${c.name}`, t.index)
+      const server = c.name.startsWith('mcp__') ? c.name.split('__')[1] : null
+      if (server) bornAt(`mcp:${server}`, t.index)
+    }
+    if (t.model) bornAt(`model:${t.model}`, t.index)
+    for (const cmd of t.slashCommands || []) bornAt(`slash:${cmd}`, t.index)
+    for (const f of t.friction || []) bornAt(`friction:${f}`, t.index)
+  }
+
   // ---- which turns get drawn
   //
   // A turn is drawn when it carries a signal of its own, OR when something else
@@ -320,7 +563,11 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
     const r = t.derived?.repeatOf
     if (typeof r === 'number' && r >= 0) repeatTargets.add(r)
   }
-  const modeHosts = new Set<number>()
+  // Which modes each host turn actually bracketed -- not merely that it
+  // bracketed one. Keeping only the turn index meant every host turn was then
+  // linked to every mode in the session, so a turn that saw one switch claimed
+  // all of them.
+  const modeHosts = new Map<number, Set<string>>()
   for (const pm of session.permissionModes || []) {
     if (!pm.ts) continue
     const at = Date.parse(pm.ts)
@@ -330,7 +577,12 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
       const e = t.endedAt ? Date.parse(t.endedAt) : NaN
       return Number.isFinite(s) && Number.isFinite(e) && at >= s && at <= e
     })
-    if (host) modeHosts.add(host.index)
+    if (host && pm.mode) {
+      const seen = modeHosts.get(host.index) || new Set<string>()
+      seen.add(pm.mode)
+      modeHosts.set(host.index, seen)
+      bornAt(`mode:${pm.mode}`, host.index)
+    }
   }
   const byTools = [...turns].sort((a, b) => (b.toolCallCount || 0) - (a.toolCallCount || 0)).slice(0, 3)
   const anchors = new Set<number>(byTools.map((t) => t.index))
@@ -387,19 +639,24 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
     for (const cmd of t.slashCommands || [])
       if (nodes.has(`slash:${cmd}`)) link(id, `slash:${cmd}`, 'issued while this turn was open')
 
-    if (modeHosts.has(t.index))
-      for (const pm of session.permissionModes || [])
-        if (pm.mode && nodes.has(`mode:${pm.mode}`)) link(id, `mode:${pm.mode}`, 'switched here')
+    for (const mode of modeHosts.get(t.index) || [])
+      if (nodes.has(`mode:${mode}`)) link(id, `mode:${mode}`, 'switched here')
   }
 
   // ---- tool co-occurrence: the densest relation, so gated hard
   const pair = new Map<string, number>()
+  // The turn the pair CROSSED the threshold, not the turn they first met. The
+  // edge claims "co-occur in N turns", and that claim was not true until here --
+  // taking the max of the two endpoints instead would draw it turns too early.
+  const pairAt = new Map<string, number>()
   for (const t of turns) {
     const names = (t.toolCalls || []).map((c) => c.name).filter((n) => keptTools.has(n)).sort()
     for (let i = 0; i < names.length; i++)
       for (let j = i + 1; j < names.length; j++) {
         const key = `${names[i]} ${names[j]}`
-        pair.set(key, (pair.get(key) || 0) + 1)
+        const seen = (pair.get(key) || 0) + 1
+        pair.set(key, seen)
+        if (seen === COOCCUR_MIN) pairAt.set(key, t.index)
       }
   }
   const cooc = [...pair.entries()].filter(([, n]) => n >= COOCCUR_MIN).sort((a, b) => b[1] - a[1])
@@ -407,7 +664,7 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
     const [a, b] = key.split(' ')
     edges.push({
       source: `tool:${a}`, target: `tool:${b}`, rel: `co-occur in ${n} turns`,
-      layer: 'derived', weight: n, dashed: true,
+      layer: 'derived', weight: n, dashed: true, firstTurn: pairAt.get(key) ?? null,
     })
   }
   if (cooc.length > MAX_COOCCUR)
@@ -430,6 +687,21 @@ export function deriveGraph(session: SpineSession): DerivedGraph {
     nodes.get(e.source)!.degree++
     nodes.get(e.target)!.degree++
   }
+
+  // ---- tether every node and edge to a turn
+  for (const nd of nodes.values()) {
+    if (nd.kind === 'session' || nd.kind === 'harness' || nd.kind === 'repo') nd.firstTurn = firstIdx
+    else nd.firstTurn = birth.has(nd.id) ? birth.get(nd.id)! : null
+  }
+  // An edge cannot predate either end. Where a node is unattributable it counts
+  // as present from the start, so the edge is governed by the end that is dated.
+  const at = (id: string): number => {
+    const v = nodes.get(id)?.firstTurn
+    return typeof v === 'number' ? v : firstIdx
+  }
+  for (const e of final)
+    if (typeof e.firstTurn !== 'number') e.firstTurn = Math.max(at(e.source), at(e.target))
+
   return { nodes: [...nodes.values()], edges: final, suppressed }
 }
 
@@ -479,6 +751,7 @@ export function mergeAuthored(
   if (!graph) return { nodes, edges, dropped }
 
   const derivedIds = new Set(derived.nodes.map((n) => n.id))
+  const derivedBirth = new Map<string, number | null>(derived.nodes.map((n) => [n.id, n.firstTurn ?? null]))
   const concepts = graph.concepts || []
   const relations = graph.relations || []
   const byId = new Map<string, string>() // authored id -> namespaced id
@@ -504,6 +777,15 @@ export function mergeAuthored(
     const turns = (c.turns || []).filter((t) => Number.isInteger(t) && t >= 0 && t < turnCount)
     badTurn += (c.turns || []).length - turns.length
 
+    // A concept enters the replay at the earliest turn it names; failing that,
+    // at the earliest turn its anchors were born. A concept anchored to nothing
+    // dated stays null and is present from the start -- the model's reading of
+    // the session is not itself an event in it.
+    const anchored = (c.anchors || [])
+      .map((a) => derivedBirth.get(String(a)))
+      .filter((v): v is number => typeof v === 'number')
+    const firstTurn = turns.length ? Math.min(...turns) : anchored.length ? Math.min(...anchored) : null
+
     byId.set(raw, id)
     nodes.push({
       id,
@@ -513,6 +795,7 @@ export function mergeAuthored(
       layer: 'authored',
       note: c.note ? String(c.note).slice(0, 400) : undefined,
       turns: turns.length ? turns : undefined,
+      firstTurn,
     })
 
     // Anchors are the ONLY way the authored layer touches the skeleton, and
@@ -569,5 +852,11 @@ export function mergeAuthored(
     index.get(e.source)!.degree++
     index.get(e.target)!.degree++
   }
+  const at = (id: string): number => {
+    const v = index.get(id)?.firstTurn
+    return typeof v === 'number' ? v : 0
+  }
+  for (const e of live)
+    if (typeof e.firstTurn !== 'number') e.firstTurn = Math.max(at(e.source), at(e.target))
   return { nodes, edges: live, dropped }
 }

@@ -1,7 +1,7 @@
 {
   "name": "session-viz-plugin",
   "private": true,
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Build tooling for the session-viz Claude Code plugin",
   "scripts": {
     "build": "tsc",

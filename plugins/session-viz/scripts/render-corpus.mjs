@@ -569,11 +569,18 @@ function graphSection(m) {
     const g = m.graph;
     if (!g || !g.nodes.length)
         return '<div class="empty">No shared topics found across projects.</div>';
-    const { width, height, positions } = g.layout;
+    const { width, height, positions, scale } = g.layout;
     // Sized by link count, as Obsidian does — a node's importance in a graph view
     // is how much it connects. Repos get a floor so the anchors stay findable.
+    //
+    // Multiplied by the layout's own fit factor, because radii live in the same
+    // coordinate space as the positions: once a corpus is large enough for the
+    // fit to drop below 1, full-size dots on compressed spacing are overlapping
+    // blobs at exactly the density that forced the compression. Floored, so a
+    // node never scales down to a hairline.
     const maxDeg = Math.max(1, ...g.nodes.map((n) => n.degree));
-    const radius = (n) => (n.kind === 'repo' ? 6 : 3.2) + Math.sqrt(n.degree / maxDeg) * (n.kind === 'repo' ? 13 : 8);
+    const fit = typeof scale === 'number' && scale > 0 ? scale : 1;
+    const radius = (n) => Math.max(2.2, ((n.kind === 'repo' ? 6 : 3.2) + Math.sqrt(n.degree / maxDeg) * (n.kind === 'repo' ? 13 : 8)) * fit);
     // Adjacency is emitted for the hover behaviour so the page can dim everything
     // that is not a neighbour — the whole point of the picture is "what connects
     // to what", which a static hairball cannot answer on its own.
