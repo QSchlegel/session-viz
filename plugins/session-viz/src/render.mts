@@ -154,22 +154,63 @@ const FRICTION_LABEL: Record<string, string> = {
   roundtrip: 'round-trip',
 }
 
+// Colour encodes kind WITHIN a layer; it never carries the derived/authored
+// distinction, which is shape's job. Two palettes rather than one, because the
+// graph is no longer painted on a permanent dark rectangle: the same mid-tone
+// that reads as a colour against #131218 washes out to grey against #f4f1ec.
+// Kinds are keyed identically in both, and the light values are the darker,
+// more saturated members of the same hue families.
+const KIND_DARK: Record<string, string> = {
+  session: '#e0894a', harness: '#68b3b3', repo: '#e0894a', model: '#6a9fd4',
+  tool: '#8fbc6b', mcp: '#68b3b3', skill: '#d9b45c', cli: '#8fbc6b',
+  package: '#6a9fd4', stack: '#c47ab0', ext: '#c47ab0', slash: '#d9b45c',
+  mode: '#a0a0a8', friction: '#d06a5a', turn: '#9a9aa4',
+  decision: '#4ade80', defect: '#f87171', guard: '#fbbf24',
+  thread: '#c084fc', subsystem: '#60a5fa', question: '#a8a29e', concept: '#a8a29e',
+}
+const KIND_LIGHT: Record<string, string> = {
+  session: '#b45f1f', harness: '#2c7676', repo: '#b45f1f', model: '#2f6fae',
+  tool: '#4d8a2f', mcp: '#2c7676', skill: '#8a6712', cli: '#4d8a2f',
+  package: '#2f6fae', stack: '#94438a', ext: '#94438a', slash: '#8a6712',
+  mode: '#63636f', friction: '#b8402f', turn: '#6b6b78',
+  decision: '#15803d', defect: '#b91c1c', guard: '#92400e',
+  thread: '#7c22ce', subsystem: '#1d4ed8', question: '#57534e', concept: '#57534e',
+}
+const KIND_FALLBACK = 'question'
+
+const kindVars = (m: Record<string, string>): string =>
+  Object.entries(m).map(([k, v]) => `--k-${k}:${v};`).join('')
+/** One rule per kind, setting a single inherited custom property. The shapes
+ *  then have exactly one fill rule between them, so a kind that gains a colour
+ *  cannot gain a second way to be painted. */
+const kindRules = (): string =>
+  Object.keys(KIND_DARK).map((k) => `.gn.k-${k}{--kc:var(--k-${k})}`).join('\n')
+
 function css(): string {
   return `
 :root{
-  --bg:#fbfaf8; --panel:#fff; --ink:#1c1b19; --muted:#6b6862; --line:#e6e2db;
+  --bg:#fbfaf8; --panel:#fff; --ink:#1c1b19; --muted:#6b6862; --dim:#6b6862; --line:#e6e2db;
   --accent:#c2521a; --accent-soft:#fdf0e8; --ok:#2f6b46; --warn:#9a6a12; --bad:#b3261e;
   --bar:#d9d4cb; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --kg-bg:#f3f0ea; --kg-halo:#f3f0ea; --kg-ring:#f3f0ea; --kg-label:#26251f;
+  --kg-edge:#8d8779; --kg-edge-au:#7c3aed; --alarm:#b3261e; --alarm-ink:#fff;
+  ${kindVars(KIND_LIGHT)}
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
-  --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9b968d; --line:#302e37;
+  --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9b968d; --dim:#9b968d; --line:#302e37;
   --accent:#ff8a4c; --accent-soft:#2a1d16; --ok:#6fbf8e; --warn:#e0b055; --bad:#ff6b5e;
   --bar:#3a3742;
+  --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
+  --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
+  ${kindVars(KIND_DARK)}
 }}
 :root[data-theme=dark]{
-  --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9b968d; --line:#302e37;
+  --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9b968d; --dim:#9b968d; --line:#302e37;
   --accent:#ff8a4c; --accent-soft:#2a1d16; --ok:#6fbf8e; --warn:#e0b055; --bad:#ff6b5e;
   --bar:#3a3742;
+  --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
+  --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
+  ${kindVars(KIND_DARK)}
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -180,7 +221,13 @@ h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
 h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
   margin:34px 0 12px;font-weight:600}
 .sub{color:var(--muted);font-size:13px;font-family:var(--mono)}
+.dim{color:var(--muted)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+/* theme */
+.head{display:flex;gap:16px;align-items:flex-start;justify-content:space-between}
+#theme{flex:none;border:1px solid var(--line);background:var(--panel);color:var(--muted);
+  font:inherit;font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer}
+#theme:hover{border-color:var(--accent);color:var(--ink)}
 
 /* copy-pasteable compact line */
 .compact{border-color:var(--accent);background:var(--accent-soft);margin-top:18px}
@@ -260,7 +307,7 @@ footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono)
   border-top:1px solid var(--line);padding-top:14px}
 /* knowledge graph */
 .gwrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:0;border:1px solid var(--line);
-  border-radius:10px;overflow:hidden;margin:10px 0 0}
+  border-radius:10px;overflow:hidden;margin:10px 0 0;background:var(--panel)}
 @media (max-width:900px){.gwrap{grid-template-columns:1fr}}
 .glegend{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:16px;align-items:center;padding:9px 14px;
   border-bottom:1px solid var(--line);font-size:12.5px}
@@ -268,21 +315,56 @@ footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono)
 .gk{width:11px;height:11px;display:inline-block;background:var(--dim)}
 .gcirc{border-radius:50%}
 .gdia{transform:rotate(45deg)}
-.gbtn{margin-left:auto;border:1px solid var(--line);background:transparent;color:var(--ink);
+.gbtn{border:1px solid var(--line);background:var(--panel);color:var(--ink);
   font:inherit;font-size:12px;padding:3px 10px;border-radius:99px;cursor:pointer}
+.gbtn:hover{border-color:var(--accent)}
 .gbtn.off{opacity:.55}
-.gcanvas{overflow:auto;background:var(--kg-bg,#16151a)}
+.gpush{margin-left:auto}
+
+/* The canvas pans and zooms, so it clips rather than scrolls. touch-action is
+   pan-y and not none: a graph that swallows the page scroll on a phone is a
+   worse bug than one that cannot be dragged with a finger. */
+.gcanvas{position:relative;overflow:hidden;background:var(--kg-bg);touch-action:pan-y;cursor:grab}
+.gcanvas.grab{cursor:grabbing}
+.gcanvas:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
 #qkg{display:block;width:100%;height:auto}
-.ge{stroke:#6b6b76;stroke-opacity:.34;fill:none}
-.ge.authored{stroke:#b07acb;stroke-opacity:.5}
-.ge.dash{stroke-dasharray:4 4}
-.ge.hot{stroke-opacity:.95;stroke-width:1.8}
+.gzoom{position:absolute;right:10px;bottom:10px;display:flex;gap:5px}
+.gzoom button{width:27px;height:27px;padding:0;line-height:1;font-size:15px;border-radius:7px;
+  border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+.gzoom button.wide{width:auto;padding:0 9px;font-size:12px}
+.gzoom button:hover{border-color:var(--accent)}
+.gscale{position:absolute;left:11px;bottom:14px;font-family:var(--mono);font-size:11px;
+  color:var(--kg-label);opacity:.55;pointer-events:none}
+.greplay{grid-column:1/-1;display:flex;gap:12px;align-items:center;padding:9px 14px;
+  border-top:1px solid var(--line);font-size:12.5px}
+.greplay input[type=range]{flex:1;min-width:110px;accent-color:var(--accent)}
+.greplay output{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap}
+
+/* Every stroke width divides by the live zoom factor, so magnifying the graph
+   spreads the nodes apart without also fattening the lines and the type into
+   each other. --kgz is set on the svg by the pan/zoom handler. */
+.ge{stroke:var(--kg-edge);stroke-opacity:.34;fill:none;stroke-width:calc(1px / var(--kgz,1))}
+.ge.authored{stroke:var(--kg-edge-au);stroke-opacity:.5}
+.ge.dash{stroke-dasharray:calc(4px / var(--kgz,1)) calc(4px / var(--kgz,1))}
+.ge.hot{stroke-opacity:.95;stroke-width:calc(1.8px / var(--kgz,1))}
 .ge.mute,.gn.mute{opacity:.1}
+/* Not yet born, under the replay scrubber. */
+.ge.pre,.gn.pre{display:none}
 .gn{cursor:pointer}
-.gn .gs{stroke:#16151a;stroke-width:1.5}
-.gn.authored .gs{stroke:#e8e6f2;stroke-width:1.2;stroke-dasharray:3 2}
-.gn text{font-size:9.5px;fill:#d8d6dc;text-anchor:middle;paint-order:stroke;stroke:#16151a;
-  stroke-width:3px;stroke-linejoin:round;pointer-events:none}
+.gn .gs{fill:var(--kc,var(--k-question));stroke:var(--kg-ring);stroke-width:calc(1.5px / var(--kgz,1))}
+.gn.authored .gs{stroke:var(--kg-label);stroke-width:calc(1.2px / var(--kgz,1));
+  stroke-dasharray:calc(3px / var(--kgz,1)) calc(2px / var(--kgz,1))}
+.gn text{font-size:calc(9.5px / var(--kgz,1));fill:var(--kg-label);text-anchor:middle;
+  paint-order:stroke;stroke:var(--kg-halo);stroke-width:calc(3px / var(--kgz,1));
+  stroke-linejoin:round;pointer-events:none}
+/* Zoomed out, every label is drawn and none of them is legible. So the nodes
+   that carry the shape of the session keep theirs and the rest wait for room --
+   or for a hover, which always wins. */
+#qkg:not(.showall) .gn:not([data-hi]) text{opacity:0}
+.gn:hover text,.gn:focus text,.gn.near text{opacity:1 !important}
+.gn:focus{outline:none}
+.gn:focus .gs{stroke:var(--accent);stroke-width:calc(2.5px / var(--kgz,1));stroke-dasharray:none}
+${kindRules()}
 .gside{padding:14px 16px;border-left:1px solid var(--line);font-size:13px;overflow:auto;max-height:620px}
 @media (max-width:900px){.gside{border-left:0;border-top:1px solid var(--line);max-height:none}}
 .gside h4{margin:0 0 6px;font-size:14px}
@@ -297,7 +379,7 @@ footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono)
 .gsup,.gnot{margin:0;padding-left:18px}
 .gsup li,.gnot li{margin:2px 0}
 .gnot li{color:var(--dim)}
-.gmismatch{background:#b91c1c;color:#fff;padding:10px 14px;border-radius:8px;margin:0 0 14px;font-size:13.5px}
+.gmismatch{background:var(--alarm);color:var(--alarm-ink);padding:10px 14px;border-radius:8px;margin:0 0 14px;font-size:13.5px}
 
 `
 }
@@ -365,18 +447,6 @@ function renderScore(session: Session): string {
 
 // ---------------------------------------------------------------- graph
 
-// Reuses the corpus renderer's palette so the two pages share one vocabulary
-// rather than inventing a second. Colour encodes kind WITHIN a layer; it never
-// carries the derived/authored distinction, which is shape's job.
-const KIND_COLOR: Record<string, string> = {
-  session: '#e0894a', harness: '#68b3b3', repo: '#e0894a', model: '#6a9fd4',
-  tool: '#8fbc6b', mcp: '#68b3b3', skill: '#d9b45c', cli: '#8fbc6b',
-  package: '#6a9fd4', stack: '#c47ab0', ext: '#c47ab0', slash: '#d9b45c',
-  mode: '#a0a0a8', friction: '#d06a5a', turn: '#9a9aa4',
-  decision: '#15803d', defect: '#dc2626', guard: '#b45309',
-  thread: '#9333ea', subsystem: '#2563eb', question: '#78716c', concept: '#78716c',
-}
-
 // Rendered unconditionally, whether or not the corresponding nodes exist. A
 // caveat that disappears when quiet is one nobody trusts on its return.
 const NOT_SAID: string[] = [
@@ -385,7 +455,21 @@ const NOT_SAID: string[] = [
   'A repeat points at the first identical prompt, not at the previous one. It is a star, not a chain.',
   'A slash command attaches to the turn that was open when it was issued, which is the preceding human turn.',
   'An interruption is a count on a turn, not a point inside it. Which tool call it hit is not recorded.',
+  'Replay places a node at the earliest turn that could have produced it, which is not the same as the turn it mattered. Anything the spine holds per session rather than per turn has no turn to be placed at, so it is present from the first frame.',
+  'Distance in the picture is the packing, not a measurement. Nodes that share no edge were never compared.',
 ]
+
+/** Long names — `mcp__Claude_Browser__read_console_messages` — are wider than
+ *  any layout can give them, and a row of them overlaps into a smear. Elided in
+ *  the middle so both ends stay identifying; the full string is in the SVG
+ *  title, the accessible name and the side panel, so nothing is lost. */
+const elide = (s: string, max = 26): string =>
+  s.length <= max ? s : `${s.slice(0, max - 11)}…${s.slice(-10)}`
+
+/** Kinds come from two closed sets, but a class name built from data gets
+ *  sanitised anyway. An unknown kind simply finds no `--k-` rule and falls
+ *  through to the neutral. */
+const kindClass = (kind: string): string => String(kind).replace(/[^a-z0-9_-]/gi, '').slice(0, 24)
 
 function renderGraph(session: Session, intent: Intent | null | undefined): string {
   const derived = deriveGraph(session as never)
@@ -398,28 +482,87 @@ function renderGraph(session: Session, intent: Intent | null | undefined): strin
   const layout = layoutGraph(nodes, edges, { width: W, height: H })
   const pos = layout.positions
   const maxDeg = Math.max(1, ...nodes.map((n) => n.degree))
+  // Radii live in the same coordinate space as the packed positions, so they
+  // take the same fit factor. Without that, a layout squeezed to 60% draws
+  // full-size dots at 60% spacing -- overlapping blobs at exactly the densities
+  // where the picture had to be squeezed in the first place. Floored, because a
+  // node scaled down to a hairline is a node that is not on the page.
   const radius = (n: GraphNode): number =>
-    (n.kind === 'session' ? 7 : 4) + Math.sqrt(n.degree / maxDeg) * (n.kind === 'session' ? 13 : 8)
+    Math.max(
+      2.4,
+      ((n.kind === 'session' ? 7 : 4) + Math.sqrt(n.degree / maxDeg) * (n.kind === 'session' ? 13 : 8)) * layout.scale
+    )
+
+  // Which labels survive being zoomed out. The session's spine, the model's own
+  // layer, the friction, and the busiest measured nodes; the rest wait for room
+  // or for a hover. Hiding them all would be tidier and useless.
+  const SPINE = new Set(['session', 'harness', 'repo', 'model', 'friction'])
+  const busiest = new Set(
+    nodes.filter((n) => n.layer === 'derived').sort((a, b) => b.degree - a.degree).slice(0, 14).map((n) => n.id)
+  )
+  const hi = (n: GraphNode): boolean => n.layer === 'authored' || SPINE.has(n.kind) || busiest.has(n.id)
+
+  // -1, not 0: a node the spine cannot date is present before the first turn
+  // rather than arriving with it, and the two must stay distinguishable.
+  const born = (v: number | null | undefined): number => (typeof v === 'number' ? v : -1)
+  const maxTurn = session.turns.length ? Math.max(0, ...session.turns.map((x) => x.index)) : 0
+
+  // Label placement, relaxed for exactly the labels that are drawn at fit.
+  //
+  // The rest are revealed by zooming, and they do not need this: labels
+  // counter-scale while positions spread, so at 2x the gaps double and the type
+  // does not. Collisions are a fit-zoom problem only.
+  //
+  // The width here is an ESTIMATE -- there are no font metrics in a renderer --
+  // which is exactly why the test for this measures the real text boxes in a
+  // browser instead of re-running this arithmetic and agreeing with itself.
+  const CHAR_W = 5.15
+  const labelY = new Map<string, number>()
+  {
+    const taken: Array<{ x0: number; x1: number; y0: number; y1: number }> = []
+    const order = nodes
+      .filter((n) => hi(n) && pos[n.id])
+      .sort((a, b) => pos[a.id]!.y - pos[b.id]!.y || pos[a.id]!.x - pos[b.id]!.x || (a.id < b.id ? -1 : 1))
+    for (const n of order) {
+      const p = pos[n.id]!
+      const r = radius(n)
+      const half = (elide(n.label).length * CHAR_W) / 2
+      // Below the node first, then above, then progressively further out.
+      const cands = [r + 11, -(r + 5), r + 21, -(r + 15), r + 31, -(r + 25)]
+      let dy = cands[0]!
+      for (const c of cands) {
+        const box = { x0: p.x - half, x1: p.x + half, y0: p.y + c - 8, y1: p.y + c + 2.5 }
+        if (!taken.some((q) => box.x0 < q.x1 && q.x0 < box.x1 && box.y0 < q.y1 && q.y0 < box.y1)) {
+          dy = c
+          break
+        }
+      }
+      taken.push({ x0: p.x - half, x1: p.x + half, y0: p.y + dy - 8, y1: p.y + dy + 2.5 })
+      labelY.set(n.id, +(p.y + dy).toFixed(1))
+    }
+  }
 
   const line = (e: GraphEdge, i: number): string => {
     const a = pos[e.source]
     const b = pos[e.target]
     if (!a || !b) return '' // an endpoint the gates removed; never draw a stub
-    return `<line class="ge ${e.layer}${e.dashed ? ' dash' : ''}" data-i="${i}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`
+    return `<line class="ge ${e.layer}${e.dashed ? ' dash' : ''}" data-i="${i}" data-t="${born(e.firstTurn)}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`
   }
 
   const dot = (n: GraphNode): string => {
     const p = pos[n.id]
     if (!p) return ''
     const r = radius(n)
-    const col = KIND_COLOR[n.kind] || '#78716c'
     // Shape, not colour, carries the layer: a diamond survives greyscale,
     // colour-blindness, and a stylesheet that failed to load.
     const body =
       n.layer === 'authored'
-        ? `<polygon class="gs" points="${p.x},${p.y - r} ${p.x + r},${p.y} ${p.x},${p.y + r} ${p.x - r},${p.y}" fill="${col}"/>`
-        : `<circle class="gs" cx="${p.x}" cy="${p.y}" r="${r}" fill="${col}"/>`
-    return `<g class="gn ${n.layer}" data-id="${esc(n.id)}" tabindex="0">${body}<text x="${p.x}" y="${p.y + r + 11}">${esc(n.label)}</text></g>`
+        ? `<polygon class="gs" points="${p.x},${p.y - r} ${p.x + r},${p.y} ${p.x},${p.y + r} ${p.x - r},${p.y}"/>`
+        : `<circle class="gs" cx="${p.x}" cy="${p.y}" r="${r}"/>`
+    // One <text> per node and the full name in <title>/aria-label. An elided
+    // label extracted from the DOM is still recoverable; a label split across
+    // several <tspan>s comes back concatenated and wrong.
+    return `<g class="gn ${n.layer} k-${kindClass(n.kind)}" data-id="${esc(n.id)}" data-t="${born(n.firstTurn)}"${hi(n) ? ' data-hi="1"' : ''} tabindex="0" role="img" aria-label="${esc(n.label)}"><title>${esc(n.label)}</title>${body}<text x="${p.x}" y="${labelY.get(n.id) ?? +(p.y + r + 11).toFixed(1)}">${esc(elide(n.label))}</text></g>`
   }
 
   const derivedCount = nodes.filter((n) => n.layer === 'derived').length
@@ -432,25 +575,53 @@ function renderGraph(session: Session, intent: Intent | null | undefined): strin
     : '<p class="dim">Nothing was suppressed: every node the rules produced is on the page.</p>'
 
   const payload = {
+    w: W, h: H, maxTurn,
     nodes: nodes.map((n) => ({
       id: n.id, kind: n.kind, label: n.label, layer: n.layer,
       note: n.note || null, measured: n.measured || null, turns: n.turns || null, degree: n.degree,
+      at: born(n.firstTurn),
     })),
-    edges: edges.map((e) => ({ s: e.source, t: e.target, rel: e.rel || null, layer: e.layer })),
+    edges: edges.map((e) => ({
+      s: e.source, t: e.target, rel: e.rel || null, layer: e.layer, at: born(e.firstTurn),
+    })),
   }
+
+  // Stated in the legend rather than left to be inferred from the picture,
+  // because the packer deliberately does not draw them the way the simulation
+  // would: they are gridded, and a grid is a statement that there is no
+  // structure to show, not a claim about who sits near whom.
+  const loose = layout.isolated
+    ? `<span class="ghalf dim" title="They have no edge, so the grid is an arrangement and not a measurement">${layout.isolated} connect to nothing drawn</span>`
+    : ''
 
   return `<h2>Knowledge graph</h2>
 <div class="gwrap">
   <div class="glegend">
     <span class="ghalf"><b>Measured from the transcript</b> <i class="gk gcirc"></i> ${derivedCount} nodes</span>
     <span class="ghalf"><b>Written by the model</b> <i class="gk gdia"></i> ${authoredCount} nodes</span>
-    <button id="gtog" class="gbtn">Hide the model's layer</button>
+    ${loose}
+    <button id="gtog" class="gbtn gpush" type="button">Hide the model's layer</button>
   </div>
-  <div class="gcanvas"><svg viewBox="0 0 ${W} ${H}" id="qkg" role="img" aria-label="Session knowledge graph">
-    <g id="gedges">${edges.map(line).join('')}</g>
-    <g id="gnodes">${nodes.map(dot).join('')}</g>
-  </svg></div>
+  <div class="gcanvas" id="gcanvas" tabindex="0" aria-label="Knowledge graph canvas. Scroll to zoom, drag to pan, plus and minus to zoom, 0 to fit.">
+    <svg viewBox="0 0 ${W} ${H}" id="qkg" aria-hidden="false">
+      <g id="gview">
+        <g id="gedges">${edges.map(line).join('')}</g>
+        <g id="gnodes">${nodes.map(dot).join('')}</g>
+      </g>
+    </svg>
+    <div class="gscale" id="gzl">100%</div>
+    <div class="gzoom">
+      <button type="button" data-z="out" aria-label="Zoom out">&minus;</button>
+      <button type="button" data-z="in" aria-label="Zoom in">+</button>
+      <button type="button" data-z="fit" class="wide">Fit</button>
+    </div>
+  </div>
   <aside id="gside" class="gside"><p class="dim">Hover or focus a node. A measured node prints the field it came from; a written one says so.</p></aside>
+  <div class="greplay">
+    <button id="gplay" class="gbtn" type="button">&#9654; Replay</button>
+    <input id="gscrub" type="range" min="0" max="${maxTurn}" step="1" value="${maxTurn}" aria-label="Show the graph as it stood at this turn">
+    <output id="gat" for="gscrub">all ${maxTurn + 1} turns</output>
+  </div>
 </div>
 <div class="gfoot">
   <div class="glbl">What the gates dropped</div>
@@ -529,10 +700,20 @@ export function render(session: Session, intent: Intent | null | undefined, meta
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>qpact — ${esc(session.title || session.sessionId?.slice(0, 8))}</title>
+<script>
+// Before the first paint, not after. A stylesheet that resolves to light and a
+// script that corrects it a frame later is a flash of the wrong page.
+try{var m=localStorage.getItem('qpact-theme');if(m==='dark'||m==='light')document.documentElement.dataset.theme=m;}catch(e){}
+</script>
 <style>${css()}</style></head><body><div class="wrap">
 
-<h1>${esc(session.title || 'Session analysis')}</h1>
-<div class="sub">${esc(session.sessionId)} · ${esc(session.cwd || '')} · ${esc(session.gitBranch || '')}</div>
+<div class="head">
+  <div>
+    <h1>${esc(session.title || 'Session analysis')}</h1>
+    <div class="sub">${esc(session.sessionId)} · ${esc(session.cwd || '')} · ${esc(session.gitBranch || '')}</div>
+  </div>
+  <button id="theme" type="button" title="Light, dark, or whatever this machine asks for">Theme: system</button>
+</div>
 
 ${
   compactLine
@@ -589,18 +770,44 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   });
 });
 
+// --- theme. Three states, not two: a page that only toggles is a page that has
+// silently overridden whatever the machine asked for, with no way back to
+// "follow the system".
+(function(){
+  var b=document.getElementById('theme'); if(!b) return;
+  var order=['system','light','dark'];
+  function now(){var m=document.documentElement.dataset.theme;return m==='light'||m==='dark'?m:'system';}
+  function show(){b.textContent='Theme: '+now();}
+  show();
+  b.addEventListener('click',function(){
+    var next=order[(order.indexOf(now())+1)%order.length];
+    if(next==='system'){delete document.documentElement.dataset.theme;try{localStorage.removeItem('qpact-theme');}catch(e){}}
+    else{document.documentElement.dataset.theme=next;try{localStorage.setItem('qpact-theme',next);}catch(e){}}
+    show();
+  });
+})();
+
 // --- knowledge graph: hover isolates a neighbourhood, the toggle subtracts the
-// model's layer. The toggle is the real answer to "which is which": it is
-// checkable rather than asserted.
+// model's layer, the wheel zooms, the scrubber replays. The layer toggle is the
+// real answer to "which is which": it is checkable rather than asserted.
+//
+// Positions are computed once, for the WHOLE graph, and never recomputed. So
+// replay reveals nodes where they will finally sit rather than re-simulating a
+// smaller graph at every step -- which would move every node on every frame and
+// show off the layout algorithm instead of the session.
 (function(){
   var d=window.__qkg; if(!d) return;
   var side=document.getElementById('gside'), tog=document.getElementById('gtog');
+  var svg=document.getElementById('qkg'), view=document.getElementById('gview');
+  var canvas=document.getElementById('gcanvas'), zl=document.getElementById('gzl');
+  var scrub=document.getElementById('gscrub'), play=document.getElementById('gplay');
+  var out=document.getElementById('gat');
   var nodes={}, adj={};
   d.nodes.forEach(function(n){ nodes[n.id]=n; adj[n.id]=[]; });
   d.edges.forEach(function(e,i){ if(adj[e.s])adj[e.s].push(i); if(adj[e.t])adj[e.t].push(i); });
   var gEls=[].slice.call(document.querySelectorAll('#gnodes .gn'));
   var eEls=[].slice.call(document.querySelectorAll('#gedges .ge'));
-  var hidden=false, pinned=null;
+  var hidden=false, pinned=null, upto=d.maxTurn;
   function esc(x){var p=document.createElement('p');p.textContent=x==null?'':String(x);return p.innerHTML;}
   function card(id){
     var n=nodes[id]; if(!n) return;
@@ -612,22 +819,39 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
         : "Written by the model at /qpact step 3. Not measured.")+'</span>'+
       (n.note?'<p>'+esc(n.note)+'</p>':'')+
       (n.turns&&n.turns.length?'<p class="dim">turn '+n.turns.join(', ')+'</p>':'')+
+      '<p class="dim">'+(n.at<0?'not attributable to a turn &mdash; present from the first frame'
+        :'enters the replay at turn '+n.at)+'</p>'+
       '<ul class="gsup">'+rel+'</ul>';
   }
+  // One pass applies all three filters, because they compose: a node can be
+  // unborn AND on the hidden layer AND outside the focused neighbourhood, and
+  // three handlers fighting over one class list is how a node ends up drawn in
+  // a frame it did not exist in.
   function paint(id){
     var near=null;
     if(id){ near={}; near[id]=1; adj[id].forEach(function(i){near[d.edges[i].s]=1;near[d.edges[i].t]=1;}); }
+    var shown=0, live=0;
     gEls.forEach(function(g){
       var n=nodes[g.getAttribute('data-id')]||{};
-      var off=(hidden&&n.layer==='authored')||(near&&!near[g.getAttribute('data-id')]);
-      g.classList.toggle('mute',!!off);
+      var pre=n.at>upto;
+      var gone=hidden&&n.layer==='authored';
+      g.classList.toggle('pre',!!pre);
+      g.classList.toggle('mute',!!(pre||gone||(near&&!near[n.id])));
+      g.classList.toggle('near',!!(near&&near[n.id]&&!pre&&!gone));
+      if(!pre&&!gone)shown++;
     });
     eEls.forEach(function(l,i){
       var e=d.edges[i]||{};
-      var off=(hidden&&e.layer==='authored')||(near&&e.s!==id&&e.t!==id);
+      var pre=e.at>upto;
+      var gone=hidden&&e.layer==='authored';
+      l.classList.toggle('pre',!!pre);
+      var off=pre||gone||(near&&e.s!==id&&e.t!==id);
       l.classList.toggle('mute',!!off);
       l.classList.toggle('hot',!!(id&&(e.s===id||e.t===id)&&!off));
+      if(!pre&&!gone)live++;
     });
+    if(out)out.value=(upto>=d.maxTurn?'all '+(d.maxTurn+1)+' turns':'turn '+upto+' of '+d.maxTurn)
+      +' · '+shown+' nodes, '+live+' edges';
     if(id)card(id); else side.innerHTML='<p class="dim">Hover or focus a node. A measured node prints the field it came from; a written one says so.</p>';
   }
   gEls.forEach(function(g){
@@ -635,13 +859,98 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
     g.addEventListener('mouseenter',function(){paint(id);});
     g.addEventListener('focus',function(){paint(id);});
     g.addEventListener('mouseleave',function(){paint(pinned);});
-    g.addEventListener('click',function(ev){ev.stopPropagation();pinned=pinned===id?null:id;paint(pinned);});
+    g.addEventListener('click',function(ev){
+      ev.stopPropagation();
+      if(moved>4)return; // that was a pan that crossed a node, not a click on it
+      pinned=pinned===id?null:id;paint(pinned);
+    });
   });
   if(tog)tog.addEventListener('click',function(){
     hidden=!hidden; tog.classList.toggle('off',hidden);
     tog.textContent=hidden?"Show the model's layer":"Hide the model's layer";
     paint(pinned);
   });
+
+  // ---- pan and zoom
+  var k=1,tx=0,ty=0;
+  function apply(){
+    view.setAttribute('transform','translate('+tx.toFixed(2)+' '+ty.toFixed(2)+') scale('+k.toFixed(4)+')');
+    // Every stroke width and font size on the canvas divides by this, so lines
+    // and type keep their weight on screen while the structure spreads apart.
+    svg.style.setProperty('--kgz',k);
+    svg.classList.toggle('showall',k>=1.5);
+    if(zl)zl.textContent=Math.round(k*100)+'%';
+  }
+  function zoomAt(px,py,nk){
+    nk=Math.max(0.45,Math.min(9,nk));
+    tx=px-(px-tx)*(nk/k); ty=py-(py-ty)*(nk/k); k=nk; apply();
+  }
+  function fit(){k=1;tx=0;ty=0;apply();}
+  function pt(ev){var r=svg.getBoundingClientRect();
+    return [(ev.clientX-r.left)/(r.width||1)*d.w,(ev.clientY-r.top)/(r.height||1)*d.h];}
+  canvas.addEventListener('wheel',function(ev){
+    ev.preventDefault();
+    // deltaMode is lines on some browsers and pages on others. Reading all three
+    // as pixels makes the wheel almost inert everywhere that does not use them.
+    var dy=ev.deltaY*(ev.deltaMode===1?16:ev.deltaMode===2?400:1);
+    var p=pt(ev); zoomAt(p[0],p[1],k*Math.pow(1.0016,-dy));
+  },{passive:false});
+
+  // Deliberately no setPointerCapture: capturing redirects the pointerup to the
+  // canvas, so the click that follows is dispatched to the canvas too and
+  // selecting a node stops working entirely.
+  var dragging=false,lx=0,ly=0,moved=0;
+  canvas.addEventListener('pointerdown',function(ev){
+    if(ev.button!==0)return;
+    dragging=true;moved=0;lx=ev.clientX;ly=ev.clientY;canvas.classList.add('grab');
+  });
+  window.addEventListener('pointermove',function(ev){
+    if(!dragging)return;
+    var r=svg.getBoundingClientRect();
+    moved+=Math.abs(ev.clientX-lx)+Math.abs(ev.clientY-ly);
+    tx+=(ev.clientX-lx)/(r.width||1)*d.w; ty+=(ev.clientY-ly)/(r.height||1)*d.h;
+    lx=ev.clientX;ly=ev.clientY;apply();
+  });
+  function endDrag(){ if(!dragging)return; dragging=false; canvas.classList.remove('grab'); }
+  window.addEventListener('pointerup',endDrag);
+  window.addEventListener('pointercancel',endDrag);
+  canvas.addEventListener('dblclick',function(){fit();});
+  [].slice.call(document.querySelectorAll('.gzoom button')).forEach(function(b){
+    b.addEventListener('click',function(ev){
+      ev.stopPropagation();
+      var z=b.getAttribute('data-z');
+      if(z==='fit')fit(); else zoomAt(d.w/2,d.h/2,z==='in'?k*1.45:k/1.45);
+    });
+  });
+  canvas.addEventListener('keydown',function(ev){
+    var step=70/k, hit=true;
+    if(ev.key==='+'||ev.key==='=')zoomAt(d.w/2,d.h/2,k*1.45);
+    else if(ev.key==='-'||ev.key==='_')zoomAt(d.w/2,d.h/2,k/1.45);
+    else if(ev.key==='0')fit();
+    else if(ev.key==='ArrowLeft'){tx+=step;apply();}
+    else if(ev.key==='ArrowRight'){tx-=step;apply();}
+    else if(ev.key==='ArrowUp'){ty+=step;apply();}
+    else if(ev.key==='ArrowDown'){ty-=step;apply();}
+    else hit=false;
+    if(hit)ev.preventDefault();
+  });
+
+  // ---- replay
+  var timer=null;
+  function stop(){ if(timer){clearInterval(timer);timer=null;} if(play)play.textContent='▶ Replay'; }
+  function setUpto(v){ upto=v; if(scrub)scrub.value=String(v); paint(pinned); }
+  if(scrub)scrub.addEventListener('input',function(){ stop(); setUpto(+scrub.value); });
+  if(play)play.addEventListener('click',function(){
+    if(timer){stop();return;}
+    setUpto(0);
+    play.textContent='❚❚ Pause';
+    // A fixed step per turn makes a 300-turn session unwatchable, so the whole
+    // replay is budgeted at about eleven seconds however many turns there are.
+    var ms=Math.max(70,Math.round(11000/Math.max(1,d.maxTurn+1)));
+    timer=setInterval(function(){ if(upto>=d.maxTurn){stop();return;} setUpto(upto+1); },ms);
+  });
+
+  apply(); paint(null);
 })();
 </script></body></html>`
 }
