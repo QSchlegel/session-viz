@@ -1,23 +1,62 @@
 # session-viz
 
-Eleven commands over the transcripts your coding agents already write to your disk.
+**Delivery assurance for Claude Code, Codex and Cursor.**
 
-Six of them send nothing anywhere: they read the transcripts, compute locally, and open an HTML
-report. The other five need an account, and two of those put something about your work on a wire.
-They are not the same kind of send, and the difference is the whole design:
+Your coding agents said they finished. session-viz checks what actually shipped, what silently
+failed and what the run cost — without building a performance leaderboard for developers. It reads
+the transcripts already on your machine and turns them into a local, evidence-backed report.
 
-- `/qcontrib` feeds the cross-tenant shared reference, in nine bounded columns — no prompts, no
-  paths, no repo names, nothing finer than an ISO week. Person-blind by construction.
-- `/qshare` publishes one project, session or run to **your own workspace**, for colleagues to
-  read. That payload carries verbatim prompt text on purpose, and it names you.
+[See the measured findings](https://session-viz.com/#what) ·
+[How verification works](https://session-viz.com/#features) ·
+[Privacy architecture](https://session-viz.com/#planes)
+
+## Audit recent runs
+
+For Claude Code, the shortest path is:
+
+```bash
+claude plugin marketplace add QSchlegel/session-viz
+claude plugin install session-viz@session-viz
+```
+
+Restart Claude Code, then run:
+
+```text
+/qruns
+```
+
+That first audit answers the operational questions vendor usage dashboards do not:
+
+- Which scheduled runs and subagents delivered the file, commit or output they promised?
+- Which jobs stayed green while repeatedly shipping nothing?
+- Where did the tokens go, including cache-read and invisible child runs?
+- Which failure belongs to an editable agent definition rather than to a person?
+
+## Measured proof, with the denominator attached
+
+On one developer's machine over 60 days, session-viz found a scheduled job that ran 20 times and
+delivered nothing, 95.7% of tokens spent on cache-read, and 1,102 subagent runs that ordinary
+session views did not surface. Those are findings from one 1,166-run corpus, not universal
+benchmarks. The report prints what it cannot conclude as carefully as what it can.
+
+## Local first, explicit when anything leaves
+
+Six commands send nothing anywhere: they read local transcripts, compute locally and open an HTML
+report. The other five need a workspace, and two can deliberately put something about your work on
+a wire. They are not the same kind of send:
+
+- `/qcontrib` feeds the cross-tenant reference in nine bounded columns — no prompts, paths, repo
+  names or timestamps finer than an ISO week. Person-blind by construction.
+- `/qshare` publishes one project, session or run to **your own workspace** for colleagues to read.
+  That payload can carry verbatim prompt text on purpose, and it names you.
 
 `/qsetup` moves a credential and nothing else; `/qfeed` files task titles and briefs you have read
-first; `/qteam` is the hosted MCP. The hosted side is entirely optional, and the six local commands
-work with no account, no token and no network.
+first; `/qteam` connects the shared workspace. The hosted side is optional, and all six local
+analyses work with no account, token or network.
 
-**It reads three harnesses and installs into three.** Those are different lists, in one way worth
-knowing: reading is automatic, installing is per-harness. A Claude Code install still analyses your
-Codex and Cursor history, because those transcripts are on the same disk either way.
+**It reads three harnesses and installs into three.** Reading is automatic; installing is
+per-harness. A Claude Code install still analyses your Codex and Cursor history because those
+transcripts are on the same disk.
 
 | harness | read from | install into |
 |---|---|---|
