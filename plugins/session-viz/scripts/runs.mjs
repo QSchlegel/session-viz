@@ -14,7 +14,7 @@
 // A run is a task, a trajectory, an outcome and a cost. A human session is a
 // run that happens to contain human turns — that is a field, not a subsystem.
 import { readdirSync, statSync, createReadStream } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { emitJson } from './out.mjs';
 import { harnessCoverage, transcriptRoots } from './home.mjs';
@@ -37,6 +37,55 @@ const RETURN_SET = new Set(['StructuredOutput']);
 // Widened to accept a missing name: the membership tests below run against
 // tool names that may not have been seen (an unmatched tool_result).
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+/** The path field used by the three write tools across supported harnesses.
+ *  Exported for the contract test: format drift here silently turns a real
+ *  probe back into an `unavailable` counter. */
+export function writeTarget(name, input) {
+    if (!WRITE_TOOLS.has(name) || !input || typeof input !== 'object' || Array.isArray(input))
+        return null;
+    const o = input;
+    const raw = name === 'NotebookEdit'
+        ? o.notebook_path ?? o.file_path ?? o.path
+        : o.file_path ?? o.path;
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    return value || null;
+}
+/** Probe only successful write targets and report what is visible NOW.
+ *
+ * A missing local path is not called failed delivery: the tool may have run in
+ * a container, worktree, or remote filesystem, or the artifact may have moved
+ * after the run. Presence is useful corroborating evidence; absence is a lead
+ * to investigate. Both remain distinct from the transcript's `wrote_ok` fact. */
+export function probeWriteTargets(targets, cwd, unavailable = 0) {
+    let targeted = 0, present = 0, notFoundLocal = 0;
+    for (const target of new Set(targets)) {
+        targeted++;
+        if (!isAbsolute(target) && !cwd) {
+            unavailable++;
+            continue;
+        }
+        const path = isAbsolute(target) ? target : resolve(cwd, target);
+        try {
+            const st = statSync(path);
+            if (st.isFile())
+                present++;
+            else
+                unavailable++;
+        }
+        catch (e) {
+            if (e.code === 'ENOENT')
+                notFoundLocal++;
+            else
+                unavailable++;
+        }
+    }
+    const state = present && notFoundLocal ? 'partial'
+        : present ? 'present'
+            : notFoundLocal ? 'not_found_local'
+                : targeted || unavailable ? 'unavailable'
+                    : 'not_applicable';
+    return { state, targeted, present, notFoundLocal, unavailable };
+}
 function* walk(dir) {
     let entries;
     try {
@@ -110,10 +159,12 @@ async function scanRecords(source) {
         firstText: '', schedName: null, models: new Map(),
         structured: 0, structuredFail: 0,
         intentWrite: 0, wroteOk: 0, writeDenied: 0,
+        successfulWriteTargets: new Set(), successfulWritesWithoutTarget: 0,
         permission: false, auth: false, loops: 0,
         toolCounts: new Map(), version: null,
     };
     const names = new Map();
+    const targets = new Map();
     let lastKey = null;
     for await (const o of source) {
         const ts = o.timestamp;
@@ -163,8 +214,12 @@ async function scanRecords(source) {
                 r.toolCounts.set(b.name, (r.toolCounts.get(b.name) || 0) + 1);
                 if (b.name === 'StructuredOutput')
                     r.structured++;
-                if (WRITE_TOOLS.has(b.name))
+                if (WRITE_TOOLS.has(b.name)) {
                     r.intentWrite++;
+                    const target = writeTarget(b.name, b.input);
+                    if (target)
+                        targets.set(b.id, target);
+                }
                 // Loop detection: the same tool with the same input, back to back.
                 // Keyed per tool name this measured "the previous use OF THIS TOOL",
                 // so Read(A), Bash(X), Read(A) — a re-read after other work, not a
@@ -206,8 +261,14 @@ async function scanRecords(source) {
                             if (/\b401\b|unauthoriz|authentication failed/i.test(txt))
                                 r.auth = true;
                         }
-                        else if (WRITE_TOOLS.has(n))
+                        else if (WRITE_TOOLS.has(n)) {
                             r.wroteOk++;
+                            const target = targets.get(b.tool_use_id);
+                            if (target)
+                                r.successfulWriteTargets.add(target);
+                            else
+                                r.successfulWritesWithoutTarget++;
+                        }
                     }
                     else if (b.type === 'text' && !r.firstText) {
                         r.firstText = String(b.text || '').slice(0, 400);
@@ -355,6 +416,7 @@ export async function collectRuns({ since = null } = {}) {
                 tools: s.tools, toolErr: s.toolErr, loops: s.loops,
                 structured: s.structured, structuredFail: s.structuredFail,
                 intentWrite: s.intentWrite, wroteOk: s.wroteOk, writeDenied: s.writeDenied,
+                artifact: probeWriteTargets(s.successfulWriteTargets, s.cwd, s.successfulWritesWithoutTarget),
                 agentMin: Math.round(agentMs / 60000),
                 model: [...s.models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null,
                 topTools: [...s.toolCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([n, c]) => ({ n, c })),
@@ -389,6 +451,9 @@ export function ledger(runs) {
         const denied = a.filter((r) => r.delivery === 'denied').length;
         return {
             task, runs: a.length, delivered, denied,
+            artifactPresent: a.filter((r) => r.artifact.present > 0).length,
+            artifactNotFound: a.filter((r) => r.artifact.notFoundLocal > 0).length,
+            artifactUnavailable: a.filter((r) => r.wroteOk > 0 && r.artifact.state === 'unavailable').length,
             unverified: a.filter((r) => r.delivery === 'unverified').length,
             noIntent: a.filter((r) => r.delivery === 'no_intent').length,
             out: sum(a, (r) => r.out), cread: sum(a, (r) => r.cread),
@@ -445,12 +510,16 @@ export function ledger(runs) {
         autonomous: {
             runs: auto.length,
             delivered: auto.filter((r) => r.delivery === 'wrote_ok').length,
+            artifactPresent: auto.filter((r) => r.artifact.present > 0).length,
+            artifactNotFound: auto.filter((r) => r.artifact.notFoundLocal > 0).length,
+            artifactUnavailable: auto.filter((r) => r.wroteOk > 0 && r.artifact.state === 'unavailable').length,
             denied: auto.filter((r) => r.delivery === 'denied').length,
             permission: auto.filter((r) => r.errorClass === 'permission').length,
             zombie: auto.filter((r) => r.terminal === 'zombie').length,
         },
         caveats: [
-            'wrote_ok is a tool-result observation, not witnessed delivery — no filesystem probe runs.',
+            'wrote_ok is a transcript tool-result observation. artifactPresent additionally means at least one successful Write/Edit target exists on the local filesystem now; it does not prove the file was unchanged or committed.',
+            'artifactNotFound is not called failed delivery: containers, remote workspaces, later moves and deletions can all make a successful target absent locally.',
             'Subagent families come from a first-message heuristic, so the boundaries are approximate.',
             `RETURN_SET is hand-maintained (${[...RETURN_SET].join(', ')}). A run ending on one of these succeeded; treating "ended mid-tool-call" as failure would misclassify most of a healthy fleet.`,
             'agentMin measures the last assistant record, not the last record — a reopened session is not agent runtime.',
@@ -476,7 +545,7 @@ function renderLedger(L) {
     out.push(`runs        ${t.runs}   human ${t.human || 0} · scheduled ${t.scheduled || 0} · subagent ${t.subagent || 0}`);
     out.push(`tokens      ${fmt(t.out)} out · ${fmt(t.cread)} cache-read · ${fmt(t.ccreate)} cache-create`);
     out.push(`harnesses   ${L.harnesses.map((h) => `${h.harness} ${h.runs} (${fmt(h.cread)} cr)`).join(' · ')}`);
-    out.push(`autonomous  ${a.runs} runs · ${a.delivered} wrote a file · ${a.denied} denied · ${a.zombie} zombie`);
+    out.push(`autonomous  ${a.runs} runs · ${a.delivered} successful write result · ${a.artifactPresent} target present now · ${a.artifactNotFound} not found locally · ${a.denied} denied · ${a.zombie} zombie`);
     out.push('');
     out.push('terminal state');
     for (const [k, n] of L.terminal)
@@ -484,10 +553,10 @@ function renderLedger(L) {
     if (L.tasks.length) {
         out.push('');
         out.push('recurring tasks');
-        out.push('  runs  wrote  denied  output   cost/delivered   task');
+        out.push('  runs  wrote  present  not-found  denied  output   cost/write-result   task');
         for (const x of L.tasks) {
             const cp = x.cpdo === null ? `undefined (${x.runs} runs, ${fmt(x.out)} out, 0 delivered)` : fmt(Math.round(x.cpdo));
-            out.push(`  ${String(x.runs).padStart(4)}  ${String(x.delivered).padStart(5)}  ${String(x.denied).padStart(6)}  ${fmt(x.out).padStart(6)}   ${cp.padEnd(16)} ${x.task}${x.stalled ? '   << STALLED' : ''}`);
+            out.push(`  ${String(x.runs).padStart(4)}  ${String(x.delivered).padStart(5)}  ${String(x.artifactPresent).padStart(7)}  ${String(x.artifactNotFound).padStart(9)}  ${String(x.denied).padStart(6)}  ${fmt(x.out).padStart(6)}   ${cp.padEnd(19)} ${x.task}${x.stalled ? '   << STALLED' : ''}`);
         }
     }
     if (L.families.length) {
