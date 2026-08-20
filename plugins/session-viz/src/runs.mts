@@ -554,7 +554,7 @@ export function ledger(runs: Run[]) {
       task, runs: a.length, delivered, denied,
       artifactPresent: a.filter((r) => r.artifact.present > 0).length,
       artifactNotFound: a.filter((r) => r.artifact.notFoundLocal > 0).length,
-      artifactUnavailable: a.filter((r) => r.wroteOk > 0 && r.artifact.state === 'unavailable').length,
+      artifactUnavailable: a.filter((r) => r.artifact.unavailable > 0).length,
       unverified: a.filter((r) => r.delivery === 'unverified').length,
       noIntent: a.filter((r) => r.delivery === 'no_intent').length,
       out: sum(a, (r) => r.out), cread: sum(a, (r) => r.cread),
@@ -563,7 +563,7 @@ export function ledger(runs: Run[]) {
       // The honest form of a zero denominator is a refusal plus both numbers.
       cpdo: delivered ? sum(a, (r) => r.out) / delivered : null,
       permission: a.filter((r) => r.errorClass === 'permission').length,
-      // Same announced next step every run, and nothing shipped.
+      // Same announced next step every run, and no successful write result.
       stalled: delivered === 0 && a.length >= 3,
     }
   }).sort((x, y) => y.runs - x.runs)
@@ -617,7 +617,7 @@ export function ledger(runs: Run[]) {
       delivered: auto.filter((r) => r.delivery === 'wrote_ok').length,
       artifactPresent: auto.filter((r) => r.artifact.present > 0).length,
       artifactNotFound: auto.filter((r) => r.artifact.notFoundLocal > 0).length,
-      artifactUnavailable: auto.filter((r) => r.wroteOk > 0 && r.artifact.state === 'unavailable').length,
+      artifactUnavailable: auto.filter((r) => r.artifact.unavailable > 0).length,
       denied: auto.filter((r) => r.delivery === 'denied').length,
       permission: auto.filter((r) => r.errorClass === 'permission').length,
       zombie: auto.filter((r) => r.terminal === 'zombie').length,
@@ -650,23 +650,23 @@ function stamp(L: Ledger): string[] {
   return L.stale ? [L.line, ''] : []
 }
 
-function renderLedger(L: Ledger): string {
+export function renderLedger(L: Ledger): string {
   const t = L.totals, a = L.autonomous
   const out: string[] = stamp(L)
   out.push(`runs        ${t.runs}   human ${t.human || 0} · scheduled ${t.scheduled || 0} · subagent ${t.subagent || 0}`)
   out.push(`tokens      ${fmt(t.out)} out · ${fmt(t.cread)} cache-read · ${fmt(t.ccreate)} cache-create`)
   out.push(`harnesses   ${L.harnesses.map((h) => `${h.harness} ${h.runs} (${fmt(h.cread)} cr)`).join(' · ')}`)
-  out.push(`autonomous  ${a.runs} runs · ${a.delivered} successful write result · ${a.artifactPresent} target present now · ${a.artifactNotFound} not found locally · ${a.denied} denied · ${a.zombie} zombie`)
+  out.push(`autonomous  ${a.runs} runs · ${a.delivered} successful write result · ${a.artifactPresent} target present now · ${a.artifactNotFound} not found locally · ${a.artifactUnavailable} unavailable · ${a.denied} denied · ${a.zombie} zombie`)
   out.push('')
   out.push('terminal state')
   for (const [k, n] of L.terminal) out.push(`  ${String(n).padStart(5)}  ${k}`)
   if (L.tasks.length) {
     out.push('')
     out.push('recurring tasks')
-    out.push('  runs  wrote  present  not-found  denied  output   cost/write-result   task')
+    out.push('  runs  wrote  present  not-found  unavailable  denied  output   cost/write-result   task')
     for (const x of L.tasks) {
-      const cp = x.cpdo === null ? `undefined (${x.runs} runs, ${fmt(x.out)} out, 0 delivered)` : fmt(Math.round(x.cpdo))
-      out.push(`  ${String(x.runs).padStart(4)}  ${String(x.delivered).padStart(5)}  ${String(x.artifactPresent).padStart(7)}  ${String(x.artifactNotFound).padStart(9)}  ${String(x.denied).padStart(6)}  ${fmt(x.out).padStart(6)}   ${cp.padEnd(19)} ${x.task}${x.stalled ? '   << STALLED' : ''}`)
+      const cp = x.cpdo === null ? `undefined (${x.runs} runs, ${fmt(x.out)} out, 0 writes)` : fmt(Math.round(x.cpdo))
+      out.push(`  ${String(x.runs).padStart(4)}  ${String(x.delivered).padStart(5)}  ${String(x.artifactPresent).padStart(7)}  ${String(x.artifactNotFound).padStart(9)}  ${String(x.artifactUnavailable).padStart(11)}  ${String(x.denied).padStart(6)}  ${fmt(x.out).padStart(6)}   ${cp.padEnd(19)} ${x.task}${x.stalled ? '   << STALLED' : ''}`)
     }
   }
   if (L.families.length) {

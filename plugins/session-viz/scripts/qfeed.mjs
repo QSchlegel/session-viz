@@ -51,12 +51,12 @@ function stalledTasks(l) {
         detector: 'qruns:stalled',
         source: `qruns:stalled:${t.task}`,
         title: `${t.task} recorded no successful writes in ${t.runs} runs`,
-        brief: `The scheduled task \`${t.task}\` has run ${t.runs} times and written no file on any of them.\n` +
+        brief: `The scheduled task \`${t.task}\` has run ${t.runs} times and recorded no successful write result.\n` +
             `${t.denied} run(s) had a write blocked by a permission prompt, which a headless run cannot answer.\n` +
             `It has spent ${Math.round(t.out / 1000)}k output tokens without a recorded successful write.\n` +
             (t.lastRun ? `Last run ${t.lastRun}.\n` : '') +
-            `\nWhere to start: the repo's .claude/settings.json probably has no Write or Edit permission, ` +
-            `so the run does all the work and dies at the first write. /qdoctor lists which repos are missing one.`,
+            `\nWhere to start: inspect the denied count and the repo's Write/Edit permission boundary. ` +
+            `/qdoctor lists which repos may be missing one.`,
         evidence: `${t.runs} runs, 0 successful writes, ${t.denied} denied`,
     }));
 }
