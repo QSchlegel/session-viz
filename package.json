@@ -2,7 +2,7 @@
   "name": "session-viz-plugin",
   "private": true,
   "version": "0.18.0",
-  "description": "Build tooling for the session-viz Claude Code plugin",
+  "description": "Local-first delivery assurance for Claude Code, Codex and Cursor",
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
