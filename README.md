@@ -10,6 +10,14 @@ the transcripts already on your machine and turns them into a local, evidence-ba
 [How verification works](https://session-viz.com/#features) ·
 [Privacy architecture](https://session-viz.com/#planes)
 
+## See the delivery audit
+
+[![Watch the 45-second session-viz delivery audit](docs/media/delivery-audit-hero.jpg)](docs/media/delivery-audit-hero.mp4)
+
+[Watch the narrated 45-second delivery audit](docs/media/delivery-audit-hero.mp4) — captions are
+burned in, so it also works muted. The narration is AI-generated; music is “Close Up” by Michael
+Ramir C. under the [Mixkit Stock Music Free License](https://mixkit.co/license/#musicFree).
+
 ## Audit recent runs
 
 For Claude Code, the shortest path is:
@@ -32,6 +40,25 @@ That first audit answers the operational questions vendor usage dashboards do no
 - Where did the tokens go, including cache-read and invisible child runs?
 - Which failure belongs to an editable agent definition rather than to a person?
 
+## How delivery verification works
+
+```mermaid
+flowchart LR
+    T["Local transcripts<br/>Claude Code · Codex · Cursor"] --> P["Harness-specific parsers"]
+    P --> L["Evidence ledger"]
+    L --> E{"Expected artifact found?"}
+    E -->|yes| D["Delivered"]
+    E -->|no| U["Missing or unknown"]
+    L --> C["Cost and child-run accounting"]
+    D --> R["Local HTML report"]
+    U --> R
+    C --> R
+```
+
+Transcript completion and artifact delivery remain separate facts. session-viz checks the requested
+file, commit or report where the evidence permits it; when the evidence does not support a delivery
+claim, the ledger says missing or unknown instead of guessing.
+
 ## Measured proof, with the denominator attached
 
 On one developer's machine over 60 days, session-viz found a scheduled job that ran 20 times and
@@ -53,6 +80,22 @@ a wire. They are not the same kind of send:
 `/qsetup` moves a credential and nothing else; `/qfeed` files task titles and briefs you have read
 first; `/qteam` connects the shared workspace. The hosted side is optional, and all six local
 analyses work with no account, token or network.
+
+```mermaid
+flowchart LR
+    subgraph M["This machine"]
+        T["Claude Code · Codex · Cursor transcripts"] --> A["Local analysis"]
+        A --> H["HTML reports"]
+    end
+
+    A -->|"explicit /qcontrib"| F["Fleet reference<br/>9 bounded, person-blind columns"]
+    A -->|"explicit /qshare"| W["Your workspace<br/>selected context + identity"]
+    F --- S["No shared join key"]
+    S --- W
+```
+
+The two outbound paths are deliberately different. Fleet evidence cannot be joined back to a
+person; collaboration keeps identity because teammates need to know who shared the selected work.
 
 **It reads three harnesses and installs into three.** Reading is automatic; installing is
 per-harness. A Claude Code install still analyses your Codex and Cursor history because those
