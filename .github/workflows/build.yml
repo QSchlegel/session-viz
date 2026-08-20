@@ -57,6 +57,12 @@ jobs:
       - name: Findings
         run: node plugins/session-viz/test/finding.mjs
 
+      # `wrote_ok` is a tool-result observation. The separate artifact probe
+      # must keep path-format drift and local absence visible without silently
+      # promoting either into a delivery verdict.
+      - name: Artifact evidence
+        run: node plugins/session-viz/test/artifact-probe.mjs
+
       # JSON.stringify escapes what JSON needs escaped, and HTML is not JSON: it
       # leaves `<` alone. A graph node id carrying `</script>` would end the
       # script element early and the rest of the page would parse as markup.

@@ -2,9 +2,9 @@
 
 **Delivery assurance for Claude Code, Codex and Cursor.**
 
-Your coding agents said they finished. session-viz checks what actually shipped, what silently
-failed and what the run cost — without building a performance leaderboard for developers. It reads
-the transcripts already on your machine and turns them into a local, evidence-backed report.
+Your coding agents said they finished. session-viz checks the delivery evidence they left, what
+silently failed and what the run cost — without building a performance leaderboard for developers.
+It reads the transcripts already on your machine and turns them into a local, evidence-backed report.
 
 [See the measured findings](https://session-viz.com/#what) ·
 [How verification works](https://session-viz.com/#features) ·
@@ -35,7 +35,7 @@ Restart Claude Code, then run:
 
 That first audit answers the operational questions vendor usage dashboards do not:
 
-- Which scheduled runs and subagents delivered the file, commit or output they promised?
+- Which scheduled runs and subagents reported a successful write, and are those targets present locally now?
 - Which jobs stayed green while repeatedly shipping nothing?
 - Where did the tokens go, including cache-read and invisible child runs?
 - Which failure belongs to an editable agent definition rather than to a person?
@@ -46,31 +46,34 @@ That first audit answers the operational questions vendor usage dashboards do no
 flowchart LR
     T["Local transcripts<br/>Claude Code · Codex · Cursor"] --> P["Harness-specific parsers"]
     P --> L["Evidence ledger"]
-    L --> E{"Expected artifact found?"}
-    E -->|yes| D["Delivered"]
-    E -->|no| U["Missing or unknown"]
+    L --> E{"Successful write target<br/>present locally now?"}
+    E -->|yes| D["Corroborating file evidence"]
+    E -->|no| U["Not found locally or unavailable"]
     L --> C["Cost and child-run accounting"]
     D --> R["Local HTML report"]
     U --> R
     C --> R
 ```
 
-Transcript completion and artifact delivery remain separate facts. session-viz checks the requested
-file, commit or report where the evidence permits it; when the evidence does not support a delivery
-claim, the ledger says missing or unknown instead of guessing.
+Transcript completion, a successful tool result and artifact presence remain separate facts.
+session-viz extracts Write, Edit and NotebookEdit targets and checks whether those files are present
+on the local filesystem now. A missing target is not automatically called failed delivery: containers,
+remote workspaces and later moves can all make local evidence unavailable. Git commits and arbitrary
+promised outputs are not independently verified yet.
 
 ## Measured proof, with the denominator attached
 
 On one developer's machine over 60 days, session-viz found a scheduled job that ran 20 times and
-delivered nothing, 95.7% of tokens spent on cache-read, and 1,102 subagent runs that ordinary
+recorded zero successful write results, 95.7% of tokens spent on cache-read, and 1,102 subagent runs that ordinary
 session views did not surface. Those are findings from one 1,166-run corpus, not universal
 benchmarks. The report prints what it cannot conclude as carefully as what it can.
 
 ## Local first, explicit when anything leaves
 
-Six commands send nothing anywhere: they read local transcripts, compute locally and open an HTML
-report. The other five need a workspace, and two can deliberately put something about your work on
-a wire. They are not the same kind of send:
+Six analysis commands send nothing anywhere: they read local transcripts, compute locally and open
+an HTML report. `/qbl` also stays on this machine by default, writing only its per-project backlog;
+it reaches the team queue only when you explicitly add `--shared`. The other five need a workspace,
+and two can deliberately put something about your work on a wire. They are not the same kind of send:
 
 - `/qcontrib` feeds the cross-tenant reference in nine bounded columns — no prompts, paths, repo
   names or timestamps finer than an ISO week. Person-blind by construction.
@@ -132,7 +135,7 @@ installed, never what the marketplace has. The other commands do not carry the s
 ### Codex, Cursor
 
 Both read the same skill format Claude Code does — a directory holding a `SKILL.md` with `name`
-and `description` frontmatter — so all eleven commands work there. What is *not* portable is the
+and `description` frontmatter — so all twelve commands work there. What is *not* portable is the
 line inside each one that runs the analysis: it says `${CLAUDE_PLUGIN_ROOT}`, a variable only
 Claude Code sets, which anywhere else expands to nothing and fails on a path that never existed.
 
@@ -182,6 +185,7 @@ surface out of the numbers.
 | `/qcost` | Where the tokens actually went |
 | `/qship` | Prompts you keep retyping, split into rituals and misses |
 | `/qdoctor` | This repo's config, measured against your other repos |
+| `/qbl` | A project backlog that states why it ordered work; local unless you ask for `--shared` |
 | `/qsetup` | Connect this machine — sign in in the browser, no token typed or pasted |
 | `/qshare` | Choose what your team can see — nothing by default |
 | `/qfeed` | File tasks from findings that passed a gate — and only those |

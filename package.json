@@ -1,7 +1,7 @@
 {
   "name": "session-viz-plugin",
   "private": true,
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Local-first delivery assurance for Claude Code, Codex and Cursor",
   "scripts": {
     "build": "tsc",

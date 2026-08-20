@@ -74,9 +74,9 @@ const json = async <T,>(script: string, args: string[]): Promise<T> => {
 }
 
 /**
- * A recurring task that has produced nothing. This is the strongest signal the
- * ledger has: it is not a rate or a comparison, it is a count of zero against a
- * run count that is not small.
+ * A recurring task with no successful write result. This is a strong delivery
+ * evidence signal, but it is not proof that no external or pre-existing output
+ * was delivered.
  */
 function stalledTasks(l: RunsLedger): Candidate[] {
   return (l.tasks || [])
@@ -84,15 +84,15 @@ function stalledTasks(l: RunsLedger): Candidate[] {
     .map((t) => ({
       detector: 'qruns:stalled',
       source: `qruns:stalled:${t.task}`,
-      title: `${t.task} has delivered nothing in ${t.runs} runs`,
+      title: `${t.task} recorded no successful writes in ${t.runs} runs`,
       brief:
-        `The scheduled task \`${t.task}\` has run ${t.runs} times and written no file on any of them.\n` +
+        `The scheduled task \`${t.task}\` has run ${t.runs} times and recorded no successful write result.\n` +
         `${t.denied} run(s) had a write blocked by a permission prompt, which a headless run cannot answer.\n` +
-        `It has spent ${Math.round(t.out / 1000)}k output tokens producing nothing that reached disk.\n` +
+        `It has spent ${Math.round(t.out / 1000)}k output tokens without a recorded successful write.\n` +
         (t.lastRun ? `Last run ${t.lastRun}.\n` : '') +
-        `\nWhere to start: the repo's .claude/settings.json probably has no Write or Edit permission, ` +
-        `so the run does all the work and dies at the first write. /qdoctor lists which repos are missing one.`,
-      evidence: `${t.runs} runs, 0 delivered, ${t.denied} denied`,
+        `\nWhere to start: inspect the denied count and the repo's Write/Edit permission boundary. ` +
+        `/qdoctor lists which repos may be missing one.`,
+      evidence: `${t.runs} runs, 0 successful writes, ${t.denied} denied`,
     }))
 }
 
