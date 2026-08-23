@@ -193,6 +193,18 @@ export interface Session {
   turns: SessionTurn[]
   score: SessionScore
   durationMs: number
+  /**
+   * Whether prompt text in this spine went through the secret patterns.
+   *
+   * Recorded because `--no-redact` exists and nothing downstream could tell.
+   * The evidence package printed "prompt text is redacted for secrets" as a
+   * flat statement, which was a claim about how a DIFFERENT program had been
+   * invoked, made by a file that could not observe it -- so a bundle built from
+   * a --no-redact spine asserted a redaction that had not happened, over the top
+   * of the unredacted key. A reader cannot check this by looking; the extractor
+   * is the only thing that knows, so the extractor says.
+   */
+  redactedPrompts: boolean
 }
 
 export interface ExtractOptions {
@@ -786,6 +798,7 @@ export async function extract(
     cwd: null,
     gitBranch: null,
     version: null,
+    redactedPrompts: redactText,
     title: null,
     startedAt: null,
     endedAt: null,

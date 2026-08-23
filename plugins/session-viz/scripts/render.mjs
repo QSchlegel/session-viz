@@ -16,6 +16,8 @@ import { version } from './version.mjs';
 import { unlinkSync, readdirSync, statSync } from 'node:fs';
 import { jsonForScript } from './html.mjs';
 import { deriveGraph, mergeAuthored, layoutGraph } from './graph.mjs';
+import { brandCss, brandHeader, brandFooter } from './brand.mjs';
+import { buildBundle, bundleScript, BUNDLE_GLOBAL, DOWNLOAD_HOOK } from './bundle.mjs';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n));
 const fmtDur = (ms) => {
@@ -72,6 +74,19 @@ function css() {
   color-scheme:light;
   --kg-bg:#f3f0ea; --kg-halo:#f3f0ea; --kg-ring:#f3f0ea; --kg-label:#26251f;
   --kg-edge:#8d8779; --kg-edge-au:#7c3aed; --alarm:#b3261e; --alarm-ink:#fff;
+  /* The two layer stamps in the graph sidebar, which were written as rgba()
+     literals in their own rules until this pass. Declared once rather than in
+     each theme block: they are the same two colours in both today, and a token
+     that exists in one block and not the others is a stamp that disappears
+     when the toggle moves.
+
+     Held as rgba rather than mixed with color-mix, which is what the aura
+     tokens use. test/glass.mjs reads a color-mix background as glass and
+     requires every one of them inside the backdrop-filter guard with a solid
+     fallback outside it; these are flat labels on a panel, not surfaces, and
+     buying a blur for them would cost a backdrop raster per sidebar render. */
+  --stamp-derived:rgba(21,128,61,.12); --stamp-derived-line:rgba(21,128,61,.45);
+  --stamp-authored:rgba(147,51,234,.12); --stamp-authored-line:rgba(147,51,234,.45);
   /* The drifting field behind the page, mixed out of the palette this theme
      already declares so it follows the theme instead of being a second picture.
 
@@ -126,7 +141,10 @@ h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--mute
 .dim{color:var(--muted)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
 /* theme */
-.head{display:flex;gap:16px;align-items:flex-start;justify-content:space-between}
+/* No space-between any more: the theme button moved into the brand rail, so
+   this row holds one child and pushing it apart from nothing left the title
+   hard against the left edge of a 1080px column for no reason. */
+.head{display:flex;gap:16px;align-items:flex-start}
 #theme{flex:none;border:1px solid var(--line);background:var(--panel);color:var(--muted);
   font:inherit;font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer}
 #theme:hover{border-color:var(--accent);color:var(--ink)}
@@ -273,8 +291,8 @@ ${kindRules()}
 /* Full-width stamp, never a subtle badge: which layer a node belongs to is the
    first thing a reader needs and the easiest thing to miss. */
 .gstamp{display:block;padding:5px 8px;border-radius:5px;font-size:11.5px;margin:0 0 9px}
-.gstamp.derived{background:rgba(21,128,61,.12);border:1px solid rgba(21,128,61,.45)}
-.gstamp.authored{background:rgba(147,51,234,.12);border:1px solid rgba(147,51,234,.45)}
+.gstamp.derived{background:var(--stamp-derived);border:1px solid var(--stamp-derived-line)}
+.gstamp.authored{background:var(--stamp-authored);border:1px solid var(--stamp-authored-line)}
 .gfoot{margin:12px 0 0;font-size:12.5px}
 .glbl{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
   font-weight:640;margin:12px 0 5px}
@@ -282,6 +300,26 @@ ${kindRules()}
 .gsup li,.gnot li{margin:2px 0}
 .gnot li{color:var(--dim)}
 .gmismatch{background:var(--alarm);color:var(--alarm-ink);padding:10px 14px;border-radius:8px;margin:0 0 14px;font-size:13.5px}
+
+/* evidence package */
+.ev{margin-top:18px}
+.evwhat{margin:0;font-size:14px}
+.evrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px}
+.evmeta{font-family:var(--mono);font-size:12px;color:var(--muted)}
+/* Height reserved before anything is said. Without it the first click pushes
+   both disclosures down the page from under the reader's cursor. */
+.evsay{margin:12px 0 0;min-height:1.35em;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+/* Failure is painted; success is not. Nothing tells this page whether the file
+   reached the disk -- a viewer that forbids downloads swallows it and reports
+   nothing -- so a green tick here would be the one claim on the page that no
+   measurement stands behind. */
+.evsay.bad{color:var(--bad)}
+.evmore{margin-top:14px;font-size:13px}
+.evmore summary{cursor:pointer;color:var(--muted)}
+.evlim,.evfiles{margin:10px 0 0;padding-left:20px;color:var(--muted)}
+.evlim li,.evfiles li{margin:0 0 9px}
+.evfiles code{font-family:var(--mono);font-size:12px;color:var(--ink)}
+.evdg{font-family:var(--mono);font-size:11px;color:var(--dim);word-break:break-all}
 
 /* glass ------------------------------------------------------------------
    A drifting colour field behind the page, and translucent surfaces over it.
@@ -631,10 +669,196 @@ function renderGraph(session, intent) {
 <script>window.__qkg=${jsonForScript(payload)};</script>
 `;
 }
+/**
+ * One turn, filled out to the shape the packager iterates.
+ *
+ * `Turn` above is this file's own narrow view of a spine turn -- the dozen
+ * fields the page paints -- while the JSON on disk carries roughly thirty. At
+ * runtime the rest are simply present and pass straight through the spread. The
+ * defaults exist for the inputs that are not a fresh spine: a fixture, or a
+ * spine written by an older extract. `turns.csv` spreads `slashCommands`, so an
+ * absent one is a TypeError that takes down the entire report over a button.
+ */
+function evidenceTurn(turn) {
+    return {
+        promptId: null,
+        uuid: '',
+        startedAt: '',
+        endedAt: '',
+        hasImage: false,
+        typed: true,
+        origin: null,
+        // 0, not turn.text.length. Equal stored and full lengths read as "this
+        // prompt was not truncated", which is the single thing the field exists to
+        // let a reader disprove; a zero beside a non-zero stored length is
+        // obviously missing data instead.
+        fullChars: 0,
+        assistantMessages: 0,
+        subagents: 0,
+        interruptions: 0,
+        slashCommands: [],
+        effort: null,
+        firstToolAt: null,
+        timeToFirstToolMs: null,
+        models: [],
+        model: null,
+        mixedModel: false,
+        ...turn,
+        // `steering` is `unknown` in the view above, and the CSV writes it as a bit.
+        steering: !!turn.steering,
+        signals: { ...turn.signals },
+        tokens: { input: 0, cacheRead: 0, cacheCreate: 0, ...turn.tokens },
+        // Computed, not defaulted: `false` on a turn that genuinely ran no tools
+        // would be a wrong row rather than a missing one.
+        derived: {
+            noToolCalls: turn.toolCallCount === 0,
+            clarificationRoundtrip: false,
+            followedByCorrection: false,
+            ...turn.derived,
+        },
+        score: { ...turn.score },
+    };
+}
+/**
+ * The spine, widened to what the packager reads.
+ *
+ * Defaults first, the real session over them, then the nested objects merged
+ * separately -- a spread only reaches one level, and `Object.keys` over an
+ * absent `artifacts.packages` throws. The single cast is where this file's
+ * narrow declaration and extract.mts's full one meet; both describe the same
+ * JSON, and nothing here invents a value that a reader could mistake for a
+ * measurement.
+ */
+function evidenceSpine(session) {
+    const t = session.totals;
+    return {
+        sessionId: null,
+        file: '',
+        harness: '',
+        project: '',
+        cwd: null,
+        gitBranch: null,
+        version: null,
+        title: null,
+        startedAt: null,
+        endedAt: null,
+        models: {},
+        slashCommands: [],
+        permissionModes: [],
+        ...session,
+        artifacts: {
+            packages: {}, tools: {}, stack: {}, extensions: {}, skills: {}, mcp: {}, fileTouches: 0,
+            ...(session.artifacts ?? {}),
+        },
+        totals: {
+            // Only what this file's own SessionTotals view does not already require.
+            // A default for a field the view guarantees is dead code, and the
+            // compiler says so.
+            assistantMessages: 0, sidechainRecords: 0, compactions: 0, frictionRate: 0, corrections: 0,
+            ...t,
+            tokens: { input: 0, cacheCreate: 0, ...t.tokens },
+        },
+        score: {
+            value: null, band: 'unscored', confidence: 'none', turnsScored: 0,
+            frictionRate: 0, craftRate: 0, wastedTokens: 0,
+            ...(session.score ?? {}),
+        },
+        turns: session.turns.map(evidenceTurn),
+    };
+}
+const fmtBytes = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : `${n} bytes`;
+/**
+ * The button, and everything a reader needs before they press it.
+ *
+ * The limits and the file list are rendered here, from the bundle, rather than
+ * printed by the page script: they have to be readable with JavaScript off, and
+ * they have to be readable BEFORE the download rather than after it. The
+ * sentence at the top is the whole claim this feature is allowed to make.
+ */
+function renderEvidence(bundle) {
+    const files = bundle.members
+        .map((m) => `<li><code>${esc(m.name)}</code> · ${esc(fmtBytes(m.size))}<br><span class="evdg">${esc(m.sha256)}</span></li>`)
+        .join('');
+    const limits = bundle.limits.map((l) => `<li>${esc(l)}</li>`).join('');
+    const n = String(bundle.members.length);
+    return `<h2>Evidence package</h2>
+<div class="card ev">
+  <p class="evwhat">A zip of what this session did, read out of its own transcript — a record you can hand to someone who asks, not a certificate that anything was compliant.</p>
+  <div class="evrow">
+    <button id="evgo" class="copy" type="button" ${DOWNLOAD_HOOK}>Download the package</button>
+    <span class="evmeta">${esc(bundle.filename)} · ${esc(n)} files · ${esc(fmtBytes(bundle.zipSize))} · built in this page, nothing is fetched</span>
+  </div>
+  <p class="evsay" id="evsay" role="status"></p>
+  <noscript><p class="evsay bad">This button needs JavaScript, which is off. The package is assembled in the page, so nothing can be downloaded from here without it &mdash; the limits above are still readable, and re-running the command produces the same file.</p></noscript>
+  <details class="evmore"><summary>What this record cannot show — ${esc(String(bundle.limits.length))} limits, and they travel with it as LIMITS.txt</summary><ol class="evlim">${limits}</ol></details>
+  <details class="evmore"><summary>The ${esc(n)} files in it, and the SHA-256 each was generated with</summary><ul class="evfiles">${files}</ul></details>
+</div>`;
+}
+/**
+ * The click, wrapped so that a refusal is visible.
+ *
+ * bundle.mjs already binds its own delegated listener on `document` for the
+ * same attribute, and that listener is the fallback if this script never runs.
+ * When both run, one click writes the file twice -- so this one takes the event
+ * in the CAPTURE phase and stops it there.
+ *
+ * What it buys is the failure path. An exception out of the packager's listener
+ * is a console message on a page nobody has devtools open on, which the reader
+ * experiences as a button that does nothing. Three refusals are detectable
+ * before anything is built, and every other throw is caught and printed.
+ *
+ * The fourth is NOT detectable, and the success line says so rather than
+ * claiming a save: a sandboxed viewer, or a browser told to block downloads,
+ * takes the click, discards the file and reports nothing to the page. So the
+ * page states what it actually did -- handed the file to the browser -- and
+ * names the thing to try if no file appeared.
+ */
+function evidenceScript() {
+    return `
+(function(){
+  var say=document.getElementById('evsay'); if(!say) return;
+  function tell(m,bad){ say.textContent=m; say.className=bad?'evsay bad':'evsay'; }
+  document.addEventListener('click',function(ev){
+    var el=ev.target;
+    if(!el||typeof el.closest!=='function'||!el.closest('[${DOWNLOAD_HOOK}]')) return;
+    ev.stopPropagation(); ev.preventDefault();
+    var api=window['${BUNDLE_GLOBAL}'];
+    try{
+      if(!api||typeof api.download!=='function') throw new Error('the package script on this page did not load');
+      if(typeof URL==='undefined'||!URL.createObjectURL) throw new Error('this browser cannot assemble a file inside a page');
+      if(!('download' in document.createElement('a'))) throw new Error('this browser will not save a file a page generated');
+      api.download();
+      tell('Handed '+api.filename+' to the browser. If no file appeared, downloads are blocked where this page is open — open the report in a browser tab and click again.');
+    }catch(e){
+      tell('The package could not be produced here: '+((e&&e.message)||e)+'. Nothing else on this page is affected.',1);
+    }
+  },true);
+})();
+`;
+}
 export function render(session, intent, meta) {
     const t = session.totals;
     const maxDur = Math.max(1, ...session.turns.map((x) => x.durationMs));
     const compactLine = intent?.compactInstruction ? `/compact ${intent.compactInstruction}` : null;
+    // One clock reading for the whole page. The footer's stamp and the package's
+    // `generatedAt` are then the same moment rather than two reads a few
+    // milliseconds apart, so a reader holding the zip beside the page is
+    // comparing one fact instead of two.
+    //
+    // Rounded to the minute, which is the resolution the footer has printed since
+    // this page existed, and deliberately not finer. /qpact names its output file
+    // after a hash of its INPUTS precisely so that re-rendering an unchanged spine
+    // reuses the same document; a millisecond in the manifest would make every
+    // render of one session a different file and quietly retire that. The zip's
+    // own headers store time in two-second steps, so the precision being given up
+    // here could never have reached the archive anyway.
+    const now = new Date(`${new Date().toISOString().slice(0, 16)}:00.000Z`);
+    const bundle = buildBundle(evidenceSpine(session), intent ?? null, {
+        generatedAt: now.toISOString(),
+        fingerprint: meta?.fingerprint,
+        command: '/qpact',
+        spineAgeMin: meta?.spineAgeMin,
+    });
     const stats = [
         ['turns', t.humanTurns],
         ['tool calls', t.toolCalls],
@@ -690,14 +914,22 @@ export function render(session, intent, meta) {
 // script that corrects it a frame later is a flash of the wrong page.
 try{var m=localStorage.getItem('qpact-theme');if(m==='dark'||m==='light')document.documentElement.dataset.theme=m;}catch(e){}
 </script>
-<style>${css()}</style></head><body><div class="wrap">
+<style>${css()}</style><style>${brandCss()}</style></head><body><div class="wrap">
+
+${brandHeader({
+        command: '/qpact',
+        // The theme button moves INTO the brand rail rather than keeping its own row
+        // beneath one. Two stacked strips above the title is a banner; a single rail
+        // carrying the mark, the command that produced the page and the page's own
+        // control is the same chrome the other four wrappers wear.
+        actions: '<button id="theme" type="button" title="Light, dark, or whatever this machine asks for">Theme: system</button>',
+    })}
 
 <div class="head">
   <div>
     <h1>${esc(session.title || 'Session analysis')}</h1>
     <div class="sub">${esc(session.sessionId)} · ${esc(session.cwd || '')} · ${esc(session.gitBranch || '')}</div>
   </div>
-  <button id="theme" type="button" title="Light, dark, or whatever this machine asks for">Theme: system</button>
 </div>
 
 ${compactLine
@@ -721,6 +953,8 @@ ${renderIntents(intent)}
 ${renderQuality(intent)}
 ${renderGraph(session, intent)}
 
+${renderEvidence(bundle)}
+
 <h2>Turns</h2>
 <div class="filters">
   <button class="on" data-f="all">All ${session.turns.length}</button>
@@ -731,7 +965,21 @@ ${renderGraph(session, intent)}
 </div>
 ${turns || '<div class="empty">No human turns found.</div>'}
 
-<footer>generated by /qpact · ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} · ${esc(String(t.records))} records analysed · prompts redacted for secrets${meta?.fingerprint ? ` · fingerprint <b>${esc(meta.fingerprint)}</b>` : ''}${typeof meta?.spineAgeMin === 'number' ? ` · spine extracted ${esc(String(meta.spineAgeMin))} min ago` : ''}</footer>
+${brandFooter({
+        command: '/qpact',
+        at: now,
+        // Every fragment this footer has printed since it existed, in the order it
+        // printed them. brandFooter escapes each one, so nothing is pre-escaped here,
+        // and the fingerprint keeps the <b> it has always had through `strong`.
+        // These lines are why anyone believes a number on this page; the logo above
+        // them is not allowed to cost a single one.
+        facts: [
+            `${t.records} records analysed`,
+            'prompts redacted for secrets',
+            meta?.fingerprint ? { label: 'fingerprint', value: meta.fingerprint, strong: true } : null,
+            typeof meta?.spineAgeMin === 'number' ? `spine extracted ${meta.spineAgeMin} min ago` : null,
+        ],
+    })}
 </div>
 <script>
 const cp=document.getElementById('cp');
@@ -961,7 +1209,10 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
 
   apply(); paint(null);
 })();
-</script></body></html>`;
+</script>
+<script>${bundleScript(bundle)}</script>
+<script>${evidenceScript()}</script>
+</body></html>`;
 }
 // ---------------------------------------------------------------- cli
 // Comparing basenames by suffix made this module the entry point whenever the
@@ -1014,7 +1265,11 @@ if (isMain) {
         try {
             const here = realPath(fileURLToPath(import.meta.url));
             const dir = dirname(here);
-            return ['render.mjs', 'graph.mjs']
+            // brand.mjs and bundle.mjs are in here for the reason the comment above
+            // gives about render.mjs itself: both now write bytes into every page,
+            // and an edit to either within one version would otherwise leave the
+            // output path byte-identical, so `open` would focus the stale tab.
+            return ['render.mjs', 'graph.mjs', 'brand.mjs', 'bundle.mjs']
                 .map((f) => {
                 try {
                     return readFileSync(join(dir, f), 'utf8');

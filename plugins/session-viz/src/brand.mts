@@ -1,0 +1,281 @@
+// The one piece of chrome every page this plugin renders has to carry.
+//
+// There are four HTML wrappers here and until this file they looked like four
+// products: /qpact (render.mts) opened with a title, a subtitle and a theme
+// button; /qtrends (render-corpus.mts) with a title and a subtitle; qshare.mts
+// with "Choose what to share"; qsetup.mts with "Connect this machine". Nothing
+// on any of them said which tool had produced it, and no two of them agreed on
+// what that tool looked like.
+//
+// ── Why this module carries its own paint ────────────────────────────────────
+// The four pages do not share a stylesheet, and they should not start now: the
+// only way to give the picker a logo out of render.mts would be to make it
+// import several hundred lines of report CSS — a graph theme, a turn list, an
+// alarm banner — for a 3x3 grid of squares. So everything here is
+// self-contained. Every token it declares is prefixed `--sv-`, every rule it
+// writes reads only those tokens, and `brandCss()` is a few hundred bytes a
+// page appends to whatever <style> it already has.
+//
+// Nothing here reads --accent, --panel, --ink or --muted, even though three of
+// the four pages define all four. Those names mean slightly different palettes
+// on each page, and qsetup — which uses --card and --dim instead — defines
+// neither --panel nor --muted at all. A logo that renders in the host page's
+// variables is a logo that is invisible on the one page that spells them
+// differently.
+//
+// Three theme states, like everywhere else in this project: tokens on bare
+// `:root`, dark under the system query guarded against an explicit light
+// choice, and dark again under `[data-theme=dark]` so /qpact's toggle wins in
+// both directions. `color-scheme` is declared in each, so the browser's own
+// chrome — scrollbars, form controls, the canvas behind a short page — follows
+// the same three states rather than a fourth opinion.
+
+import { version } from './version.mjs'
+
+/** Exported because qsetup interpolates env-supplied values into a form that
+ *  takes a token, and had no escaper of its own. */
+export const esc = (s: unknown): string =>
+  String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[c]!)
+
+// ---------------------------------------------------------------- the mark
+
+/**
+ * Nine cells in a 3x3 grid: SEVEN settled, ONE accent, ONE hollow.
+ *
+ * The count is the entire reason this is a function rather than four template
+ * literals. This project's own prose has said "eight settled cells" for months;
+ * the sentence was copied into a brand kit, and nobody counted the rects. A
+ * mark drawn once per page is a mark that will be wrong on at least one of
+ * them, wrong in a way no compiler sees and no reviewer counts.
+ *
+ * The arrangement is not decoration either — it is the run wall the share
+ * picker already draws in miniature: filled up to the frontier, one cell
+ * landing, one not started. Reading order, so the frontier lands where the eye
+ * finishes rather than somewhere it has to hunt for.
+ */
+const CELLS = 9
+const ACCENT_AT = 7
+const HOLLOW_AT = 8
+
+/**
+ * The mark, as inline SVG.
+ *
+ * `aria-hidden`, because in both lockups below the wordmark sits immediately
+ * beside it as real text. A screen reader that announces an `aria-label` on the
+ * mark and then the wordmark says the product name twice.
+ *
+ * The viewBox is inset by one unit on each side rather than starting at 0: the
+ * hollow cell is drawn with a stroke, half of which falls outside its own rect,
+ * and an SVG clips to its viewport. Without the inset the bottom and right of
+ * that one cell's outline are shaved off — which looks like a rendering bug in
+ * exactly the cell whose whole job is to look deliberate.
+ */
+export function brandMark(size = 22): string {
+  const rects: string[] = []
+  for (let i = 0; i < CELLS; i++) {
+    const kind = i === HOLLOW_AT ? 'sv-hollow' : i === ACCENT_AT ? 'sv-accent' : 'sv-settled'
+    rects.push(
+      `<rect class="sv-cell ${kind}" x="${(i % 3) * 9}" y="${Math.floor(i / 3) * 9}" ` +
+      `width="6" height="6" rx="1.2"/>`,
+    )
+  }
+  return `<svg class="sv-mark" viewBox="-1 -1 26 26" width="${size}" height="${size}" ` +
+    `aria-hidden="true" focusable="false">${rects.join('')}</svg>`
+}
+
+/** SESSION·VIZ, with the separator carrying the accent. */
+export function brandWordmark(): string {
+  return `<span class="sv-word">SESSION<span class="sv-sep">·</span>VIZ</span>`
+}
+
+/** Mark and wordmark together. The only unit any page should place. */
+export function brandLockup(size?: number): string {
+  return `<span class="sv-lockup">${brandMark(size)}${brandWordmark()}</span>`
+}
+
+// ---------------------------------------------------------------- header
+
+export interface HeaderOptions {
+  /** The slash command that produced this page, shown as a chip. */
+  command?: string
+  /** Right-hand slot for the page's own controls — /qpact's theme button. */
+  actions?: string
+  /**
+   * Quieter chrome, for qsetup.
+   *
+   * qsetup is a local auth page that takes a bearer token. A page asking for a
+   * secret should look like less than it is, not more: no command chip, no
+   * motion, no rule under the header. Anything that reads as a seal of office
+   * on that page is teaching the reader to trust a layout, which is the exact
+   * habit a phishing page needs them to have.
+   */
+  plain?: boolean
+}
+
+export function brandHeader(o: HeaderOptions = {}): string {
+  const cls = o.plain ? 'sv-brand sv-plain' : 'sv-brand'
+  const chip = o.command && !o.plain ? `<span class="sv-cmd">${esc(o.command)}</span>` : ''
+  const acts = o.actions ? `<span class="sv-acts">${o.actions}</span>` : ''
+  return `<header class="${cls}">${brandLockup()}${chip}${acts}</header>`
+}
+
+// ---------------------------------------------------------------- footer
+
+/**
+ * One provenance fragment.
+ *
+ * Plain text in, escaped here — the alternative is a footer that takes
+ * pre-escaped HTML from four callers with four different `esc` helpers, one of
+ * which does not escape `'`. `strong` exists because the fingerprint has always
+ * been emphasised, and dropping that emphasis is dropping the one fragment
+ * anyone actually copies.
+ */
+export interface Fact {
+  /** Plain prefix, e.g. `fingerprint`. */
+  label?: string
+  value: string | number
+  strong?: boolean
+}
+
+export interface FooterOptions {
+  /**
+   * The slash command that generated a report. When present the footer opens
+   * with `generated by <command> · <timestamp>`, which is the sentence /qpact
+   * and /qtrends have always opened with.
+   *
+   * Absent for the live loopback pages: a share picker is not generated at a
+   * moment, it is served at one, and stamping a time on it would state a fact
+   * about the page that the page cannot support.
+   */
+  command?: string
+  /** Everything the page already printed. Falsy entries drop out. */
+  facts: Array<Fact | string | null | undefined | false>
+  /** Overridable so a test can render a byte-stable page. */
+  at?: Date
+  /** Matches `HeaderOptions.plain` — no rule above, no emphasis. */
+  plain?: boolean
+}
+
+/**
+ * The footer every page ends on.
+ *
+ * The provenance fragments are passed in rather than assembled here, and every
+ * one of them survives verbatim. Those lines are why anyone believes a number
+ * on these pages: how many records were read, which fingerprint the reading
+ * has, that prompts were redacted before anything was written. A brand footer
+ * that swallowed one of them to make room for a logo would have traded the
+ * reason the page is trusted for the reason it is recognised.
+ *
+ * The version is the one thing added. Between 0.7.0 and 0.9.0 the same corpus
+ * went from 27.31B cache-read to 31.94B — not because the corpus moved, but
+ * because the reading got more correct. A report that does not say which build
+ * produced it is a report nobody can reconcile with the one beside it.
+ */
+export function brandFooter(o: FooterOptions): string {
+  const parts: string[] = []
+  if (o.command) {
+    const at = (o.at ?? new Date()).toISOString().slice(0, 16).replace('T', ' ')
+    parts.push(`generated by ${esc(o.command)} · ${esc(at)}`)
+  }
+  for (const f of o.facts) {
+    if (!f) continue
+    const fact: Fact = typeof f === 'string' ? { value: f } : f
+    const value = String(fact.value ?? '')
+    if (!value) continue
+    parts.push(
+      (fact.label ? esc(fact.label) + ' ' : '') +
+      (fact.strong && !o.plain ? `<b>${esc(value)}</b>` : esc(value)),
+    )
+  }
+  const cls = o.plain ? 'sv-foot sv-plain' : 'sv-foot'
+  return `<footer class="${cls}">${brandLockup(15)}` +
+    `<span class="sv-ver">v${esc(version())}</span>` +
+    `<span class="sv-prov">${parts.join(' · ')}</span></footer>`
+}
+
+// ---------------------------------------------------------------- css
+
+/**
+ * The brand's own stylesheet, for pages that share nothing else.
+ *
+ * Bracketed by comment sentinels so a test can lift exactly this region out of
+ * a rendered page and check that no rule inside it names a colour — the tokens
+ * below are the only place a literal is allowed to appear, and four pages of
+ * report CSS around it make a document-wide grep useless for the question.
+ *
+ * Values are the family palette the reports already use, restated rather than
+ * referenced. Borrowing --accent from a host page would have picked up qsetup's
+ * #c25a2b on one page, render.mts's #c2521a on two others, and nothing at all
+ * on a page that had not defined it yet.
+ *
+ * The accent is a shade deeper than the reports' #c2521a on purpose. It paints
+ * the separator in SESSION·VIZ, which is a text glyph and owes 4.5:1 — and
+ * #c2521a manages only 4.27:1 on qsetup's warmer #f7f5f0. One token that clears
+ * AA on the warmest surface it lands on beats one that matches a sibling
+ * exactly and fails on the one page nobody was looking at. The difference is
+ * invisible beside the reports' own accent; the failure was not. test/brand.mjs
+ * measures both sides off the rendered page, so this cannot quietly drift back.
+ */
+export function brandCss(): string {
+  return `
+/* sv-brand — one definition, every page. See src/brand.mts. */
+:root{
+  --sv-ink:#1c1b19; --sv-dim:#6b6862; --sv-line:#e6e2db;
+  --sv-accent:#bb4e18; --sv-cell:#847e74;
+  --sv-sans:ui-sans-serif,-apple-system,"Segoe UI",Inter,sans-serif;
+  --sv-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --sv-ink:#ece9e4; --sv-dim:#9b968d; --sv-line:#302e37;
+  --sv-accent:#ff8a4c; --sv-cell:#858093;
+  color-scheme:dark;
+}}
+:root[data-theme=dark]{
+  --sv-ink:#ece9e4; --sv-dim:#9b968d; --sv-line:#302e37;
+  --sv-accent:#ff8a4c; --sv-cell:#858093;
+  color-scheme:dark;
+}
+.sv-brand{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  margin:0 0 22px;padding:0 0 13px;border-bottom:1px solid var(--sv-line)}
+/* No rule under the header on the auth page. A hairline is a letterhead, and a
+   letterhead is the thing a token prompt must not have. */
+.sv-brand.sv-plain{border-bottom:0;padding-bottom:0;margin-bottom:16px}
+.sv-brand .sv-acts{margin-left:auto;display:inline-flex;gap:8px;align-items:center}
+.sv-lockup{display:inline-flex;align-items:center;gap:9px}
+.sv-mark{display:block;flex:none}
+.sv-cell{fill:var(--sv-cell)}
+.sv-cell.sv-accent{fill:var(--sv-accent)}
+/* Outlined, not faded. A cell at 20% opacity reads as a settled cell the
+   renderer got wrong; an outline reads as a cell that has not happened yet,
+   which is what it is. */
+.sv-cell.sv-hollow{fill:none;stroke:var(--sv-cell);stroke-width:1.1}
+.sv-word{font:600 13px/1 var(--sv-sans);letter-spacing:.13em;color:var(--sv-ink);white-space:nowrap}
+.sv-sep{color:var(--sv-accent);letter-spacing:0;padding:0 .05em}
+.sv-cmd{font:11px/1 var(--sv-mono);color:var(--sv-dim);border:1px solid var(--sv-line);
+  border-radius:999px;padding:4px 9px;white-space:nowrap}
+.sv-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  margin:44px 0 0;padding:14px 0 0;border-top:1px solid var(--sv-line);
+  color:var(--sv-dim);font:12px/1.6 var(--sv-mono)}
+.sv-foot.sv-plain{margin-top:22px}
+.sv-foot .sv-word{font-size:11px;letter-spacing:.11em}
+.sv-ver{font:11px/1 var(--sv-mono);color:var(--sv-dim);border:1px solid var(--sv-line);
+  border-radius:999px;padding:3px 8px;white-space:nowrap}
+/* min-width:0 or a long fingerprint refuses to wrap and pushes the flex row
+   wider than the page, which on a file:// report is a horizontal scrollbar
+   nobody can explain. */
+.sv-prov{flex:1 1 260px;min-width:0}
+.sv-prov b{color:var(--sv-ink);font-weight:600}
+/* One shot, and only on the accent cell. The picker's frontier cell pulses
+   because something is genuinely still running there; a mark that keeps
+   pulsing tells the reader the page is still working long after it finished. */
+@keyframes sv-land{from{opacity:0;transform:translateY(-2.5px)}to{opacity:1;transform:none}}
+.sv-brand .sv-cell.sv-accent{animation:sv-land .45s ease-out 1 both}
+.sv-brand.sv-plain .sv-cell.sv-accent{animation:none}
+@media (prefers-reduced-motion:reduce){
+  .sv-brand .sv-cell.sv-accent{animation:none}
+}
+/* end sv-brand */
+`
+}

@@ -31,6 +31,7 @@ import { emitJson } from './out.mjs'
 // where that lives now, so this finds it wherever /qsetup was able to put it,
 // which under a sandboxed harness is not necessarily the preferred location.
 import { config, api } from './cloud.mjs'
+import { brandCss, brandHeader, brandFooter } from './brand.mjs'
 import type { Config } from './cloud.mjs'
 
 const run = promisify(execFile)
@@ -288,9 +289,18 @@ export function pickerPage(rows: PickRow[], nonce: string, shared: Set<string>):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{--bg:#fbfaf8;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;--line:#e6e2db;--accent:#c2521a;
---warn:#9a6a12;--ok:#2f6b46;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
-@media(prefers-color-scheme:dark){:root{--bg:#16151a;--panel:#1e1d23;--ink:#ece9e4;--muted:#9b968d;
---line:#302e37;--accent:#ff8a4c;--warn:#e0b055;--ok:#6fbf8e}}
+--warn:#9a6a12;--ok:#2f6b46;--on-accent:#fff;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+--h-cc:#c2521a;--h-cx:#4a7fb5;--h-cu:#5f8a6d;--h-cu-line:#5f8a6d}
+/* Guarded and repeated, matching the reports. The system query alone was two
+   states, not three: the brand chrome beside it flips on
+   :root:not([data-theme=light]), so the day anything sets that attribute here
+   the logo and the page would disagree about which theme they were in. */
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#16151a;--panel:#1e1d23;--ink:#ece9e4;--muted:#9b968d;
+--line:#302e37;--accent:#ff8a4c;--warn:#e0b055;--ok:#6fbf8e;
+--h-cc:#ff8a4c;--h-cx:#6a9fd4;--h-cu:#8fbc6b;--h-cu-line:#4c8a63}}
+:root[data-theme=dark]{--bg:#16151a;--panel:#1e1d23;--ink:#ece9e4;--muted:#9b968d;
+--line:#302e37;--accent:#ff8a4c;--warn:#e0b055;--ok:#6fbf8e;
+--h-cc:#ff8a4c;--h-cx:#6a9fd4;--h-cu:#8fbc6b;--h-cu-line:#4c8a63}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Inter,sans-serif}
 .wrap{max-width:920px;margin:0 auto;padding:36px 22px 120px}
@@ -327,13 +337,14 @@ padding:1px 8px;margin:0 4px 3px 0;border:1px solid var(--line);color:var(--mute
    — which is the whole request. */
 @media (prefers-reduced-motion: reduce){ .cells rect.at{animation:none} }
 tr.sent td{opacity:.55}
-.h-claude-code{border-color:#c2521a;color:#c2521a}
-.h-codex{border-color:#4a7fb5;color:#4a7fb5}
-.h-cursor{border-color:#5f8a6d;color:#5f8a6d}
-@media(prefers-color-scheme:dark){
-.h-claude-code{border-color:#ff8a4c;color:#ff8a4c}
-.h-codex{border-color:#6a9fd4;color:#6a9fd4}
-.h-cursor{border-color:#4c8a63;color:#8fbc6b}}
+/* One token per harness rather than a second media query. The chips used to
+   restate their own colours under prefers-color-scheme, which meant the page
+   had two places that decided what "dark" was and only one of them learned
+   about [data-theme]. Cursor keeps a separate border token because its dark
+   pair genuinely differs — the ink is lifted for contrast, the rule is not. */
+.h-claude-code{border-color:var(--h-cc);color:var(--h-cc)}
+.h-codex{border-color:var(--h-cx);color:var(--h-cx)}
+.h-cursor{border-color:var(--h-cu-line);color:var(--h-cu)}
 /* Now a badge beside the project name rather than a cell of its own, so it
    needs the gap the checkbox column used to give it. */
 .done{color:var(--ok);font-size:12px;margin-left:7px}
@@ -341,7 +352,7 @@ input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:po
 .bar{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);
 padding:14px 22px;display:flex;gap:16px;align-items:center;justify-content:center;flex-wrap:wrap}
 .sum{font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
-button{appearance:none;border:0;border-radius:9px;background:var(--accent);color:#fff;font:inherit;
+button{appearance:none;border:0;border-radius:9px;background:var(--accent);color:var(--on-accent);font:inherit;
 font-weight:600;padding:10px 20px;cursor:pointer}
 button:disabled{opacity:.4;cursor:not-allowed}
 .warn{background:var(--panel);border:1px solid var(--warn);border-radius:10px;padding:13px 16px;
@@ -349,7 +360,9 @@ margin:0 0 24px;font-size:13.5px;color:var(--muted)}
 .warn b{color:var(--ink)}
 #msg{padding:13px 16px;border-radius:10px;margin:0 0 20px;display:none;font-size:14px;
 background:var(--panel);border:1px solid var(--line)}
+${brandCss()}
 </style></head><body><div class="wrap">
+${brandHeader({ command: '/qshare' })}
 <h1>Choose what to share</h1>
 <p class="lede">Each of these publishes to your workspace, readable by everyone in it.
 Nothing is selected, and nothing is sent until you press the button.</p>
@@ -383,6 +396,17 @@ ${r.ambiguous && r.cwd ? `<span class="pth">${esc(r.cwd)}</span>` : ''}</td>
 <td class="num">${n(Math.round(r.bytes / 1024))} kB</td>
 </tr>`).join('')}
 </tbody></table>
+${brandFooter({
+  // No `command`, so no timestamp. This page is not generated at a moment, it
+  // is served at one — and a generation time on a live picker is a fact about
+  // the page that the page cannot support.
+  facts: [
+    `${n(rows.length)} projects · ${n(rows.reduce((a, r) => a + r.sessions, 0))} sessions counted on this machine`,
+    shared.size ? `${n(shared.size)} already shared` : null,
+    'absolute paths and your username are stripped before anything leaves',
+    'served on 127.0.0.1 — this page never leaves this machine',
+  ],
+})}
 </div>
 <div class="bar">
   <span class="sum" id="sum">Nothing selected</span>
