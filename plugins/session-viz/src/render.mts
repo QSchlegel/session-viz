@@ -194,8 +194,32 @@ function css(): string {
 :root{
   --bg:#fbfaf8; --panel:#fff; --ink:#1c1b19; --muted:#6b6862; --dim:#6b6862; --line:#e6e2db;
   --accent:#c2521a; --accent-soft:#fdf0e8; --ok:#2f6b46; --warn:#9a6a12; --bad:#b3261e;
-  --bar:#d9d4cb; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --bar:#d9d4cb; --tag-ink:#fff; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
   color-scheme:light;
+  /* The turn card's own three colours. They exist because the tokens that were
+     doing this job could not: --line on --panel is 1.29:1 and --panel on --bg
+     is 1.04:1, so a column of turns painted one continuous grey field with no
+     boundary a reader could see between one card and the next, or between a
+     card and the page.
+
+     --edge is that boundary, and it is chosen against four surfaces rather than
+     one: the flat page, the solid card, and both of those again at the point of
+     the drifting aura field that is worst for a 1px line -- which is NOT the
+     point that is worst for text, so glass.mjs's numbers do not cover it. The
+     floor is 3:1, WCAG 1.4.11 for a boundary that carries meaning, and the
+     binding surface turned out to be the field rather than either flat one:
+     the first dark value tried cleared 3:1 against both #1e1d23 and #16151a
+     and then measured 2.83:1 against the field at its brightest, which is the
+     number that chose the value below. test/cards.mjs prints all four.
+
+     --idx and --chip are rank, not decoration. The summary row does three
+     different jobs -- scan the score, navigate by the number, glance at the
+     reference detail -- and until this pass all three were 11-12px --muted, so
+     none of them could be found without reading the other two. --chip is the
+     score's own opaque surface, opaque for the same reason .tool and .body pre
+     are: a third alpha stacked on the glass would make its text contrast a
+     product of three numbers instead of one. */
+  --edge:#877f73; --idx:#43413c; --chip:#f1eee8;
   --kg-bg:#f3f0ea; --kg-halo:#f3f0ea; --kg-ring:#f3f0ea; --kg-label:#26251f;
   --kg-edge:#8d8779; --kg-edge-au:#7c3aed; --alarm:#b3261e; --alarm-ink:#fff;
   /* The two layer stamps in the graph sidebar, which were written as rgba()
@@ -228,8 +252,17 @@ function css(): string {
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9b968d; --dim:#9b968d; --line:#302e37;
   --accent:#ff8a4c; --accent-soft:#2a1d16; --ok:#6fbf8e; --warn:#e0b055; --bad:#ff6b5e;
-  --bar:#3a3742;
+  --bar:#3a3742; --tag-ink:#1a0f0d;
   color-scheme:dark;
+  /* Re-measured on this palette, not the light values lightened. The surface
+     that binds --edge here is neither --panel nor --bg: it is the aura field at
+     its brightest, which lifted the page to #362b24 when test/cards.mjs last
+     swept it, so --edge has to sit above all three rather than between the two
+     flat ones. A token that only ever gets a light-theme value is the failure
+     this triple is written out three times to avoid -- it would leave one pale
+     hairline drawn on a near-black page, which is then the loudest thing on
+     it. */
+  --edge:#7e7c8b; --idx:#cbc7bf; --chip:#2a2833;
   --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
   --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
   /* Twice the light theme, and it can afford it: #16151a leaves the whole range
@@ -244,8 +277,9 @@ function css(): string {
 :root[data-theme=dark]{
   --bg:#16151a; --panel:#1e1d23; --ink:#ece9e4; --muted:#9b968d; --dim:#9b968d; --line:#302e37;
   --accent:#ff8a4c; --accent-soft:#2a1d16; --ok:#6fbf8e; --warn:#e0b055; --bad:#ff6b5e;
-  --bar:#3a3742;
+  --bar:#3a3742; --tag-ink:#1a0f0d;
   color-scheme:dark;
+  --edge:#7e7c8b; --idx:#cbc7bf; --chip:#2a2833;
   --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
   --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
   --aura-1:color-mix(in srgb,var(--accent) 13%,transparent);
@@ -296,8 +330,19 @@ button.copy.done{background:var(--ok)}
 .score .caveat{margin-top:7px;font-size:12.5px;color:var(--warn)}
 .sc-clean{--sc:var(--ok)} .sc-solid{--sc:var(--ok)} .sc-mixed{--sc:var(--warn)}
 .sc-costly{--sc:var(--bad)} .sc-poor{--sc:var(--bad)}
-.chip{font-family:var(--mono);font-size:11px;font-weight:600;padding:1px 6px;border-radius:5px;
-  border:1px solid var(--line);color:var(--muted)}
+/* The score. It is what a reader scans a hundred turns for, so it is the one
+   thing in a summary row that is an object rather than a run of text: an opaque
+   fill and an --edge border, against the .tool chips further down that keep
+   --line. Same shape, two ranks, and the rank is which one you see first.
+
+   --ink on --chip, not --muted on the card: at 11px --muted it measured the
+   same as the duration sitting 9px to its right, so the number the page is
+   organised around was the hardest thing in the row to pick out. Still 12px
+   against the prompt line's 14px -- the prompt is the content and the score is
+   only the index to it, and a chip that out-shouts the prompt has traded one
+   unreadable row for another. */
+.chip{font-family:var(--mono);font-size:12px;font-weight:600;padding:2px 7px;border-radius:5px;
+  border:1px solid var(--edge);background:var(--chip);color:var(--ink)}
 .chip.low{color:var(--bad);border-color:var(--bad)}
 .ded{margin:10px 0 0;padding-left:17px;font-size:13px;color:var(--muted)}
 .ded li.out{color:var(--bad)} .ded li.add{color:var(--ok)}
@@ -325,26 +370,59 @@ button.copy.done{background:var(--ok)}
 .filters button{background:var(--panel);border:1px solid var(--line);color:var(--muted);
   border-radius:999px;padding:5px 13px;font-size:12px;cursor:pointer;font-weight:500}
 .filters button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
-.turn{border:1px solid var(--line);border-radius:9px;background:var(--panel);
+/* --edge, not --line. A turn card is 1.04:1 against the page and its --line
+   border was 1.29:1 against its own fill, so nothing on this stack drew a
+   boundary: a hundred turns read as one grey field with text in it. This is the
+   only border on the page that has to survive being repeated a hundred times
+   down a column, which is why it is the one that gets its own token.
+
+   .turn.friction still wins the left edge on specificity, so the red marker is
+   untouched -- and it now sits against a grey the reader can see, which is what
+   makes it read as a marker rather than as the only border on the page. */
+.turn{border:1px solid var(--edge);border-radius:9px;background:var(--panel);
   margin-bottom:7px;overflow:hidden}
 .turn.friction{border-left:3px solid var(--bad)}
 .turn > summary{padding:11px 15px;cursor:pointer;display:grid;
   grid-template-columns:34px 1fr auto;gap:12px;align-items:center;list-style:none}
 .turn > summary::-webkit-details-marker{display:none}
 .turn > summary:hover{background:var(--accent-soft)}
-.idx{font-family:var(--mono);font-size:12px;color:var(--muted);text-align:right}
-.txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+/* How a reader navigates, so it outranks the reference detail beside it -- 12px
+   600 --idx against 11px 400 --muted -- and stays under the prompt line, which
+   is what they are navigating to. The mono stack is doing real work and is not
+   inherited decoration: a right-aligned number is only scannable down a column
+   if its digits are one width, and mono is already what gives them that, which
+   is why there is no font-variant-numeric here pretending to.
+
+   The 34px column is load-bearing beyond this rule: .body indents to exactly
+   this width plus the summary's padding and gap, so a change here that is not
+   also made there unhooks every expanded body from the row it belongs to. */
+.idx{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--idx);
+  text-align:right}
+/* The content, and it stays the loudest thing in the row: 14px against the
+   score's 12px and the metadata's 11px, and the only one of them in the page's
+   body font rather than the mono. 500 rather than 400 so that giving the score
+   a fill did not quietly promote the score above the prompt it scores. */
+.txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:500}
+/* Duration, tool count, tokens: reference, read after the reader has already
+   chosen a row. Deliberately the same rank as .tool below -- they are the same
+   job in two places, and inventing a fourth level for them would be rank for
+   its own sake rather than for a reader's. */
 .meta{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;
   display:flex;gap:9px;align-items:center}
 .bar{height:4px;background:var(--bar);border-radius:2px;width:54px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--accent)}
-.tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bad);color:#fff;
+.tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bad);color:var(--tag-ink);
   font-weight:600;letter-spacing:.03em}
-.body{padding:2px 15px 16px 61px;border-top:1px solid var(--line)}
+/* 61px is not a taste: it is the summary's 15px padding plus the 34px index
+   column plus the 12px grid gap, so the expanded body starts on the same
+   vertical as the prompt line above it. Any of those three numbers moving
+   without this one moving with it breaks that alignment silently, which is why
+   test/cards.mjs derives the sum from the grid rather than restating it. */
+.body{padding:2px 15px 16px 61px;border-top:1px solid var(--edge)}
 .body pre{font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;word-break:break-word;
   background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:11px;margin:12px 0}
 .tools{display:flex;gap:6px;flex-wrap:wrap}
-.tool{font-family:var(--mono);font-size:11px;background:var(--bg);border:1px solid var(--line);
+.tool{font-family:var(--mono);font-size:11px;background:var(--bg);border:1px solid var(--edge);
   border-radius:5px;padding:2px 7px;color:var(--muted)}
 .empty{color:var(--muted);font-style:italic;padding:20px;text-align:center}
 footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono);

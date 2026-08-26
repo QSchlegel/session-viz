@@ -96,6 +96,10 @@ jobs:
       - name: Backlog
         run: node plugins/session-viz/test/qbl.mjs
 
+      # The turn cards’ hierarchy and the contrast that carries it.
+      - name: Cards
+        run: node plugins/session-viz/test/cards.mjs
+
       # The brand chrome on every wrapper, the evidence package, and the two
       # together on the rendered report pages.
       - name: Brand

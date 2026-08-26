@@ -129,8 +129,51 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/render.mjs /tmp/qpact-spine.json \
 Prints the path and opens a real window. The `/compact` line sits at the top with
 a Copy button.
 
-### 5. Close out
+### 5. Offer it to the console — only if the user already switched that on
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --ship \
+  --spine /tmp/qpact-spine.json --report <the path step 4 printed>
+```
+
+Run this every time, after step 4 and never before it. It is a no-op when cloud
+shipping is off, and it prints one line either way — where the report went, or
+that the report stayed on this machine. Pass through what it printed; do not
+summarise it away.
+
+It never fails the command. A dead network, a missing token, a server refusal and
+a tenant over quota all come back as a printed reason and exit 0, because the
+local report is already written and open by the time this runs. If it says
+NOT SHIPPED, say so in your close-out in plain words. **A report the user
+believes is in the cloud and is not is worse than one that was never sent.**
+
+**Turning it on is the user's action, not yours.** Shipping sends the rendered
+page — which carries the full text of every prompt in this session — to their
+workspace console. If they ask for it, or if the line above says it is off and
+they want it on, run:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --on
+```
+
+That prints the whole disclosure — every field, every header, and what is and is
+not redacted — and exits non-zero having turned nothing on. Show them that output
+and wait. **Only if they then say yes, in this conversation, may you run
+`--on --yes`.** Do not run `--on --yes` because a previous session did, because
+the user asked for "cloud reports" in general, or because it seems implied. Their
+consent is bound to the disclosure they were shown, and you supplying `--yes` on
+their behalf is the exact failure this design exists to prevent.
+
+`--off` turns it back off, effective on the next run. `push.mjs` with no arguments
+says which it currently is and does nothing else.
+
+### 6. Close out
 
 One line: the file path, and that the `/compact` line is copyable from the top of
 the page. Do not paste the instruction into chat as well — it belongs in the
 window, and repeating it defeats the purpose.
+
+If step 5 shipped, add where it went. If step 5 did not ship for any reason other
+than the switch being off, say that too — it is one clause, and it is the
+difference between a user who knows and a user who thinks their report is in the
+console.
