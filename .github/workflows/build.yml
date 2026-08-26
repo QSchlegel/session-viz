@@ -120,6 +120,29 @@ jobs:
       - name: Live
         run: node plugins/session-viz/test/qlive.mjs
 
+      # Five suites that gated nothing until this block existed. Each one covers
+      # a claim the tool makes to a reader who cannot check it: which files a
+      # turn touched, what an earlier session concluded and how old that is,
+      # what a follow-up prompt may say about a session it was not built from,
+      # and what the bill of materials does and does not know.
+      - name: Recorded file paths
+        run: node plugins/session-viz/test/paths.mjs
+
+      - name: Intent carried across sessions
+        run: node plugins/session-viz/test/intent.mjs
+
+      - name: Drill-down and the appendix
+        run: node plugins/session-viz/test/followup.mjs
+
+      - name: Bill of materials
+        run: node plugins/session-viz/test/sbom.mjs
+
+      # The consent gate on shipping a session to the cloud — "nothing leaves
+      # this machine unless you were shown what would leave". It is the largest
+      # claim the tool makes and it was the last suite running nowhere.
+      - name: Consent before anything is sent
+        run: node plugins/session-viz/test/ship.mjs
+
       - name: Committed output matches source
         run: |
           # --porcelain, not `git diff`: a build that emits a NEW module leaves it

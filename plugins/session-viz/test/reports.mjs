@@ -45,7 +45,7 @@ import { render as renderPact } from '../scripts/render.mjs'
 import { render as renderTrends } from '../scripts/render-corpus.mjs'
 import { pickerPage } from '../scripts/qshare.mjs'
 import { PAGE as setupPage } from '../scripts/qsetup.mjs'
-import { LIMITS, NOT_A_CERTIFICATION, BUNDLE_GLOBAL, DOWNLOAD_HOOK, redactionLimit } from '../scripts/bundle.mjs'
+import { LIMITS, NOT_A_CERTIFICATION, BUNDLE_GLOBAL, DOWNLOAD_HOOK, redactionLimit, pathLimit } from '../scripts/bundle.mjs'
 
 let failed = 0
 const chk = (name, ok, detail) => {
@@ -546,11 +546,21 @@ chk('/qpact: with somewhere for the page to answer back',
 const escLike = (x) => x.replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 const evlim = (pact.match(/<ol class="evlim">[\s\S]*?<\/ol>/) || [''])[0]
-const SPINE_LIMITS = [redactionLimit(SPINE), ...LIMITS]
+// TWO derived sentences now, not one. Each replaced a flat claim that a `--no-`
+// flag could make false, and each has to be here or this list is checking the
+// page against a shorter one than the page renders.
+const SPINE_LIMITS = [redactionLimit(SPINE), pathLimit(SPINE), ...LIMITS]
 const missing = SPINE_LIMITS.filter((l) => !evlim.includes(escLike(l)))
 chk(`/qpact: all ${SPINE_LIMITS.length} limits are printed beside the button`,
   missing.length === 0 && evlim.length > 0,
   `${missing.length} missing from a ${evlim.length}-byte list, first: ${(missing[0] || '').slice(0, 60)}`)
+// The assertion above only asks that everything expected is PRESENT, so a third
+// derived limit would arrive on the page and pass it in silence — which is
+// exactly how the second one arrived. Counting the rendered items is what makes
+// this list exhaustive rather than merely satisfied.
+const rendered = (evlim.match(/<li[ >]/g) || []).length
+chk('/qpact: and the page prints exactly those and no others',
+  rendered === SPINE_LIMITS.length, `${rendered} rendered, ${SPINE_LIMITS.length} expected`)
 chk('/qpact: and the count in the summary matches the list',
   pact.includes(`What this record cannot show — ${SPINE_LIMITS.length} limits`))
 

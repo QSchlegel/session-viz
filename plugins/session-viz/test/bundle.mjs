@@ -24,7 +24,7 @@
 
 import { createHash } from 'node:crypto'
 import { runInThisContext } from 'node:vm'
-import { buildBundle, bundleScript, crc32, LIMITS, redactionLimit, NOT_A_CERTIFICATION, BUNDLE_GLOBAL, DOWNLOAD_HOOK } from '../scripts/bundle.mjs'
+import { buildBundle, bundleScript, crc32, LIMITS, redactionLimit, pathLimit, NOT_A_CERTIFICATION, BUNDLE_GLOBAL, DOWNLOAD_HOOK } from '../scripts/bundle.mjs'
 
 let failed = 0
 const chk = (name, ok, detail) => {
@@ -68,6 +68,7 @@ const turn = (over) => ({
   timeToFirstToolMs: null,
   toolCalls: [],
   toolCallCount: 0,
+  files: [],
   models: [],
   model: 'claude-opus-5',
   mixedModel: false,
@@ -97,6 +98,11 @@ function fixture(maps) {
     cwd: `/Users/${USER}/git/demo-api`,
     gitBranch: 'feature/evidence',
     redactedPrompts: true,
+    // What extract.mjs records about its own invocation, the second of two. The
+    // fixture takes the default; the four-state test below covers the rest,
+    // including the one nobody writes a test for — a spine from before the field
+    // that is carrying paths anyway.
+    recordedPaths: true,
     version: '2.1.0',
     title: 'Add the evidence package',
     startedAt: '2026-03-04T08:00:00.000Z',
@@ -140,6 +146,32 @@ function fixture(maps) {
         toolCalls: [{ name: "=cmd|'/c calc'!A1", count: 1 }, { name: 'Read', count: 9 }],
         toolCallCount: 10,
         signals: { ...turn({}).signals, hasFileRef: true, chars: 74, words: 12 },
+        // The four shapes a recorded path arrives in, and they are not
+        // interchangeable. extract.mjs relativises against the working
+        // directory, so the first is what a real reading is nearly all of; the
+        // other three are what its no-working-directory fallback can hand over,
+        // and this package is made to be forwarded, so each has to be dealt with
+        // here rather than trusted to have been cleaned upstream.
+        //   - inside the repo, which is every ordinary one;
+        //   - `~`-rooted, already carrying the scrub's own marker;
+        //   - absolute UNDER A HOME ROOT, where the account name can be cut
+        //     precisely and the rest is worth keeping;
+        //   - absolute with no home root to cut, where there is no safe boundary
+        //     to guess at and the whole path goes.
+        files: [
+          { path: 'src/index.ts', count: 9 },
+          { path: '~/.claude/settings.json', count: 2 },
+          { path: `/Users/${USER}/git/other-repo/secret.env`, count: 1 },
+          { path: '/etc/hosts', count: 1 },
+          //   - a `..` climb that lands back inside somebody's home. This is
+          //     what macOS resolves any home file to, relativised against a
+          //     working directory outside the home tree. It is relative, and so
+          //     it looks like every other safe value here, and the account name
+          //     is in the middle of it. An older reading of the same transcript
+          //     really does write this, so the package cannot assume the
+          //     extractor cancelled it.
+          { path: `../../../../System/Volumes/Data/Users/${USER}/.zshrc`, count: 1 },
+        ],
       }),
       turn({
         index: 1,
@@ -151,7 +183,17 @@ function fixture(maps) {
         derived: { noToolCalls: true, clarificationRoundtrip: false, followedByCorrection: false, repeatOf: 0 },
         score: { value: 41, deductions: [{ points: -20, why: 'repeat of an earlier prompt', tier: 'outcome' }], additions: [] },
       }),
-      turn({ index: 2, uuid: 'u-2', text: 'ship it', fullChars: 7, steering: true }),
+      turn({
+        index: 2, uuid: 'u-2', text: 'ship it', fullChars: 7, steering: true,
+        // The same file as turn 0, so the roll-up in artifacts.csv has two turns
+        // to add up and the per-turn column has something to disagree with it —
+        // and an ordinary directory that merely reads like a home path, which an
+        // over-eager guard here would withhold out of a great many repositories.
+        files: [
+          { path: 'src/index.ts', count: 4 },
+          { path: 'app/home/page/index.tsx', count: 1 },
+        ],
+      }),
     ],
     score: { value: 61, band: 'mixed', confidence: 'medium', turnsScored: 3, frictionRate: 0.33, craftRate: 0.1, wastedTokens: 900, costliestTurn: 1 },
     durationMs: 2460000,
@@ -167,6 +209,12 @@ const INTENT = {
 }
 
 const META = { generatedAt: GENERATED_AT, fingerprint: 'a1b2c3d4', version: '9.9.9', command: '/qpact', spineAgeMin: 2 }
+
+// The two sentences that are NOT constants: each is derived from what the
+// extractor recorded about its own invocation, and each replaced a flat claim
+// that a `--no-` flag could make false. Named once here because four separate
+// assertions below have to agree about what the package should be carrying.
+const DERIVED = [redactionLimit(fixture()), pathLimit(fixture())]
 
 // ---------------------------------------------------------------- the archive
 
@@ -375,8 +423,70 @@ chk(
   artifacts.some((r) => r.startsWith("package,'+SUM")),
   artifacts.slice(0, 4).join(' | ')
 )
-chk('the file-touch count is present and unattributed', artifacts.includes('file_touch,(path not recorded),31,session'))
 chk('every artifact row is marked session-scoped', artifacts.length > 1 && artifacts.slice(1).every((r) => r.endsWith(',session')))
+
+// ---- the files, rolled up here and attributed in turns.csv
+//
+// The count row used to read `(path not recorded)`, which was true of every
+// reading there had ever been. It is now a fact about how the extractor was
+// invoked, so a constant cannot say it -- and the dangerous version is the one
+// that still reassures over the top of a list of paths.
+chk('a file touched by two turns is one row with their counts summed', artifacts.includes('file,src/index.ts,13,session'))
+chk('a ~-rooted path is kept as it is', artifacts.includes('file,~/.claude/settings.json,2,session'))
+chk('an ordinary directory called home is NOT withheld for reading like one',
+  artifacts.includes('file,app/home/page/index.tsx,1,session'),
+  artifacts.filter((r) => r.startsWith('file,')).join(' | '))
+chk(
+  'an absolute path under a home root keeps everything but the account name',
+  artifacts.includes('file,~/git/other-repo/secret.env,1,session'),
+  artifacts.filter((r) => r.startsWith('file,')).join(' | ')
+)
+chk(
+  'an absolute path with no home root to cut is withheld whole, not trimmed to its tail',
+  artifacts.includes('file,«path-withheld»,2,session') && !artifacts.some((r) => r.includes('hosts')),
+  artifacts.filter((r) => r.startsWith('file,')).join(' | ')
+)
+chk(
+  'and so is a `..` climb that lands back inside somebody\'s home',
+  // Two withheld paths, one row: the marker is not a path, so two of them are
+  // not two files, and collapsing them is the only count that does not invent a
+  // distinction the reader cannot check. The point of the assertion is that
+  // NEITHER filename reached the package.
+  !artifacts.some((r) => r.includes('zshrc')) && !artifacts.some((r) => r.includes('Volumes')),
+  artifacts.filter((r) => r.startsWith('file,')).join(' | ')
+)
+chk(
+  'the file-touch count no longer claims no path was recorded',
+  artifacts.some((r) => r.startsWith('file_touch,') && r.endsWith(',31,session')) &&
+    !artifacts.some((r) => r.includes('(path not recorded)')),
+  artifacts.find((r) => r.startsWith('file_touch,'))
+)
+chk(
+  'and says outright that it is not a total of the rows above it',
+  /not a total of the file rows/.test(artifacts.find((r) => r.startsWith('file_touch,')) ?? ''),
+  artifacts.find((r) => r.startsWith('file_touch,'))
+)
+// 9 + 4 on src/index.ts, 2 on the settings file, 1 on app/home, 1 rewritten and
+// 2 withheld = 19, against a session-level count of 31. They are different measurements and the package
+// must never present one as the sum of the other: a tool call made before the
+// first human turn is in the count and in no turn.
+{
+  const rolled = artifacts
+    .filter((r) => r.startsWith('file,'))
+    .reduce((a, r) => a + Number(r.split(',').at(-2)), 0)
+  chk('the roll-up is allowed to be smaller than the count, and is', rolled === 19 && rolled < 31, `${rolled}`)
+}
+{
+  const t0 = (rows[1] ?? '').split(',')
+  const t2 = (rows[3] ?? '').split(',')
+  chk('turns.csv attributes a file to the turn that touched it',
+    (rows[1] ?? '').includes('src/index.tsx9') && (rows[3] ?? '').includes('src/index.tsx4'),
+    `${t0.at(-1)} | ${t2.at(-1)}`)
+  chk('and withholds the unrootable one there too',
+    (rows[1] ?? '').includes('«path-withheld»x1') && !(rows[1] ?? '').includes('/etc/hosts'), t0.at(-1))
+  chk('a turn that touched nothing has an empty cell rather than a claim',
+    (rows[2] ?? '').endsWith(','), (rows[2] ?? '').slice(-40))
+}
 
 console.log('\n── the package states its own limits')
 const limits = textOf(zip, 'LIMITS.txt') ?? ''
@@ -401,12 +511,23 @@ const NAMED = [
   // Derived, not asserted: the fixture says redaction ran, so this is the wording
   // for that case. The three-way test below is what pins the mechanism.
   ['file contents are never recorded', /No file contents are recorded/i],
-  ['a file touch does not say which file', /WHICH file was touched is not captured/i],
+  // Derived like the redaction sentence, and for the same reason: the fixture
+  // says paths were recorded, so this is the wording for that case. The
+  // four-way test below is what pins the mechanism.
+  ['which files were touched, when they were recorded', /FILE PATHS ARE RECORDED/],
+  ['that a touch is a tool call and not a change', /does not say whether the file was read or written/i],
   ['artifacts are per session and cannot be placed in time', /counted per session, not per turn.{0,60}cannot be placed in one/i],
 ]
 for (const [what, re] of NAMED) chk(`LIMITS.txt names: ${what}`, re.test(limitsFlat))
-chk('every limit reaches LIMITS.txt, in full', LIMITS.every((l) => limitsFlat.includes(flat(l))))
-chk('every limit reaches summary.md, in full', LIMITS.every((l) => flat(summary).includes(flat(l))))
+chk('every limit reaches LIMITS.txt, in full', bundle.limits.every((l) => limitsFlat.includes(flat(l))))
+// summary.md said "Repeated in full from LIMITS.txt" over a list built from the
+// constant, so the one member most people actually open was the one member
+// missing both sentences that depend on how the extractor was invoked. Asserted
+// against the built list, not the constant, or this passes again the next time.
+chk('every limit reaches summary.md, in full', bundle.limits.every((l) => flat(summary).includes(flat(l))))
+chk('including the two derived ones, which summary.md used to drop',
+  DERIVED.every((l) => flat(summary).includes(flat(l))),
+  DERIVED.map((l) => (flat(summary).includes(flat(l)) ? 'in' : 'MISSING')).join(', '))
 // ---- the spine's shapes, not the spine's type declarations
 //
 // `origin` was declared `string | null` and has never been a string: Claude Code
@@ -476,8 +597,65 @@ chk('every limit reaches summary.md, in full', LIMITS.every((l) => flat(summary)
   chk('and the whole package leads with it', /PROMPT TEXT WAS NOT REDACTED/.test(built.limits[0]), built.limits[0])
 }
 
-chk('every limit reaches the manifest, in full', JSON.stringify(manifest.limits) === JSON.stringify([redactionLimit(fixture()), ...LIMITS]))
-chk('the page can print the same list', JSON.stringify(bundle.limits) === JSON.stringify([redactionLimit(fixture()), ...LIMITS]))
+// ---- the path sentence is derived too, in four states rather than three
+//
+// This list stated flatly that no file path was recorded as data. That was true
+// of every reading there had ever been on the day it was written, and it stopped
+// being true the day the spine started keeping paths — leaving an evidence
+// package reassuring its reader about what it did not contain, directly above
+// the files somebody's session had touched. The fourth state is the one a
+// three-way copy of the redaction test would have missed: a spine that predates
+// the field, carrying paths anyway. "Unknown" is honest over an empty list and
+// is its own kind of lie over a full one.
+/** The summary member of a freshly built package, so an assertion can hold one
+ *  member's number against another's rather than against a literal it copied. */
+const summaryOf = (sess) => {
+  const b = buildBundle(sess, INTENT, META)
+  return String(b.members.find((m) => m.name === 'summary.md')?.text ?? '')
+}
+{
+  const withPaths = fixture()
+  const noPaths = { ...fixture(), recordedPaths: false, turns: fixture().turns.map((t) => ({ ...t, files: [] })) }
+  const oldEmpty = { ...noPaths, recordedPaths: undefined }
+  const oldFull = { ...fixture(), recordedPaths: undefined }
+
+  const on = pathLimit(withPaths)
+  const off = pathLimit(noPaths)
+  const blank = pathLimit(oldEmpty)
+  const carrying = pathLimit(oldFull)
+
+  chk('a reading that kept paths says so, first thing', /^FILE PATHS ARE RECORDED/.test(on), on)
+  chk('and says what a path is relative to', /relative to the working directory/i.test(on), on)
+  chk('and refuses to let a touch be read as a change', /does not say whether the file was read or written/i.test(on), on)
+  chk('and warns the file-touch total is not a sum of them', /not a sum of what is listed/i.test(on), on)
+  chk('a reading extracted with --no-paths says that, in the open', /FILE PATHS WERE NOT RECORDED/.test(off), off)
+  chk('and never claims paths are present', !/FILE PATHS ARE RECORDED/.test(off), off)
+  chk('a reading that cannot tell, and shows none, says it cannot tell', /^WHETHER FILE PATHS WERE RECORDED IS UNKNOWN\./.test(blank), blank)
+  chk('and refuses to read its own silence as "no file was touched"',
+    /Do not read the absence as evidence that no file was touched/i.test(blank), blank)
+  chk('and never reads a missing field as --no-paths', !/FILE PATHS WERE NOT RECORDED/.test(blank), blank)
+  chk('a reading that cannot tell, but is carrying paths, says both',
+    /IS UNKNOWN, BUT 5 DISTINCT PATH\(S\) ARE HERE/.test(carrying), carrying)
+  // The member a reader is told to open first has to agree with the ones it
+  // sends them to. Entries were counted here and distinct paths everywhere else,
+  // so a file touched by two turns made LIMITS.txt say 6 over a summary saying 5.
+  chk('and counts them the way the rest of the package counts them',
+    Number(/BUT (\d+) DISTINCT/.exec(carrying)?.[1]) === Number(/; (\d+) distinct path\(s\) are here/.exec(summaryOf(oldFull))?.[1]),
+    `${carrying}\n${/Files touched.*/.exec(summaryOf(oldFull))?.[0]}`)
+  chk('and does not promise they are all of them', /not as complete/i.test(carrying), carrying)
+
+  const built = buildBundle(noPaths, INTENT, META)
+  chk('and the whole package carries it, second', /FILE PATHS WERE NOT RECORDED/.test(built.limits[1]), built.limits[1])
+  const j = JSON.parse(memberText(built, 'session.json') ?? '{}')
+  chk('session.json says the same thing where a reader looks for it',
+    /FILE PATHS WERE NOT RECORDED/.test(j.withheld?.filePaths ?? ''), j.withheld?.filePaths)
+  chk('and the summary table stops calling it a count only when it is not',
+    /count only . extracted with --no-paths/.test(memberText(built, 'summary.md') ?? ''),
+    (memberText(built, 'summary.md') ?? '').split('\n').find((l) => l.startsWith('| Files touched')))
+}
+
+chk('every limit reaches the manifest, in full', JSON.stringify(manifest.limits) === JSON.stringify([...DERIVED, ...LIMITS]))
+chk('the page can print the same list', JSON.stringify(bundle.limits) === JSON.stringify([...DERIVED, ...LIMITS]))
 
 // The line this project cannot cross. Naming a framework anywhere in the
 // package invites the reader to hear a conformance claim whatever the
@@ -489,7 +667,37 @@ for (const m of bundle.members) {
 }
 
 console.log('\n── nothing carries an account name or a home path')
-const HOMEY = /(?:\/Users\/|\/home\/|-Users-|-home-|\\Users\\)/
+// "A home root can only ever be at the HEAD of a path" is what this check used
+// to assume, and it is false. `/System/Volumes/Data/Users/<name>/.zshrc` is what
+// macOS resolves any home file to, an external disk gives
+// `/Volumes/<disk>/Users/<name>`, and every Windows path reaches `Users` only
+// after a drive letter. Relativised against a working directory those come out
+// as `../../../../System/Volumes/Data/Users/<name>/.zshrc` — relative, and
+// therefore looking safe, with the account name in the middle. A head-anchored
+// pattern reports none of them, so this is the one assertion in the suite that
+// could not see the shape it exists to catch.
+//
+// Two steps rather than one pattern. Find every ROOTED token — one that starts
+// at `/`, at a drive letter, or with a `..` climb — then ask whether a
+// `Users`/`home` SEGMENT appears anywhere inside it. A token that is not rooted
+// is never scanned, and that is what leaves `app/home/page/index.tsx` alone: an
+// ordinary directory in a great many repositories, and now a value this package
+// legitimately carries. Failing on it would push the fix the wrong way, toward
+// withholding real files to satisfy a test.
+const ROOTED = /(?:^|[\s"'([{,;=|])((?:\.\.[\\/])+|[\\/]|[A-Za-z]:[\\/])([^\s"'()[\]{},;=|]*)/g
+const HOME_SEG = /(?:^|[\\/])(?:Users|home)[\\/][^\\/]/i
+// The dash-encoded forms stay unanchored: that shape only ever appears embedded
+// in a longer name.
+const HOME_DASH = /-(?:Users|home)-|\\Users\\/i
+function homeyIn(text) {
+  const dash = text.match(HOME_DASH)
+  if (dash) return dash[0]
+  for (const m of text.matchAll(ROOTED)) {
+    const tok = (m[1] || '') + (m[2] || '')
+    if (HOME_SEG.test(tok)) return tok
+  }
+  return null
+}
 for (const e of zip.entries) {
   const text = e.data.toString('utf8')
   const at = text.indexOf(USER)
@@ -498,8 +706,8 @@ for (const e of zip.entries) {
     at === -1,
     at === -1 ? '' : `at index ${at}: ${JSON.stringify(text.slice(Math.max(0, at - 40), at + 40))}`
   )
-  const homey = text.match(HOMEY)
-  chk(`${e.name}: no home-directory path survives`, !homey, homey ? `found ${JSON.stringify(homey[0])}` : '')
+  const homey = homeyIn(text)
+  chk(`${e.name}: no home-directory path survives`, !homey, homey ? `found ${JSON.stringify(homey)}` : '')
 }
 
 // Structured fields, walked. Turn prompt text is excluded and named as
@@ -609,7 +817,7 @@ chk(
     globalThis[BUNDLE_GLOBAL].members.every((m, i) => m.sha256 === bundle.members[i].sha256 && m.name === bundle.members[i].name)
 )
 chk('the page is told what to call the file', globalThis[BUNDLE_GLOBAL].filename === bundle.filename)
-chk('the page can print the limits without the bundle', JSON.stringify(globalThis[BUNDLE_GLOBAL].limits) === JSON.stringify([redactionLimit(fixture()), ...LIMITS]))
+chk('the page can print the limits without the bundle', JSON.stringify(globalThis[BUNDLE_GLOBAL].limits) === JSON.stringify([...DERIVED, ...LIMITS]))
 chk('the script binds a delegated click listener', typeof listener === 'function')
 if (typeof listener === 'function') {
   let prevented = false

@@ -1,6 +1,6 @@
 ---
 name: qpact
-description: Analyse the current Claude Code session — prompting quality, friction metrics, and a derived intent breakdown — render it as an interactive HTML document opened in a preview window, and produce a copy-pasteable /compact instruction tuned to what the session was actually about. Use when the user runs /qpact, or asks to visualise, audit, or summarise the current session before compacting.
+description: Analyse the current Claude Code session — prompting quality, friction metrics, and a derived intent breakdown carried forward from this project's earlier sessions — render it as an interactive HTML document opened in a preview window, and produce a copy-pasteable /compact instruction tuned to what the session was actually about. Use when the user runs /qpact, or asks to visualise, audit, or summarise the current session before compacting.
 disable-model-invocation: true
 ---
 
@@ -52,13 +52,45 @@ craftRate, wastedTokens}`, plus a per-turn `score` with itemised `deductions` an
 `confidence` is not `high`, say so when quoting the score: below ~20 turns the
 outcome signals have too little to witness for the number to mean much.
 
-### 3. Derive intent and score the prompting
+### 3. Ask the store what this project already knows
 
-Write `/tmp/qpact-intent.json`:
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/intent.mjs --spine /tmp/qpact-spine.json
+```
+
+This reads and changes nothing. It prints:
+
+- **the store path.** One store per repository, keyed the way `/qbl` keys a
+  backlog — the git root, with worktrees folded onto the repository they belong
+  to. A run from `services/api`, or from a worktree, finds the same store the
+  repository root finds. A store left under an older key is adopted and the file
+  it came from is named.
+- **whether this session has been analysed before**, how many runs, and the turn
+  count at the last one — so you read the new turns rather than all of them.
+- **what is already recorded for this session.** This is the part that saves you
+  the work.
+- **earlier sessions of this project**, how many sessions back each one is, and
+  its headline.
+- **the exact path to write the fragment to** in the next step.
+
+**What you no longer derive from scratch.** On a re-run of the same session,
+anything already recorded. Restate only what the new turns actually changed. A
+field you leave out of the fragment is kept exactly as it is — same text, same
+turn citations, same date it was first drawn. A field you restate is updated in
+place; intents match on their title and graph concepts on their id, so saying
+something again never grows a second copy of it.
+
+**Earlier sessions are context for you, not conclusions to repeat.** Use them to
+understand what this project has already decided. Do not copy them into the
+fragment: they are already in the store, with their own provenance, and copying
+one in would re-file it as this session's work.
+
+### 4. Write the fragment
+
+Write to the path step 3 printed. Include only what THIS run concluded:
 
 ```json
 {
-  "sessionId": "copy this verbatim from the spine — the page checks it",
   "tldr": "One paragraph: what this session was actually for, and where it drifted.",
   "compactInstruction": "Focus instructions for /compact — name the specific architecture, decisions and open threads to preserve, and what to drop.",
   "intents": [
@@ -71,31 +103,43 @@ Write `/tmp/qpact-intent.json`:
        "turns": [23], "anchors": ["tool:Edit", "slash:/qsetup"]}
     ],
     "relations": [
-      {"from": "oauth-only", "to": "concept-id-or-derived-id", "label": "blocked by", "dashed": true}
+      {"from": "oauth-only", "to": "concept-id-or-derived-id", "label": "blocked by",
+       "dashed": true, "turns": [23]}
     ]
   },
   "quality": {
     "verdict": "One or two sentences, anchored on the measured numbers.",
     "strengths": ["…"],
     "weaknesses": ["…"],
-    "recommendations": ["…"]
+    "recommendations": ["…"],
+    "turns": [12, 23]
   }
 }
 ```
 
+**No `sessionId` field.** The store takes it from the spine, so it cannot be
+mistyped — the old instruction to "copy this verbatim, the page checks it" was a
+transcription step whose only possible outcome was a page describing the wrong
+session. If you do include one it must match the spine, or the merge is refused.
+
+**`turns` is a citation, not decoration.** It is the only thing that lets a
+reader check a conclusion, and it is what keeps a conclusion attributable once it
+has been carried into later sessions. Cite the turns you actually drew it from.
+Leave the array out when you have none — an empty list reads as "no turns cited",
+which is true and useful; an invented range is neither.
+
 Anchor every quality claim on the deterministic metrics already in the spine —
 `score.deductions`, `friction`, `derived.repeatOf`, `interruptions`, `signals`,
 per-turn `tokens`. The `verdict` should explain the computed score, not compete
-with it.
-A prompt that drew three interruptions and 400k tokens is measurably bad; a
-prompt that merely *reads* as vague is a guess. Cite turn numbers. Where the
-metrics say nothing, say nothing rather than inventing a critique.
+with it. A prompt that drew three interruptions and 400k tokens is measurably
+bad; a prompt that merely *reads* as vague is a guess. Where the metrics say
+nothing, say nothing rather than inventing a critique.
 
 For `compactInstruction`, write what a summariser needs in order to continue the
 work: subsystems touched, decisions made and why, unresolved threads. Name things
 concretely. Explicitly say what to drop.
 
-### 3b. The graph field — optional, and separate from what was measured
+### 4b. The graph field — optional, and separate from what was measured
 
 The page already draws a graph from the spine alone: harness, repo, models, tools,
 MCP servers, skills, packages, slash commands, permission modes, friction kinds,
@@ -107,36 +151,82 @@ every panel reading "Written by the model. Not measured.", and one toggle hides 
 whole layer so a reader can look at the residue.
 
 - `id` — required, `^[a-z0-9][a-z0-9_-]{0,63}$`. Namespaced to `concept:<id>` on the
-  way in, so it can never collide with or impersonate a measured node.
+  way in, so it can never collide with or impersonate a measured node. It is also
+  the merge key: the same id in a later run of this session updates that concept
+  rather than adding a second one.
 - `label` — required, truncated at 60 chars.
 - `group` — one of `decision | defect | guard | thread | subsystem | question`.
-  Anything else falls back to `concept` and is counted in the dropped report.
+  Anything else is left unset by the store and falls back at render time, counted
+  in the dropped report.
 - `anchors` — ids of **derived** nodes (`tool:Edit`, `mcp:railway`, `turn:23`).
   This is the only way the authored layer touches the skeleton. Unknown ids are
   dropped and counted, never invented.
-- Caps: 60 concepts, 120 relations. Overflow is dropped and reported on the page.
+- Caps: 60 concepts and 120 relations reach the page; the store holds more and
+  says so. Overflow is reported on the page.
 
 Everything dropped is stated under the graph with a count and a reason. Do not
 try to work around a cap — the report is what makes the picture trustworthy.
 
-### 4. Render and open
+### 5. Merge it in
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/intent.mjs --spine /tmp/qpact-spine.json \
+  --merge <the fragment path from step 3>
+```
+
+It prints what was added, what was updated, what was **carried** untouched, and
+two paths: the store, and a `render` file for this session. **Use that render
+path in step 6.** It carries the session id in its name, which is the whole
+repair here: `/qpact` used to write one fixed path, so analysing a second session
+silently overwrote the first session's file and the next render described the
+wrong work.
+
+Every collision is named and nothing is written on a refusal:
+
+- `session-mismatch` — the fragment declares a different session than the spine.
+  Re-derive for this session, or pass `--session <id>` to file it deliberately.
+- `store-unreadable` — the store will not parse. It is left exactly as it is;
+  move the named file aside and the next run starts a new one. It is not read as
+  empty, because an empty read would report no prior intent and then write over
+  conclusions still on disk.
+- `project-mismatch` — the store was written for a different repository.
+
+### 6. Render and open
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/scripts/render.mjs /tmp/qpact-spine.json \
-  --intent /tmp/qpact-intent.json --open
+  --intent <the render path from step 5> --open
 ```
 
 Prints the path and opens a real window. The `/compact` line sits at the top with
 a Copy button.
 
-### 5. Offer it to the console — only if the user already switched that on
+### 6b. What the page shows, and what it does not
+
+Say this accurately or not at all.
+
+- The document's top-level fields hold **only this session's conclusions**. The
+  page therefore attributes nothing to this session that this session did not
+  produce.
+- Earlier sessions travel in a separate `prior` field, and **the renderer does
+  not draw it yet**. Do not tell the user the page shows carried-forward
+  context — it does not. The store carries it; the page does not show it.
+- Every conclusion in the document records the session it came from, the turns
+  cited for it, when it was first drawn and when it was last restated, plus how
+  many sessions back that is.
+- **Age is not confidence.** Nothing re-checks whether an older conclusion still
+  holds; a decision recorded four sessions ago may have been reversed since and
+  the store cannot see that. If you mention carried-forward material in chat, say
+  how old it is and say that it has not been re-checked.
+
+### 7. Offer it to the console — only if the user already switched that on
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --ship \
-  --spine /tmp/qpact-spine.json --report <the path step 4 printed>
+  --spine /tmp/qpact-spine.json --report <the path step 6 printed>
 ```
 
-Run this every time, after step 4 and never before it. It is a no-op when cloud
+Run this every time, after step 6 and never before it. It is a no-op when cloud
 shipping is off, and it prints one line either way — where the report went, or
 that the report stayed on this machine. Pass through what it printed; do not
 summarise it away.
@@ -167,13 +257,29 @@ their behalf is the exact failure this design exists to prevent.
 `--off` turns it back off, effective on the next run. `push.mjs` with no arguments
 says which it currently is and does nothing else.
 
-### 6. Close out
+### 8. Close out
 
 One line: the file path, and that the `/compact` line is copyable from the top of
 the page. Do not paste the instruction into chat as well — it belongs in the
 window, and repeating it defeats the purpose.
 
-If step 5 shipped, add where it went. If step 5 did not ship for any reason other
+If this was a re-run of a session already in the store, add one clause saying what
+was reused rather than re-derived — step 5 printed the counts.
+
+If step 7 shipped, add where it went. If step 7 did not ship for any reason other
 than the switch being off, say that too — it is one clause, and it is the
 difference between a user who knows and a user who thinks their report is in the
 console.
+
+## The store, in one paragraph
+
+`intent.mjs` keeps one file per repository under the session-viz config
+directory, holding every session of that project that has been analysed. It
+exists because the old flow re-derived everything on every run — paying twice for
+reasoning already on disk — and wrote it to one fixed path, where a different
+session's analysis silently replaced it. Re-running one session now merges;
+a different session is filed separately and carried forward as prior context;
+and every conclusion carries which session drew it and which turns it cited, so
+a conclusion from three sessions ago can never be presented as this session's
+work. `--where` prints the store and what it holds; `--emit` re-emits a render
+file without merging anything.

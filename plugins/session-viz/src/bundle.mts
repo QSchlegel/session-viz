@@ -124,6 +124,80 @@ export const redactionLimit = (session: { redactedPrompts?: boolean }): string =
   )
 }
 
+/** The parts of a spine the path sentence is derived from. Wider than `Session`
+ *  on purpose: an older reading has neither field, and this has to be able to
+ *  say so rather than crash or guess. */
+export interface PathSource {
+  recordedPaths?: boolean
+  turns?: { files?: { path: string; count: number }[] }[]
+  artifacts?: { fileTouches?: number }
+}
+
+// Counted the way every other member of this package counts, which is DISTINCT
+// paths after the guard, not entries. A file touched by two turns is two entries
+// and one path; summing entries gave LIMITS.txt -- the member a reader is told to
+// open first -- a number that summary.md and artifacts.csv both disagreed with.
+const pathsPresent = (session: PathSource): number =>
+  new Set((session.turns ?? []).flatMap((t) => t.files ?? []).map((f) => safePath(f.path))).size
+
+/**
+ * What this package can say about file paths, which -- like redaction -- depends
+ * on how the EXTRACTOR was invoked and not on anything this file can see.
+ *
+ * This list used to state flatly that no file path was recorded as data. That
+ * was true when it was written and stopped being true the day the spine started
+ * keeping them, and a package that reassures a reader about what it does not
+ * contain, over the top of a list of the files somebody's session touched, is
+ * the worst defect this format can ship. So the sentence is derived from the
+ * reading, in all four states it can actually be in: recorded, refused,
+ * unknown-and-empty, and unknown-but-visibly-present.
+ *
+ * The last of those is why this counts rather than trusting the flag alone.
+ * "Unknown" is the honest answer when the field is missing AND there is nothing
+ * to see; printed above forty paths it would be its own kind of lie.
+ */
+export const pathLimit = (session: PathSource): string => {
+  const shown = pathsPresent(session)
+  if (session.recordedPaths === true)
+    return (
+      'FILE PATHS ARE RECORDED. Each turn below carries the files named by the file-path ' +
+      'input of its tool calls, under `files`, with a count of how many calls named each ' +
+      'one. A path is stored relative to the working directory the session ran in -- a file ' +
+      'outside it reads `../`, and one this package could not make relative is withheld ' +
+      'whole rather than trimmed. Three things this is not. A file named only inside a shell ' +
+      'command is not here: nothing reads paths out of command text, so a session that did ' +
+      'its work through the shell can show few files or none. A touch is a tool call naming ' +
+      'the file, so it does not say whether the file was read or written, or that anything ' +
+      'in it changed. And tool calls made before the first human turn belong to no turn, and ' +
+      'are counted in the file-touch total while appearing against no turn -- so that total ' +
+      'is not a sum of what is listed. One further caution: a relative path cannot carry a ' +
+      'home directory, but it can still carry a person\'s name where the name is part of a ' +
+      'FILENAME rather than of the route to it. Nothing removes that, because no rule that ' +
+      'finds it leaves an ordinary file called users-list.ts alone.'
+    )
+  if (session.recordedPaths === false)
+    return (
+      'FILE PATHS WERE NOT RECORDED. This reading was extracted with --no-paths, so the ' +
+      'file-touch count says THAT a file was touched and nothing here says which. Prompt ' +
+      'text is the exception and is not a field: it holds whatever the person typed, which ' +
+      'routinely includes paths and sometimes whole diffs.'
+    )
+  if (shown > 0)
+    return (
+      `WHETHER FILE PATHS WERE RECORDED IS UNKNOWN, BUT ${shown} DISTINCT PATH(S) ARE HERE. This reading ` +
+      'predates the field that records it, so nothing states whether paths were kept -- and ' +
+      'the turns below carry them anyway. Read them as present but not as complete: there ' +
+      'is no way from here to tell whether every file this session touched is among them.'
+    )
+  return (
+    'WHETHER FILE PATHS WERE RECORDED IS UNKNOWN. This reading predates the field that ' +
+    'records it, and no turn carries one. That is what a reading with paths turned off ' +
+    'looks like and also what a reading from before paths existed looks like, and nothing ' +
+    'here distinguishes them. Do not read the absence as evidence that no file was touched ' +
+    '-- the file-touch count above is the number of tool calls that named one.'
+  )
+}
+
 /** The limits that are properties of this format, in every package. */
 export const LIMITS: readonly string[] = [
   'Prompt text is truncated. Each turn stores at most the first few thousand characters; ' +
@@ -132,20 +206,22 @@ export const LIMITS: readonly string[] = [
 
   'This package additionally rewrites home-directory paths and email-shaped strings in ' +
     'every field before writing them, so prompt text here can differ from the page it was ' +
-    'generated from. The page is the unrewritten form.',
+    'generated from. The page is the unrewritten form. Prompt text is also where a path ' +
+    'arrives that no field of this reading holds: it is whatever the person typed, which ' +
+    'routinely includes absolute paths and sometimes whole diffs, and home directories in ' +
+    'it are rewritten to ~ but nothing else is.',
 
   'No file contents are recorded. Not what the agent read, not what it wrote, not a diff, ' +
     'not a line count. Nothing here can show what changed in the codebase.',
 
-  // Was flatly "no file paths are recorded", which the same package then
-  // contradicted: prompt text is whatever somebody typed, and people type paths.
-  // Two true sentences beat one absolute one that a reader can disprove by
-  // scrolling.
-  'No file path is recorded AS DATA. The reading counts THAT a file was touched, and keeps the ' +
-    'extension and the name of a recognised stack file such as package.json. WHICH file ' +
-    'was touched is not captured by any tool-call field. Prompt text is the exception and ' +
-    'is not a field: it holds whatever the person typed, which routinely includes paths and ' +
-    'sometimes whole diffs, and home directories in it are rewritten to ~ but nothing else is.',
+  // What used to stand here -- "No file path is recorded AS DATA. ... WHICH file
+  // was touched is not captured by any tool-call field" -- is now pathLimit(),
+  // because it stopped being a property of the format the day the spine started
+  // keeping paths. It depends on how the extractor was invoked, exactly as
+  // redaction does, and a constant cannot tell the difference. The one part of
+  // it that is still true whatever the extractor did -- that prompt text carries
+  // paths of its own -- moved up into the rewriting limit above, where the rest
+  // of what this package does to prompt text already lives.
 
   // A branch name is evidence worth keeping, and it is also a place people put
   // their own names. Disclosed rather than mangled: withholding it would cost
@@ -425,6 +501,77 @@ function repoLabel(cwd: string | null): string | null {
 
 const baseName = (p: string): string => p.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || ''
 
+/** Still rooted somewhere on a disk after scrubbing: a leading slash, a drive
+ *  letter, a UNC share. `~` is not in this set -- it is the marker the scrub
+ *  leaves behind, and it names no account. */
+const STILL_ROOTED = /^\/|^[A-Za-z]:[\\/]|^\\\\/
+
+/**
+ * One recorded file path, as it is allowed to leave in a forwarded package.
+ *
+ * extract.mts stores paths relative to the session's working directory, which is
+ * the form that structurally cannot carry an account name. Its own fallback can
+ * still produce an absolute one -- a transcript that never said what directory
+ * it ran in has nothing to relativise against -- and this package is made to be
+ * forwarded to people who were not there.
+ *
+ * So the rule safeProject() already uses applies here too: what cannot be shown
+ * to be safe is withheld WHOLE. Trimming an absolute path to its tail would hand
+ * back a plausible-looking relative path that is not one, and a reader cannot
+ * tell the difference. A withheld path costs them a filename; a leaked one
+ * cannot be taken back.
+ *
+ * What it deliberately does NOT do is hunt for `Users` or `home` inside any
+ * relative path, the way safeProject() does inside a project key. There the
+ * whole string is a home path and the word can only be that; here it is an
+ * ordinary directory name -- `app/home/page/index.tsx` is a real file in a great
+ * many repositories, and withholding it would gut the feature to catch a shape
+ * the extractor cancels. Fail closed on what is genuinely ambiguous, not on
+ * every file called home.
+ *
+ * One relative shape IS genuinely ambiguous and is withheld: a path that CLIMBS
+ * out of the working directory and then descends through a `Users` or `home`
+ * segment. `../../../../System/Volumes/Data/Users/<name>/.zshrc` is what macOS
+ * resolves a home file to, relativised -- relative, and therefore looking safe,
+ * with the account name in the middle of it. extract.mts no longer emits that,
+ * but a spine written by an older reading of the same transcript does, and this
+ * package is the layer that is forwarded. A file INSIDE the tree cannot take
+ * this shape, so `app/home/page` never reaches the rule.
+ */
+function safePath(p: string): string {
+  const s = p
+    .replace(PATH_HOME_HEAD, '~')
+    .replace(PATH_HOME_HEAD_WIN, '~')
+    .replace(HOME_DASH, '«path-withheld»')
+    .replace(EMAIL, '«redacted-email»')
+  return !s || STILL_ROOTED.test(s) || CLIMBS_INTO_HOME.test(s) ? '«path-withheld»' : s
+}
+
+/** A `..` climb that lands on somebody's home root. Anchored at the start,
+ *  because only a leading climb leaves the tree; `src/../home/page` is still
+ *  inside it. */
+const CLIMBS_INTO_HOME = /^(?:\.\.[\\/])+(?:.*[\\/])?(?:Users|home)[\\/][^\\/]/i
+
+// The home-root rewrite, ANCHORED, and the reason safePath does not simply call
+// scrub().
+//
+// scrub() is written for prose, where `/home/jane/notes` can only be a home
+// directory. A recorded path is not prose. It is relative, and `app/home/page`
+// is an ordinary directory in a great many repositories -- the prose rule finds
+// `/home/page` in the middle of it and hands back `app~`, quietly renaming a
+// file that was never anybody's home. Anchoring is safe here only because it is
+// not the whole guard: a home root reached through a mount point sits in the
+// MIDDLE of the path, and those arrive absolute and are withheld whole by
+// STILL_ROOTED, or climbing and withheld whole by CLIMBS_INTO_HOME.
+const PATH_HOME_HEAD = /^\/(?:Users|home)\/[^/]+/
+const PATH_HOME_HEAD_WIN = /^[A-Za-z]:[\\/]Users[\\/][^\\/]+/
+
+/** The turn's files, ordered as the spine ordered them, with each path passed
+ *  through the same guard. Tolerates a spine that predates the field: absent is
+ *  not empty, and the sentence that says which is pathLimit()'s job. */
+const safeFiles = (files: { path: string; count: number }[] | undefined): { path: string; count: number }[] =>
+  (files ?? []).map((f) => ({ path: safePath(f.path), count: f.count }))
+
 // ---------------------------------------------------------------- text shapes
 
 /** Deterministic key order. `Object.keys` on a Record follows insertion order,
@@ -481,10 +628,12 @@ function sessionJson(session: Session, generatedAt: string): string {
           transcriptPath: 'Not included. `source.transcriptFile` in manifest.json is the file name only.',
           workingDirectory: 'Not included. `repo` below is its last path segment.',
           fileContents: 'Never read by this tool.',
-          filePaths:
-            'Never recorded as data: no tool call in this reading names the file it touched, ' +
-            'only that one was. Prompt text is a separate matter -- it is whatever the person ' +
-            'typed, which routinely includes paths and sometimes whole diffs. See LIMITS.txt.',
+          // Derived, and deliberately still under `withheld` even when the answer
+          // is "not withheld at all". This is the key a reader looks up to find
+          // out whether paths are here; moving it when the answer changed would
+          // leave them looking at a block that no longer mentions the thing they
+          // came for, and reading its silence as a no.
+          filePaths: pathLimit(session),
         },
         session: {
           sessionId: session.sessionId,
@@ -511,7 +660,15 @@ function sessionJson(session: Session, generatedAt: string): string {
           },
           totals: session.totals,
           score: session.score,
-          turns: session.turns.map((t) => ({ ...t, text: scrub(t.text), origin: scrubDeep(t.origin) })),
+          turns: session.turns.map((t) => ({
+            ...t,
+            text: scrub(t.text),
+            origin: scrubDeep(t.origin),
+            // Named rather than left to the spread. `...t` would carry the paths
+            // through unguarded, and this is the one field in a turn that is a
+            // path by construction rather than by accident.
+            files: safeFiles(t.files),
+          })),
         },
       },
       null,
@@ -527,7 +684,7 @@ const TURN_COLUMNS = [
   'prompt_chars', 'prompt_chars_stored', 'terse', 'file_ref', 'code_block', 'url',
   'question', 'correction', 'acceptance_criteria', 'no_tool_calls', 'repeat_of',
   'clarification_roundtrip', 'followed_by_correction', 'friction', 'score',
-  'slash_commands', 'tools_by_name',
+  'slash_commands', 'tools_by_name', 'files_touched',
 ]
 
 const bit = (b: boolean): string => (b ? '1' : '0')
@@ -587,14 +744,30 @@ function turnsCsv(turns: SessionTurn[]): string {
           .map((x) => `${scrub(x.name)}x${x.count}`)
           .join(';')
       ),
+      // The per-turn attribution, in the member people actually sort and filter.
+      // An empty cell is three different facts -- no file, --no-paths, or a spine
+      // from before paths -- and only the limits list can tell them apart, which
+      // is why this column carries no wording of its own.
+      cell(
+        safeFiles(t.files)
+          .map((f) => `${f.path}x${f.count}`)
+          .join(';')
+      ),
     ])
   }
   return csv(rows)
 }
 
-/** The per-session aggregates, long-form so a pivot table can reach them. Every
- *  row here is session-scoped: there is no turn column because the spine has no
- *  turn to put in one, which is exactly what LIMITS says. */
+/**
+ * The per-session aggregates, long-form so a pivot table can reach them.
+ *
+ * Every row here is session-scoped. For packages, tools, skills and the rest
+ * that is all there is: the spine has no turn to put in a turn column. Files are
+ * the exception now — they ARE held per turn — so what this member carries is a
+ * roll-up across turns, and `turns.csv` is where the attribution lives. The
+ * scope column says `session` on a file row for that reason and not because the
+ * turn is unknown.
+ */
 function artifactsCsv(session: Session): string {
   const a = session.artifacts
   const rows = [['kind', 'name', 'count', 'scope']]
@@ -609,7 +782,28 @@ function artifactsCsv(session: Session): string {
   ]
   for (const [kind, map] of kinds)
     for (const [name, count] of sortedPairs(map)) rows.push([cell(kind), cell(name), num(count), 'session'])
-  rows.push([cell('file_touch'), cell('(path not recorded)'), num(a.fileTouches), 'session'])
+  // Rolled up here, and the roll-up can be smaller than the count below it: a
+  // tool call made before the first human turn is counted there and belongs to
+  // no turn, so it has no path row. The count row says so in its own name rather
+  // than letting a reader subtract the two and conclude something is missing.
+  const files: Record<string, number> = {}
+  for (const t of session.turns) for (const f of safeFiles(t.files)) files[f.path] = (files[f.path] ?? 0) + f.count
+  for (const [path, count] of Object.entries(files).sort(
+    (x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0)
+  ))
+    rows.push([cell('file'), cell(path), num(count), 'session'])
+  rows.push([
+    cell('file_touch'),
+    cell(
+      session.recordedPaths === true
+        ? '(tool calls that named a file — not a total of the file rows)'
+        : session.recordedPaths === false
+          ? '(path not recorded — extracted with --no-paths)'
+          : '(whether the paths were recorded is unknown — see LIMITS.txt)'
+    ),
+    num(a.fileTouches),
+    'session',
+  ])
   return csv(rows)
 }
 
@@ -644,11 +838,36 @@ function limitsTxt(limits: readonly string[]): string {
   return lines.join('\n')
 }
 
+/**
+ * The file-touch row of the summary table.
+ *
+ * "(count only)" sat in this label for as long as it was true of every reading.
+ * It is now a property of the reading rather than of the format, so it is
+ * derived — and in particular it never reads "count only" over a package that
+ * lists the paths two files down. The four states are pathLimit()'s four states;
+ * this is the one-line form of the same answer.
+ */
+function filesTouchedRow(session: Session): string {
+  const n = session.artifacts.fileTouches
+  const distinct = new Set(session.turns.flatMap((t) => t.files ?? []).map((f) => safePath(f.path))).size
+  if (session.recordedPaths === true)
+    return `${n} tool call(s) named a file; ${distinct} distinct path(s) recorded against turns`
+  if (session.recordedPaths === false) return `${n} (count only — extracted with --no-paths)`
+  if (distinct > 0)
+    return `${n} tool call(s) named a file; ${distinct} distinct path(s) are here, though the reading does not say whether paths were recorded`
+  return `${n} (no path is present, and whether any were recorded is unknown)`
+}
+
 function summaryMd(
   session: Session,
   intent: BundleIntent | null,
   generatedAt: string,
-  meta: BundleMeta & { version: string; command: string }
+  meta: BundleMeta & { version: string; command: string },
+  // Handed in rather than read off the constant. This file said "Repeated in
+  // full from LIMITS.txt" under a list that was missing the derived sentences --
+  // so the one member most people actually read was the one member that did not
+  // carry the two limits that depend on how the extractor was invoked.
+  limits: readonly string[]
 ): string {
   const t = session.totals
   const rows: [string, string][] = [
@@ -668,7 +887,7 @@ function summaryMd(
     ['Turns showing friction', `${t.frictionTurns} of ${t.humanTurns}`],
     ['Repeated prompts', String(t.repeats)],
     ['Corrections', String(t.corrections)],
-    ['Files touched (count only)', String(session.artifacts.fileTouches)],
+    ['Files touched', filesTouchedRow(session)],
     ['Input tokens', String(t.tokens.input)],
     ['Output tokens', String(t.tokens.output)],
     ['Cache read tokens', String(t.tokens.cacheRead)],
@@ -717,7 +936,7 @@ function summaryMd(
     '',
     'Repeated in full from `LIMITS.txt`, because this is the file people read.',
     '',
-    ...LIMITS.map((l, i) => `${i + 1}. ${l}`),
+    ...limits.map((l, i) => `${i + 1}. ${l}`),
     ''
   )
   return out.join('\n')
@@ -800,11 +1019,15 @@ export function buildBundle(session: Session, intent?: BundleIntent | null, meta
   // Derived once, here, and handed to every member that prints it, so LIMITS.txt,
   // manifest.json and the page cannot end up saying different things about the
   // same package.
-  const limits: readonly string[] = [redactionLimit(session), ...LIMITS]
+  // The two derived sentences lead, in the order the reader needs them: what
+  // happened to the words they typed, then what is here about the files they
+  // touched. Both depend on how the extractor was invoked and neither can be a
+  // constant.
+  const limits: readonly string[] = [redactionLimit(session), pathLimit(session), ...LIMITS]
 
   const body: BundleMember[] = [
     member('LIMITS.txt', 'text/plain; charset=utf-8', limitsTxt(limits)),
-    member('summary.md', 'text/markdown; charset=utf-8', summaryMd(session, intent ?? null, generatedAt, { ...meta, version, command })),
+    member('summary.md', 'text/markdown; charset=utf-8', summaryMd(session, intent ?? null, generatedAt, { ...meta, version, command }, limits)),
     member('session.json', 'application/json', sessionJson(session, generatedAt)),
     member('turns.csv', 'text/csv; charset=utf-8', turnsCsv(session.turns)),
     member('artifacts.csv', 'text/csv; charset=utf-8', artifactsCsv(session)),

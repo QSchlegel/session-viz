@@ -13,6 +13,15 @@
 //
 //   1. Strips the machine-local parts nobody else can use. An absolute path
 //      becomes a repo name. Your username is not analysis, it is incidental.
+//      The spine also records, per turn, which files that turn touched —
+//      relative to the WORKING DIRECTORY the session ran in, which is not the
+//      same thing as the repository root and must not be described as it: a
+//      session started in `packages/api` anchors there, and a transcript that
+//      never said what directory it ran in has nothing to relativise against and
+//      keeps the path with its home root cut to `~`. Nothing built here reads a
+//      turn, so no payload carries one today; the picker and --review both COUNT
+//      them in the bytes rather than asserting that, because an assertion would
+//      outlive whoever widens the producer next.
 //   2. Refuses to send an item you have not reviewed. --share prints a summary
 //      of what is in the payload and requires --yes, so the first time anyone
 //      shares a session they see that prompt text is in it.
@@ -76,9 +85,22 @@ export function describe(payload) {
     const body = JSON.stringify(payload ?? null);
     const textFields = (body.match(/"text":/g) || []).length;
     const homePaths = (body.match(new RegExp(HOME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    // The spine now records WHICH file each turn touched, per turn, under a
+    // `path`. Nothing this command sends is built from a turn today -- the corpus
+    // digests and incidents are field lists, and neither names a file -- so this
+    // counts zero on every payload as it stands.
+    //
+    // Counted anyway, and counted out of the actual bytes rather than reasoned
+    // about, for the same reason textFields is: a promise about what a payload
+    // does not contain rots the moment somebody widens the producer, and nobody
+    // re-reads this comment when they do. A number read off the wire cannot rot.
+    // It over-counts rather than under-counts by design -- any `path` key answers
+    // it -- because being told there is more in the payload than there is costs a
+    // second look, and the other direction costs a leak.
+    const filePaths = (body.match(/"path":/g) || []).length;
     const keys = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? Object.keys(payload) : [];
-    return { bytes: body.length, textFields, homePaths, keys };
+    return { bytes: body.length, textFields, homePaths, filePaths, keys };
 }
 async function corpus() {
     const here = new URL('.', import.meta.url).pathname;
@@ -180,6 +202,7 @@ async function pickRows(m) {
         // the picker hands back a ref that already works.
         const ref = ambiguous ? String(p['cwd'] ?? p.name) : p.name;
         let bytes = 0, textFields = 0;
+        let filePaths = null;
         try {
             // projectPayload against the corpus already in hand, NOT payloadFor —
             // which rebuilds the corpus on every call. Sixty projects meant sixty
@@ -188,6 +211,7 @@ async function pickRows(m) {
             const d = describe(projectPayload(m, ref));
             bytes = d.bytes;
             textFields = d.textFields;
+            filePaths = d.filePaths;
         }
         catch { /* a project whose payload will not build is shown with zeros */ }
         // Already on every project as a per-harness session count. Shown because a
@@ -200,7 +224,7 @@ async function pickRows(m) {
         rows.push({
             ref, name: p.name, cwd: String(p['cwd'] ?? ''),
             sessions: Number(p.sessions || 0), turns: Number(p.turns || 0),
-            bytes, textFields, ambiguous, harnesses,
+            bytes, textFields, filePaths, ambiguous, harnesses,
         });
     }
     // Most prompt text first: the rows that most need a decision should be met
@@ -222,6 +246,19 @@ const HARNESS_LABEL = {
  *  is a syntax error that kills the whole page — and that has happened twice. */
 export function pickerPage(rows, nonce, shared) {
     const n = (x) => x.toLocaleString('en-GB');
+    // The reading on this machine now keeps the path of every file a turn touched.
+    // Nothing built below carries one today, and saying so as a promise would be a
+    // sentence that stays on the page long after somebody widens the producer. So
+    // the page reports the count it measured in the bytes it is about to offer,
+    // and admits the rows it could not measure instead of scoring them zero.
+    const measured = rows.filter((r) => typeof r.filePaths === 'number');
+    const unmeasured = rows.length - measured.length;
+    const filePathCount = measured.reduce((a, r) => a + r.filePaths, 0);
+    const pathNote = unmeasured
+        ? `${n(measured.length)} of ${n(rows.length)} payload(s) on this page were measured for that and ` +
+            `carry ${n(filePathCount)}; the other ${n(unmeasured)} were not measured, and are not being reported as zero.`
+        : `${n(filePathCount)} of the fields in the payloads on this page name one — counted in the bytes ` +
+            `themselves, not promised.`;
     return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Choose what to share — session-viz</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -308,7 +345,8 @@ Nothing is selected, and nothing is sent until you press the button.</p>
 <div class="warn"><b>Prompt text is the number to read.</b> It counts fields carrying what
 you literally typed. Absolute paths and your username are stripped before anything leaves
 — the paths below are shown because this page is served from your own machine and never
-leaves it.</div>
+leaves it.<br><b>Your local reading also records which files each turn touched</b>, relative
+to the working directory that session ran in. ${esc(pathNote)}</div>
 
 <div id="msg"></div>
 
@@ -339,6 +377,12 @@ ${brandFooter({
             `${n(rows.length)} projects · ${n(rows.reduce((a, r) => a + r.sessions, 0))} sessions counted on this machine`,
             shared.size ? `${n(shared.size)} already shared` : null,
             'absolute paths and your username are stripped before anything leaves',
+            // Counted, not claimed. The local reading records which files each turn
+            // touched; whether any of that reaches a payload is a question about the
+            // bytes, and this is the answer for the bytes on this page.
+            unmeasured
+                ? `${n(filePathCount)} field(s) naming a file, across the ${n(measured.length)} payload(s) that were measured`
+                : `${n(filePathCount)} field(s) naming a file, counted across every payload on this page`,
             'served on 127.0.0.1 — this page never leaves this machine',
         ],
     })}
@@ -664,6 +708,10 @@ if (isMain) {
             console.log(`  ${d.bytes.toLocaleString('en-GB')} bytes · sections: ${d.keys.join(', ')}`);
             console.log(`  ${d.textFields} field(s) carrying verbatim prompt text`);
             console.log(`  ${d.homePaths} absolute home path(s) — ${d.homePaths === 0 ? 'stripped' : 'STILL PRESENT, this is a bug'}`);
+            // Measured, not promised. The local reading records which files each turn
+            // touched; whether any of them reach a payload is a question about these
+            // bytes, and this is the answer for these bytes.
+            console.log(`  ${d.filePaths} field(s) naming a file this machine's sessions touched`);
             if (review >= 0) {
                 console.log('\n--- the literal payload ---');
                 await emitJson(payload);

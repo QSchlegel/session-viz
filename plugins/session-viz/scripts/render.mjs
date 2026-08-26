@@ -17,7 +17,15 @@ import { unlinkSync, readdirSync, statSync } from 'node:fs';
 import { jsonForScript } from './html.mjs';
 import { deriveGraph, mergeAuthored, layoutGraph } from './graph.mjs';
 import { brandCss, brandHeader, brandFooter } from './brand.mjs';
-import { buildBundle, bundleScript, BUNDLE_GLOBAL, DOWNLOAD_HOOK } from './bundle.mjs';
+import { buildBundle, bundleScript, BUNDLE_GLOBAL, DOWNLOAD_HOOK, pathLimit } from './bundle.mjs';
+/**
+ * The turns an intent cites, wherever the document put them.
+ *
+ * One function so the prompt, the appendix and the graph cannot disagree about
+ * which turns a thread named -- three readings of one field is how a page ends
+ * up attributing a file to a task its own drill-down does not mention.
+ */
+const citedTurns = (i) => (i?.turns ?? i?.provenance?.turns ?? []).filter((n) => Number.isInteger(n));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n));
 const fmtDur = (ms) => {
@@ -50,6 +58,13 @@ const KIND_DARK = {
     mode: '#a0a0a8', friction: '#d06a5a', turn: '#9a9aa4',
     decision: '#4ade80', defect: '#f87171', guard: '#fbbf24',
     thread: '#c084fc', subsystem: '#60a5fa', question: '#a8a29e', concept: '#a8a29e',
+    // The three kinds the authored layer gained when the intents became a
+    // structure. `intent` is the thread itself, `status` the hub its siblings
+    // share, `prior` the hub an earlier session's conclusions hang off. Same hue
+    // families as the rest, and -- like every other entry here -- colour within
+    // the layer only: the diamond is what says authored, and the ring is what
+    // says carried.
+    intent: '#f0a868', status: '#8b8b95', prior: '#8b8b95',
 };
 const KIND_LIGHT = {
     session: '#b45f1f', harness: '#2c7676', repo: '#b45f1f', model: '#2f6fae',
@@ -58,6 +73,7 @@ const KIND_LIGHT = {
     mode: '#63636f', friction: '#b8402f', turn: '#6b6b78',
     decision: '#15803d', defect: '#b91c1c', guard: '#92400e',
     thread: '#7c22ce', subsystem: '#1d4ed8', question: '#57534e', concept: '#57534e',
+    intent: '#a2521a', status: '#5b5b66', prior: '#5b5b66',
 };
 const KIND_FALLBACK = 'question';
 const kindVars = (m) => Object.entries(m).map(([k, v]) => `--k-${k}:${v};`).join('');
@@ -98,6 +114,11 @@ function css() {
   --edge:#877f73; --idx:#43413c; --chip:#f1eee8;
   --kg-bg:#f3f0ea; --kg-halo:#f3f0ea; --kg-ring:#f3f0ea; --kg-label:#26251f;
   --kg-edge:#8d8779; --kg-edge-au:#7c3aed; --alarm:#b3261e; --alarm-ink:#fff;
+  /* The ring around a conclusion carried in from an earlier session. Its own
+     token in all three blocks rather than a reuse of --kg-edge-au, because it
+     has to stay legible against every node fill the authored layer can take
+     and the edge colour is chosen against the canvas. */
+  --kg-carried:#7c3aed;
   /* The two layer stamps in the graph sidebar, which were written as rgba()
      literals in their own rules until this pass. Declared once rather than in
      each theme block: they are the same two colours in both today, and a token
@@ -111,6 +132,10 @@ function css() {
      buying a blur for them would cost a backdrop raster per sidebar render. */
   --stamp-derived:rgba(21,128,61,.12); --stamp-derived-line:rgba(21,128,61,.45);
   --stamp-authored:rgba(147,51,234,.12); --stamp-authored-line:rgba(147,51,234,.45);
+  /* The third stamp: a conclusion the store carried in from an earlier session.
+     Declared here with the other two, and amber rather than purple, because the
+     panel has to say "not this session" before it says anything else. */
+  --stamp-carried:rgba(180,110,15,.14); --stamp-carried-line:rgba(180,110,15,.5);
   /* The drifting field behind the page, mixed out of the palette this theme
      already declares so it follows the theme instead of being a second picture.
 
@@ -141,6 +166,7 @@ function css() {
   --edge:#7e7c8b; --idx:#cbc7bf; --chip:#2a2833;
   --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
   --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
+  --kg-carried:#c79ae0;
   /* Twice the light theme, and it can afford it: #16151a leaves the whole range
      above it, so a tint here lifts the background toward the text rather than
      away from it, and every foreground still clears AA at the brightest point
@@ -158,6 +184,7 @@ function css() {
   --edge:#7e7c8b; --idx:#cbc7bf; --chip:#2a2833;
   --kg-bg:#131218; --kg-halo:#131218; --kg-ring:#131218; --kg-label:#d8d6dc;
   --kg-edge:#6b6b76; --kg-edge-au:#b07acb; --alarm:#c02a20; --alarm-ink:#fff;
+  --kg-carried:#c79ae0;
   --aura-1:color-mix(in srgb,var(--accent) 13%,transparent);
   --aura-2:color-mix(in srgb,var(--k-subsystem) 10%,transparent);
   --aura-3:color-mix(in srgb,var(--k-decision) 10%,transparent);
@@ -240,6 +267,56 @@ button.copy.done{background:var(--ok)}
 .pill{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
   padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted);
   margin-left:8px;vertical-align:2px;font-weight:600}
+
+/* the drill-down on an unfinished thread.
+
+   Two controls and not one, on purpose. The button is the thing the reader
+   wants -- the prompt, in the clipboard, in one press -- and it needs script to
+   work. The disclosure beside it is the same text, selectable, and it works
+   with scripting off; the page's other copyable line has exactly this problem
+   and only ever had the button. */
+.drill{margin:9px 0 0}
+button.copy.sm{padding:5px 11px;font-size:12px}
+.fu{margin:8px 0 0}
+.fu summary{cursor:pointer;color:var(--muted);font-size:12.5px;width:fit-content}
+.fu pre{margin:9px 0 0;background:var(--chip);border:1px solid var(--line);border-radius:8px;
+  padding:12px 13px;font-family:var(--mono);font-size:12px;line-height:1.5;color:var(--ink);
+  white-space:pre-wrap;word-break:break-word;overflow-x:auto}
+.fu code{font-family:var(--mono);font-size:11.5px}
+.fu p{font-size:12px;margin:8px 0 0}
+
+/* the appendix.
+
+   No blur and no translucency anywhere in here: the task blocks and their rows
+   are counted by the data, and one backdrop raster per task on a session with
+   forty of them is forty rasters the compositor has to keep. Same reason .turn
+   is left out of the glass block. */
+.apx-how p{font-size:13.5px}
+.apx-how code{font-family:var(--mono);font-size:12.5px}
+.apx-quote{margin:0 0 12px;padding:11px 13px;border-left:3px solid var(--warn);
+  background:var(--chip);border-radius:0 8px 8px 0;font-size:13px;color:var(--ink)}
+.apx-tasks{margin:0;padding-left:19px;font-size:13.5px;color:var(--muted)}
+.apx-tasks li{margin:4px 0}
+.apx-tasks b{color:var(--ink);font-weight:600}
+.apx-task{margin:20px 0 0}
+.apx-task h3{margin:0 0 3px;font-size:15px;font-weight:600}
+.apx-cite{margin:0 0 8px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.apx-warn{color:var(--warn)}
+.apx-say{margin:0;font-size:13.5px;color:var(--muted)}
+/* Wide tables scroll inside their own box. A page whose body scrolls sideways
+   because one path was long is a page that is broken on a phone. */
+.apx-scroll{overflow-x:auto;border:1px solid var(--edge);border-radius:9px;background:var(--panel)}
+table.apx{border-collapse:collapse;width:100%;font-size:13px;min-width:420px}
+table.apx th{text-align:left;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--dim);font-weight:640;padding:8px 12px;border-bottom:1px solid var(--line)}
+table.apx td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--muted)}
+table.apx tr:last-child td{border-bottom:0}
+table.apx td code{font-family:var(--mono);font-size:12px;color:var(--ink);word-break:break-all}
+table.apx .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+/* A file under two tasks is the row the reader is most likely to misread, so it
+   is marked in the table as well as spelled out in the cell. */
+table.apx tr.apx-shared td{border-left:3px solid var(--warn)}
+table.apx tr.apx-shared td:not(:first-child){border-left:0}
 
 /* turns */
 .filters{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px}
@@ -352,6 +429,14 @@ footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono)
 .gn .gs{fill:var(--kc,var(--k-question));stroke:var(--kg-ring);stroke-width:calc(1.5px / var(--kgz,1))}
 .gn.authored .gs{stroke:var(--kg-label);stroke-width:calc(1.2px / var(--kgz,1));
   stroke-dasharray:calc(3px / var(--kgz,1)) calc(2px / var(--kgz,1))}
+/* The carried ring. An outline and not a fill, so the node keeps its kind
+   colour and the ring is legible on top of any of them; and a second SHAPE
+   rather than a second colour, so it survives greyscale exactly as the diamond
+   does. Non-interactive, or hovering the gap between ring and node would
+   count as leaving the node. */
+.gn .gring{fill:none;stroke:var(--kg-carried);stroke-width:calc(1.4px / var(--kgz,1));
+  pointer-events:none}
+.gk.gcar{background:none;border:1.5px solid var(--kg-carried)}
 .gn text{font-size:calc(9.5px / var(--kgz,1));fill:var(--kg-label);text-anchor:middle;
   paint-order:stroke;stroke:var(--kg-halo);stroke-width:calc(3px / var(--kgz,1));
   stroke-linejoin:round;pointer-events:none}
@@ -371,6 +456,10 @@ ${kindRules()}
 .gstamp{display:block;padding:5px 8px;border-radius:5px;font-size:11.5px;margin:0 0 9px}
 .gstamp.derived{background:var(--stamp-derived);border:1px solid var(--stamp-derived-line)}
 .gstamp.authored{background:var(--stamp-authored);border:1px solid var(--stamp-authored-line)}
+.gstamp.carried{background:var(--stamp-carried);border:1px solid var(--stamp-carried-line)}
+.gstat{margin:0 0 7px;font-size:12px;color:var(--muted)}
+.gstale{margin:8px 0 0;font-size:11.5px;color:var(--dim);border-left:2px solid var(--line);padding-left:9px}
+.gcarry{margin:0 0 6px;font-size:12.5px}
 .gfoot{margin:12px 0 0;font-size:12.5px}
 .glbl{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
   font-weight:640;margin:12px 0 5px}
@@ -511,16 +600,412 @@ body::after{
 
 `;
 }
-function renderIntents(intent) {
+// ------------------------------------------------- unfinished threads
+//
+// A done thread has nothing to drill into, so it gets no drill-down. That is
+// the whole rule, and it is the rule because the alternative -- a button on
+// every thread -- makes the button mean "here is a thread" instead of "here is
+// a thread that did not finish", which is the only reason to have one.
+//
+// `partial` is deliberately NOT in here. It is a thread the analysis says
+// landed in part, and "what is left" is a question about the part that did not
+// land, which the record does not separate. Two states can be asked about
+// honestly -- abandoned and ongoing -- and those are the two.
+const UNFINISHED = new Set(['abandoned', 'ongoing']);
+const unfinished = (i) => UNFINISHED.has(String(i.status || ''));
+/** Slugged from the title, because a reader typing `--followup` at a terminal
+ *  has the title in front of them and not an index. Collisions fall back to the
+ *  index, which is always unique and never ambiguous. */
+const threadSlug = (title) => String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+const pathsPresent = (session) => session.turns.reduce((n, t) => n + (t.files?.length ?? 0), 0);
+const pathState = (session) => {
+    if (session.recordedPaths === true)
+        return 'recorded';
+    if (session.recordedPaths === false)
+        return 'refused';
+    return pathsPresent(session) > 0 ? 'unknown-present' : 'unknown-empty';
+};
+/**
+ * How many files one task lists before the rest are counted instead.
+ *
+ * A thread citing forty turns of a busy session can name several hundred paths,
+ * and neither a prompt somebody pastes into a chat nor a table somebody reads
+ * survives that. Truncated, never silently: the remainder is printed as a count
+ * of files AND of tool calls, so the number at the bottom of the list is the
+ * number the reader would have got by adding the rows up.
+ */
+const MAX_FILES_LISTED = 40;
+/**
+ * Tie each task to the files its cited turns touched.
+ *
+ * The join is turn index and nothing else. A task "produced" a file only in the
+ * sense that a turn somebody attributed to that task made a tool call naming
+ * the path -- which is the strongest thing the spine supports and a good deal
+ * weaker than it will look in a table. Every caller of this prints that caveat;
+ * the `alsoIn` field exists so the sharpest case, one file under two tasks, is
+ * on the row rather than in the small print.
+ */
+function attribute(session, items) {
+    const byIndex = new Map(session.turns.map((t) => [t.index, t]));
+    const raw = items.map((it) => {
+        const cited = citedTurns(it);
+        const counts = new Map();
+        const missing = [];
+        let quiet = 0;
+        for (const n of cited) {
+            const turn = byIndex.get(n);
+            if (!turn) {
+                missing.push(n);
+                continue;
+            }
+            const files = turn.files;
+            if (!files || !files.length) {
+                quiet++;
+                continue;
+            }
+            for (const f of files)
+                counts.set(f.path, (counts.get(f.path) || 0) + (f.count || 0));
+        }
+        return { cited, counts, missing, quiet };
+    });
+    const owners = new Map();
+    raw.forEach((r, i) => {
+        for (const path of r.counts.keys())
+            owners.set(path, [...(owners.get(path) || []), i]);
+    });
+    return raw.map((r, i) => ({
+        cited: r.cited,
+        missing: r.missing,
+        quiet: r.quiet,
+        files: [...r.counts.entries()]
+            .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+            .map(([path, count]) => ({
+            path,
+            count,
+            alsoIn: (owners.get(path) || [])
+                .filter((j) => j !== i)
+                .map((j) => String(items[j]?.title ?? '')),
+        })),
+    }));
+}
+/** The files no task's cited turns reached. Not "files nothing produced" --
+ *  files no thread in the analysis claims, which is a hole in the analysis. */
+function unclaimed(session, attr) {
+    const claimed = new Set(attr.flatMap((a) => a.files.map((f) => f.path)));
+    const all = new Map();
+    for (const t of session.turns)
+        for (const f of t.files || [])
+            all.set(f.path, (all.get(f.path) || 0) + (f.count || 0));
+    let files = 0;
+    let touches = 0;
+    for (const [path, count] of all)
+        if (!claimed.has(path)) {
+            files++;
+            touches += count;
+        }
+    return { files, touches };
+}
+const wrap = (s, indent = '  ', width = 76) => {
+    const out = [];
+    let line = '';
+    for (const word of String(s).split(/\s+/).filter(Boolean)) {
+        if (line && (line + ' ' + word).length > width) {
+            out.push(indent + line);
+            line = word;
+        }
+        else
+            line = line ? `${line} ${word}` : word;
+    }
+    if (line)
+        out.push(indent + line);
+    return out.join('\n');
+};
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/**
+ * The follow-up prompt for ONE unfinished thread.
+ *
+ * Built here, once, and handed to both the page's button and the CLI's
+ * `--followup`, so the two cannot say different things about the same thread.
+ * test/followup.mjs compares the page's copy of this text against the CLI's
+ * byte for byte, which is the only check that keeps that true as either side
+ * changes.
+ *
+ * Every sentence in it is derived from the spine or from the analysis, and the
+ * sections that have nothing to report SAY they have nothing rather than being
+ * dropped -- a prompt whose file list is quietly absent invites the reader to
+ * conclude the thread touched nothing.
+ */
+/**
+ * @param intentSession the session the INTENT document says it describes, or
+ *   null when it did not say. The page raises a banner when that disagrees with
+ *   the spine, and the CLI warns on stderr — but this prompt is the one surface
+ *   built to be copied into another model's context, and neither the banner nor
+ *   the warning travels with the text once it is on a clipboard. So the
+ *   disagreement is stated INSIDE the prompt, and the citations that depend on
+ *   the two agreeing are withheld rather than printed under the wrong session's
+ *   name.
+ */
+function followupPrompt(session, items, attr, i, intentSession) {
+    const it = items[i];
+    const a = attr[i];
+    const status = String(it.status || 'ongoing');
+    const sid = String(session.sessionId || 'this session');
+    // Both must be known before they can disagree. A document that named no
+    // session has not contradicted anything, and treating silence as a mismatch
+    // would put a warning on every hand-written intent file.
+    const other = intentSession && session.sessionId && intentSession !== session.sessionId ? String(intentSession) : null;
+    const L = [];
+    if (other) {
+        L.push('READ THIS FIRST: the two documents this prompt was built from describe DIFFERENT SESSIONS.');
+        L.push(wrap(`The conclusion below was written about session ${other.slice(0, 8)}. The transcript it was ` +
+            `rendered against is session ${sid.slice(0, 8)}. Nothing here has checked whether the thread ` +
+            'survived into that second session, and the turn numbers the analysis cited index the first ' +
+            'one, so they are not printed against the second. Treat everything below as a conclusion ' +
+            'about a session you are not looking at.'));
+        L.push('');
+    }
+    else
+        L.push(`Follow-up on one unfinished thread from session ${sid.slice(0, 8)}, as /qpact read it.`);
+    L.push('');
+    L.push('THREAD');
+    L.push(wrap(String(it.title || 'untitled')));
+    L.push(`  Status: ${status} — ${status === 'abandoned'
+        ? 'the analysis marked this thread dropped before it finished.'
+        : status === 'ongoing'
+            ? 'the analysis marked this thread still open at the end of the session.'
+            : 'the analysis gave it this status.'}`);
+    if (other)
+        L.push(`  Turns cited: ${a.cited.length ? `${a.cited.join(', ')} — of session ${other.slice(0, 8)}, not of the spine this was rendered against.` : 'none.'}`);
+    else {
+        L.push(a.cited.length
+            ? `  Turns cited: ${a.cited.join(', ')}`
+            : '  Turns cited: none. The analysis attributed no turn to this thread, so nothing below can be tied to it.');
+        if (a.missing.length)
+            L.push(`  Of those, ${plural(a.missing.length, 'turn')} (${a.missing.join(', ')}) is not in the spine at all.`);
+    }
+    L.push('');
+    L.push('WHAT THE ANALYSIS CONCLUDED');
+    L.push(it.summary ? wrap(String(it.summary)) : '  It wrote no summary for this thread.');
+    L.push('');
+    L.push('FILES THE CITED TURNS TOUCHED');
+    const state = pathState(session);
+    if (other)
+        // The files are real and they are the WRONG session's. Attribution runs the
+        // intent's turn numbers against the spine's turn list, so a mismatch indexes
+        // one session's conclusions into another session's transcript and produces a
+        // file list that is confidently, silently about something else. Printing it
+        // under this thread's name is the constructed provenance failure; withholding
+        // it costs a list nobody could have relied on.
+        L.push(wrap(`The turn numbers cited here belong to session ${other.slice(0, 8)}, and the spine holds ` +
+            `session ${sid.slice(0, 8)}. Reading one against the other would attribute this thread to ` +
+            'whatever happened to occupy those turn numbers in a different session, so no file is ' +
+            'listed. Render this thread against the spine of its own session to get one.'));
+    else if (state === 'refused')
+        L.push(wrap('This reading was extracted with --no-paths, so the spine records that a file was ' +
+            'touched and never which one. Nothing can be attributed to this thread. That is a ' +
+            'property of how the reading was taken, not a finding that nothing was changed.'));
+    else if (state === 'unknown-empty')
+        L.push(wrap('This spine predates the field that records which files a turn touched, so nothing ' +
+            'in it can say. Not a finding that nothing was changed — the reading simply cannot ' +
+            'answer the question.'));
+    else if (!a.cited.length)
+        L.push(wrap('No turn was cited for this thread, so no file can be attributed to it.'));
+    else if (!a.files.length)
+        // Counted against the turns the spine actually HOLDS, not against the
+        // citations. A turn the spine does not hold made no tool call as far as
+        // this reading is concerned, and saying it named no file would be a claim
+        // about a turn nothing here has read.
+        L.push(wrap(a.cited.length - a.missing.length === 0
+            ? 'None of the turns cited for this thread is in the spine, so nothing can be attributed to it.'
+            : `None. ${plural(a.cited.length - a.missing.length, 'cited turn')} ${a.cited.length - a.missing.length === 1 ? 'is' : 'are'} in the spine and not one of them made a tool call naming a file. A turn that did its ` +
+                'work through a shell command shows up exactly like this, because nothing reads paths ' +
+                'out of command text.'));
+    else {
+        const shown = a.files.slice(0, MAX_FILES_LISTED);
+        const rest = a.files.slice(MAX_FILES_LISTED);
+        const w = Math.min(52, Math.max(...shown.map((f) => f.path.length)));
+        for (const f of shown)
+            L.push(`  ${f.path.padEnd(w)}  ${String(f.count).padStart(4)} tool ${f.count === 1 ? 'call' : 'calls'}` +
+                (f.alsoIn.length ? `   also under: ${f.alsoIn.join('; ')}` : ''));
+        if (rest.length)
+            L.push(`  ...and ${plural(rest.length, 'more file')}, not listed here, between them named by ` +
+                `${plural(rest.reduce((n, f) => n + f.count, 0), 'tool call')}.`);
+    }
+    if (!other && a.quiet)
+        L.push(`  (${plural(a.quiet, 'cited turn')} named no file at all.)`);
+    L.push('');
+    if (!other && (state === 'recorded' || state === 'unknown-present')) {
+        L.push('HOW MUCH THAT LIST IS WORTH');
+        const shared = a.files.filter((f) => f.alsoIn.length).length;
+        L.push(wrap('A file is on it because a turn cited for this thread made a tool call naming that ' +
+            'path. That is evidence the thread touched the file, not proof it changed it: a call ' +
+            'that only read the file counts the same as one that rewrote it, and the spine does ' +
+            'not record which tool named which path. A file named only inside a shell command is ' +
+            'not on the list at all.' +
+            (shared
+                ? ` ${plural(shared, 'file')} here ${shared === 1 ? 'is' : 'are'} also attributed to another thread and ` +
+                    `${shared === 1 ? 'belongs' : 'belong'} to neither exclusively.`
+                : '')));
+        if (state === 'unknown-present')
+            L.push(wrap('This spine also predates the flag that records whether paths were kept, so the ' +
+                'paths above are what happens to be in it rather than what it promises to hold.'));
+        L.push('');
+    }
+    L.push('WHAT IS NOT RECORDED');
+    L.push(wrap(`Nothing states what remains to be done. "${status}" is the status the analysis assigned ` +
+        'and the summary above is everything it wrote about this thread. Nothing in this record ' +
+        're-checks whether that is still the case.'));
+    L.push('');
+    L.push('WHAT I WANT FROM YOU');
+    L.push(wrap(other
+        ? `Find where this thread was worked on in session ${other.slice(0, 8)} — not in ` +
+            `${sid.slice(0, 8)}, whose turns are not the ones cited — then tell me where it actually ` +
+            'stands and what the next concrete step is. Where the record does not support an answer, ' +
+            'say so instead of filling the gap.'
+        : (a.cited.length
+            ? `Read ${a.cited.length === 1 ? 'turn' : 'turns'} ${a.cited.join(', ')} of that session, and the files above, `
+            : 'Find where this thread was worked on in that session, ') +
+            'then tell me where this thread actually stands and what the next concrete step is. ' +
+            'Where the record does not support an answer, say so instead of filling the gap.'));
+    return L.join('\n');
+}
+function renderIntents(session, intent) {
     if (!intent?.intents?.length)
         return '';
-    const items = intent.intents
-        .map((i) => `<div class="intent ${esc(i.status || 'ongoing')}">
+    const items = intent.intents;
+    const attr = attribute(session, items);
+    const items_html = items
+        .map((i, n) => {
+        const status = String(i.status || 'ongoing');
+        // The drill-down is the whole of what separates an unfinished thread from
+        // a finished one on this page, so it is gated on the status and on
+        // nothing else. A `done` thread has no open question to ask about, and a
+        // button offering to ask one anyway would be a button that lies about
+        // what it knows.
+        const drill = unfinished(i)
+            ? `
+  <div class="drill">
+    <button class="copy sm" type="button" data-copy="fu${n}" data-done="Prompt copied">Copy a follow-up prompt</button>
+    <details class="fu">
+      <summary>Read it first</summary>
+      <pre id="fu${n}">${esc(followupPrompt(session, items, attr, n, intent?.sessionId ? String(intent.sessionId) : null))}</pre>
+      <p class="dim">Same text from a terminal, for anyone not looking at this page:<br>
+        <code>render.mjs &lt;spine.json&gt; --intent &lt;intent.json&gt; --followup ${esc(threadSlug(String(i.title || '')) || String(n))}</code></p>
+    </details>
+  </div>`
+            : '';
+        return `<div class="intent ${esc(status)}">
   <h3>${esc(i.title)}<span class="pill">${esc(i.status || '')}</span></h3>
-  <p>${esc(i.summary || '')}</p>
-</div>`)
+  <p>${esc(i.summary || '')}</p>${drill}
+</div>`;
+    })
         .join('\n');
-    return `<h2>Intent breakdown</h2>\n${items}`;
+    const open = items.filter(unfinished).length;
+    // Printed whether or not there are any, because a line that appears only when
+    // the news is bad is a line nobody can read the absence of.
+    const lead = open
+        ? `<p class="dim" style="margin:0 0 14px">${plural(open, 'thread')} did not finish. Each one carries a follow-up prompt naming its own turns; a finished thread has nothing to drill into and gets none.</p>`
+        : `<p class="dim" style="margin:0 0 14px">No thread was left abandoned or ongoing, so nothing here carries a follow-up prompt.</p>`;
+    return `<h2>Intent breakdown</h2>\n${lead}\n${items_html}`;
+}
+// ------------------------------------------------- the appendix
+//
+// What each task actually produced, tied to the files its cited turns touched.
+//
+// This is the section on the page most able to lie, and it lies by looking like
+// a manifest. A row here means: a turn somebody attributed to this task made a
+// tool call naming this path. It does not mean the task changed the file, and
+// where the same path sits under two tasks it does not mean either of them owns
+// it. Both of those are stated above the tables and repeated on the rows that
+// are actually shared, because a caveat read once and a caveat read at the row
+// are not the same caveat.
+//
+// The second way it could lie is by being empty. A reading taken with
+// --no-paths and a reading older than the field both produce exactly no rows,
+// and no rows under a heading called "what each task produced" reads as "these
+// tasks produced nothing". So the four states bundle.mjs distinguishes are
+// distinguished here too, and in three of them the tables are replaced by the
+// package's own sentence about paths -- printed verbatim rather than
+// paraphrased, so the appendix and the evidence package cannot drift apart.
+function renderAppendix(session, intent) {
+    const items = intent?.intents ?? [];
+    const state = pathState(session);
+    const head = '<h2>Appendix — tasks and what they touched</h2>';
+    if (!items.length)
+        return `${head}
+<div class="card"><p style="margin:0">The analysis named no tasks, so there is nothing to attribute files to. ${state === 'recorded'
+            ? `The spine does record which files were touched: ${plural(pathsPresent(session), 'file entry', 'file entries')} across ${plural(session.turns.length, 'turn')}.`
+            : 'Whether the spine records which files were touched is a separate question, answered in the evidence package below.'}</p></div>`;
+    if (state !== 'recorded' && state !== 'unknown-present')
+        return `${head}
+<div class="card apx-none">
+  <p style="margin:0 0 10px"><strong>No file can be attributed to any task in this reading.</strong> ${items.length === 1 ? 'The one task below is' : `All ${items.length} tasks below are`} still here, with the turns cited for ${items.length === 1 ? 'it' : 'them'} — what is missing is the other half of the join, not the tasks.</p>
+  <p class="dim" style="margin:0 0 10px">Read this as a fact about the reading, never as a finding that nothing was changed. The evidence package states it in its own words:</p>
+  <p class="apx-quote">${esc(pathLimit(session))}</p>
+  <ul class="apx-tasks">${items
+            .map((i) => `<li><b>${esc(i.title)}</b> <span class="pill">${esc(i.status || '')}</span> — ${citedTurns(i).length ? `turns ${esc(citedTurns(i).join(', '))}` : 'no turns cited'}</li>`)
+            .join('')}</ul>
+</div>`;
+    const attr = attribute(session, items);
+    const rest = unclaimed(session, attr);
+    const sharedRows = attr.reduce((n, a) => n + a.files.filter((f) => f.alsoIn.length).length, 0);
+    const tables = items
+        .map((i, n) => {
+        const a = attr[n];
+        const cited = a.cited.length
+            ? `turns ${esc(a.cited.join(', '))}`
+            : '<span class="apx-warn">no turns cited</span>';
+        let body;
+        if (!a.cited.length)
+            body = `<p class="apx-say">The analysis attributed no turn to this task, so no file can be tied to it. That is a gap in the analysis, not a finding that the task touched nothing.</p>`;
+        else if (!a.files.length)
+            // Same refusal as the prompt's: the sentence counts the cited turns the
+            // spine HOLDS. "none of them made a tool call" over a citation the
+            // reading never saw is a claim about a turn nobody read.
+            body =
+                a.cited.length - a.missing.length === 0
+                    ? `<p class="apx-say">None of the turns cited for this task is in the spine, so nothing can be attributed to it.</p>`
+                    : `<p class="apx-say">${plural(a.cited.length - a.missing.length, 'cited turn')} ${a.cited.length - a.missing.length === 1 ? 'is' : 'are'} in the spine, and none of them made a tool call naming a file. Work done through a shell command looks exactly like this: nothing reads paths out of command text.</p>`;
+        else {
+            const rest = a.files.slice(MAX_FILES_LISTED);
+            body = `<div class="apx-scroll"><table class="apx">
+  <thead><tr><th>File</th><th class="num">Tool calls</th><th>Also attributed to</th></tr></thead>
+  <tbody>${a.files
+                .slice(0, MAX_FILES_LISTED)
+                .map((f) => `<tr${f.alsoIn.length ? ' class="apx-shared"' : ''}><td><code>${esc(f.path)}</code></td><td class="num">${f.count}</td><td>${f.alsoIn.length ? esc(f.alsoIn.join('; ')) : '<span class="dim">this task only, among the tasks named</span>'}</td></tr>`)
+                .join('')}${rest.length
+                ? `<tr><td class="dim">and ${plural(rest.length, 'more file')}, not listed</td><td class="num dim">${rest.reduce((n, f) => n + f.count, 0)}</td><td class="dim">the list is cut at ${MAX_FILES_LISTED}; the count beside it is theirs</td></tr>`
+                : ''}</tbody>
+</table></div>`;
+        }
+        const notes = [
+            a.missing.length
+                ? `${plural(a.missing.length, 'cited turn')} (${esc(a.missing.join(', '))}) is not in the spine at all.`
+                : '',
+            a.quiet ? `${plural(a.quiet, 'cited turn')} named no file.` : '',
+        ].filter(Boolean);
+        return `<div class="apx-task">
+  <h3>${esc(i.title)}<span class="pill">${esc(i.status || '')}</span></h3>
+  <p class="apx-cite">${cited}</p>
+  ${body}
+  ${notes.length ? `<p class="apx-say dim">${notes.map(esc).join(' ')}</p>` : ''}
+</div>`;
+    })
+        .join('\n');
+    return `${head}
+<div class="card apx-how">
+  <p style="margin:0"><strong>What a row here is, and what it is not.</strong> A file appears under a task because a turn the analysis cited for that task made a tool call naming that path. That is <em>evidence</em> the task touched the file. It is not proof it changed it: a call that only read the file counts the same as one that rewrote it, and the spine does not record which tool named which path.</p>
+  <p style="margin:10px 0 0">A file named only inside a shell command is not here at all, so a task that worked through <code>sed</code> or <code>git</code> can show few files or none. ${sharedRows
+        ? `${plural(sharedRows, 'row')} below ${sharedRows === 1 ? 'names a file that is' : 'name files that are'} attributed to more than one task; those belong to none of them exclusively, and nothing in the record divides them.`
+        : 'No file below is attributed to more than one task in this reading, which is a fact about these particular citations and not a property of the method.'}</p>
+  ${state === 'unknown-present'
+        ? `<p style="margin:10px 0 0" class="apx-warn">This spine predates the flag that records whether paths were kept. The paths below are what happens to be in it, not what it promises to hold.</p>`
+        : ''}
+  <p style="margin:10px 0 0" class="dim">${rest.files
+        ? `${plural(rest.files, 'file')} touched in this session ${rest.files === 1 ? 'is' : 'are'} claimed by no task above (${plural(rest.touches, 'tool call')}). Those turns went unattributed by the analysis; nothing here says they were unimportant.`
+        : 'Every file this session touched is claimed by at least one task above.'}</p>
+</div>
+${tables}`;
 }
 function renderQuality(intent) {
     const q = intent?.quality;
@@ -569,7 +1054,9 @@ function renderScore(session) {
 // Rendered unconditionally, whether or not the corresponding nodes exist. A
 // caveat that disappears when quiet is one nobody trusts on its return.
 const NOT_SAID = [
-    'No file appears here. The spine records that a file was touched, never which one.',
+    'No file appears here. This graph places no file node, so the count on the session node says how many tool calls named a file and never which one — the paths themselves, where the reading kept them, are attributed to tasks in the appendix below.',
+    'A thread is drawn beside the turns its author CITED, and beside nothing it did not cite. An uncited turn that in fact belonged to it is invisible here.',
+    'A status is what the analysis wrote down, not an outcome anything measured. Nothing has re-checked whether an unfinished thread is still unfinished.',
     'A package, CLI tool, stack file, extension or skill is attributed to the session, never to a turn.',
     'A repeat points at the first identical prompt, not at the previous one. It is a star, not a chain.',
     'A slash command attaches to the turn that was open when it was issued, which is the preceding human turn.',
@@ -588,7 +1075,24 @@ const elide = (s, max = 26) => s.length <= max ? s : `${s.slice(0, max - 11)}…
 const kindClass = (kind) => String(kind).replace(/[^a-z0-9_-]/gi, '').slice(0, 24);
 function renderGraph(session, intent) {
     const derived = deriveGraph(session);
-    const merged = mergeAuthored(derived, intent?.graph, session.turns.length);
+    // The intents and the carried layer are handed to the same merge as the
+    // concept bag, so the namespacing, the caps and the suppression report stay
+    // in one place. A second merge here would be a second set of rules for the
+    // separation this graph's whole honesty rests on.
+    // Normalised here, not in graph.mts: the citation can arrive on the item or
+    // inside its provenance, and the graph must draw the same turns the appendix
+    // attributes files from.
+    const cited = (list) => (list ?? []).map((i) => ({ ...i, turns: citedTurns(i) }));
+    const merged = mergeAuthored(derived, intent?.graph, session.turns.length, {
+        intents: cited(intent?.intents),
+        prior: (intent?.prior ?? []).map((p) => ({
+            session: p.sessionId,
+            sessionsAgo: p.sessionsAgo,
+            daysAgo: p.daysAgo ?? null,
+            intents: cited(p.intents),
+            graph: p.graph,
+        })),
+    });
     const { nodes, edges } = merged;
     if (!nodes.length)
         return '';
@@ -664,13 +1168,35 @@ function renderGraph(session, intent) {
         const body = n.layer === 'authored'
             ? `<polygon class="gs" points="${p.x},${p.y - r} ${p.x + r},${p.y} ${p.x},${p.y + r} ${p.x - r},${p.y}"/>`
             : `<circle class="gs" cx="${p.x}" cy="${p.y}" r="${r}"/>`;
+        // A conclusion carried in from an earlier session keeps the diamond -- the
+        // layer is still the layer -- and gains a ring around it. A second outline
+        // rather than a second colour, for the reason the diamond is a diamond: it
+        // is still there in greyscale and still there when the stylesheet does not
+        // load. The sidebar names the session and how far back it is; this is what
+        // makes it visible without hovering every node on the canvas.
+        const ring = n.carried
+            ? `<polygon class="gring" points="${p.x},${(p.y - r - 3.4).toFixed(1)} ${(p.x + r + 3.4).toFixed(1)},${p.y} ${p.x},${(p.y + r + 3.4).toFixed(1)} ${(p.x - r - 3.4).toFixed(1)},${p.y}"/>`
+            : '';
+        // The accessible name carries the two things the shape carries, because a
+        // screen reader gets neither the diamond nor the ring.
+        const aria = `${n.label}${n.status ? ` — ${n.status}` : ''}${n.carried
+            ? n.carried.sessionsAgo === null
+                ? ' — carried from an earlier session, not this one'
+                : ` — carried from a session ${n.carried.sessionsAgo} back, not this one`
+            : ''}`;
         // One <text> per node and the full name in <title>/aria-label. An elided
         // label extracted from the DOM is still recoverable; a label split across
         // several <tspan>s comes back concatenated and wrong.
-        return `<g class="gn ${n.layer} k-${kindClass(n.kind)}" data-id="${esc(n.id)}" data-t="${born(n.firstTurn)}"${hi(n) ? ' data-hi="1"' : ''} tabindex="0" role="img" aria-label="${esc(n.label)}"><title>${esc(n.label)}</title>${body}<text x="${p.x}" y="${labelY.get(n.id) ?? +(p.y + r + 11).toFixed(1)}">${esc(elide(n.label))}</text></g>`;
+        return `<g class="gn ${n.layer} k-${kindClass(n.kind)}${n.carried ? ' carried' : ''}${n.status ? ` st-${kindClass(n.status)}` : ''}" data-id="${esc(n.id)}" data-t="${born(n.firstTurn)}"${hi(n) ? ' data-hi="1"' : ''} tabindex="0" role="img" aria-label="${esc(aria)}"><title>${esc(aria)}</title>${ring}${body}<text x="${p.x}" y="${labelY.get(n.id) ?? +(p.y + r + 11).toFixed(1)}">${esc(elide(n.label))}</text></g>`;
     };
     const derivedCount = nodes.filter((n) => n.layer === 'derived').length;
-    const authoredCount = nodes.length - derivedCount;
+    const carriedNodes = nodes.filter((n) => n.carried);
+    const authoredCount = nodes.length - derivedCount - carriedNodes.length;
+    // Counted off the NODES that were actually drawn, not off the intent document
+    // -- the caps and the id rules can drop a thread, and a legend that counted
+    // the input would print a number the canvas does not contain.
+    const threadNodes = nodes.filter((n) => n.kind === 'intent' && !n.carried);
+    const openThreads = threadNodes.filter((n) => n.status === 'abandoned' || n.status === 'ongoing').length;
     const drops = [...derived.suppressed, ...merged.dropped];
     const suppressedHtml = drops.length
         ? `<ul class="gsup">${drops
@@ -679,10 +1205,17 @@ function renderGraph(session, intent) {
         : '<p class="dim">Nothing was suppressed: every node the rules produced is on the page.</p>';
     const payload = {
         w: W, h: H, maxTurn, turns: session.turns.length,
+        // Quoted, not paraphrased. intent.mts writes this sentence once so that a
+        // renderer cannot turn "this is old" into "this is probably still right";
+        // the sidebar prints whatever is in the document, and prints the store's
+        // own default only when the document carried none.
+        stale: String(intent?.staleness?.note || '').slice(0, 600) || null,
         nodes: nodes.map((n) => ({
             id: n.id, kind: n.kind, label: n.label, layer: n.layer,
             note: n.note || null, measured: n.measured || null, turns: n.turns || null, degree: n.degree,
             at: born(n.firstTurn),
+            status: n.status || null,
+            carried: n.carried ? { s: n.carried.session, ago: n.carried.sessionsAgo, days: n.carried.daysAgo } : null,
         })),
         edges: edges.map((e) => ({
             s: e.source, t: e.target, rel: e.rel || null, layer: e.layer, at: born(e.firstTurn),
@@ -710,10 +1243,16 @@ function renderGraph(session, intent) {
 <div class="gwrap">
   <div class="glegend">
     <span class="ghalf"><b>Measured from the transcript</b> <i class="gk gcirc"></i> ${derivedCount} nodes</span>
-    <span class="ghalf"><b>Written by the model</b> <i class="gk gdia"></i> ${authoredCount} nodes</span>
+    <span class="ghalf"><b>Written by the model, this session</b> <i class="gk gdia"></i> ${authoredCount} nodes</span>
+    ${carriedNodes.length
+        ? `<span class="ghalf"><b>Carried from an earlier session</b> <i class="gk gdia gcar"></i> ${carriedNodes.length} nodes</span>`
+        : ''}
+    ${threadNodes.length
+        ? `<span class="ghalf dim" title="A thread hangs off the turns its author cited, and off a hub shared with the other threads of its status.">${threadNodes.length} threads, ${openThreads} unfinished</span>`
+        : ''}
     ${loose}
     ${dense}
-    <button id="gtog" class="gbtn gpush" type="button">Hide the model's layer</button>
+    <button id="gtog" class="gbtn gpush" type="button">Hide everything the model wrote</button>
   </div>
   <div class="gcanvas" id="gcanvas" tabindex="0" aria-label="Knowledge graph canvas. Scroll to zoom, drag to pan, plus and minus to zoom, 0 to fit.">
     <svg viewBox="0 0 ${W} ${H}" id="qkg" aria-hidden="false">
@@ -739,6 +1278,16 @@ function renderGraph(session, intent) {
         : ''}
 </div>
 <div class="gfoot">
+  ${carriedNodes.length || (intent?.staleness?.priorOmitted ?? 0) > 0
+        ? `<div class="glbl">Carried from earlier sessions</div>
+  <p class="gcarry">${carriedNodes.length
+            ? `${esc(String(carriedNodes.length))} of the shapes above were written in an earlier session of this project, not in this one. They keep the model layer's diamond and gain a ring around it, they hang off a hub of their own rather than this session's status hubs, and none of them is placed on the replay timeline &mdash; an earlier session's turn 4 is a different turn 4, so their citations are printed as prose naming their own session. The one toggle above subtracts them along with everything else the model wrote.`
+            : 'Nothing from an earlier session is drawn on this canvas.'}${(intent?.staleness?.priorOmitted ?? 0) > 0
+            ? ` The store holds ${esc(String(intent.staleness.priorOmitted))} earlier ${intent.staleness.priorOmitted === 1 ? 'session' : 'sessions'} that this page does not carry.`
+            : ''}</p>
+  <p class="gcarry dim">${esc(intent?.staleness?.note ||
+            'Nothing has re-checked whether a conclusion from an earlier session still holds. Read the age as age, not as confidence.')}</p>`
+        : ''}
   <div class="glbl">What the gates dropped</div>
   ${suppressedHtml}
   <div class="glbl">What this picture cannot say</div>
@@ -1013,7 +1562,7 @@ ${brandHeader({
 ${compactLine
         ? `<div class="card compact"><div class="row">
   <code id="cl">${esc(compactLine)}</code>
-  <button class="copy" id="cp">Copy</button>
+  <button class="copy" id="cp" type="button" data-copy="cl">Copy</button>
 </div></div>`
         : ''}
 
@@ -1027,9 +1576,11 @@ ${intent?.tldr ? `<h2>TL;DR</h2><div class="card">${esc(intent.tldr)}</div>` : '
 ${intent?.sessionId && session.sessionId && intent.sessionId !== session.sessionId
         ? `<div class="gmismatch"><b>These two files describe different sessions.</b> The spine is ${esc(String(session.sessionId).slice(0, 8))} and the intent was written for ${esc(String(intent.sessionId).slice(0, 8))}. The analysis below mixes them. Re-run step 3.</div>`
         : ''}
-${renderIntents(intent)}
+${renderIntents(session, intent)}
 ${renderQuality(intent)}
 ${renderGraph(session, intent)}
+
+${renderAppendix(session, intent)}
 
 ${renderEvidence(bundle)}
 
@@ -1060,14 +1611,26 @@ ${brandFooter({
     })}
 </div>
 <script>
-const cp=document.getElementById('cp');
-if(cp)cp.onclick=async()=>{
-  try{await navigator.clipboard.writeText(document.getElementById('cl').textContent);}
-  catch{const r=document.createRange();r.selectNode(document.getElementById('cl'));
+// One copy handler for every copyable thing on the page, delegated rather than
+// wired per button. The compact line had this to itself; the follow-up prompts
+// are one per unfinished thread, and a handler bound in a loop would be N
+// closures that have to be rebound if anything ever re-renders a thread.
+//
+// data-copy names the element to read, so nothing here knows what a compact
+// line or a follow-up prompt IS -- and #evgo, which is also .copy, carries no
+// data-copy and is left alone.
+document.addEventListener('click',async(ev)=>{
+  const b=ev.target&&ev.target.closest?ev.target.closest('button.copy[data-copy]'):null;
+  if(!b)return;
+  const src=document.getElementById(b.getAttribute('data-copy'));
+  if(!src)return;
+  const label=b.textContent;
+  try{await navigator.clipboard.writeText(src.textContent);}
+  catch{const r=document.createRange();r.selectNode(src);
     getSelection().removeAllRanges();getSelection().addRange(r);document.execCommand('copy');}
-  cp.textContent='Copied';cp.classList.add('done');
-  setTimeout(()=>{cp.textContent='Copy';cp.classList.remove('done')},1600);
-};
+  b.textContent=b.getAttribute('data-done')||'Copied';b.classList.add('done');
+  setTimeout(()=>{b.textContent=label;b.classList.remove('done')},1600);
+});
 document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('on'));
   b.classList.add('on');
@@ -1113,6 +1676,31 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   d.nodes.forEach(function(n){ nodes[n.id]=n; adj[n.id]=[]; });
   d.edges.forEach(function(e,i){ if(adj[e.s])adj[e.s].push(i); if(adj[e.t])adj[e.t].push(i); });
   var gEls=[].slice.call(document.querySelectorAll('#gnodes .gn'));
+  // A status hub's label carries a COUNT, and a count sitting on the canvas
+  // reads as a tally of what is ON the canvas. It was written into the SVG once,
+  // from the whole intent document, and paint() only ever toggled visibility --
+  // so any frame between the hub's birth and the last thread's showed
+  // "ongoing · 3" beside a single diamond, while the readout next to the
+  // scrubber counted only what was visible and disagreed with it. That is the
+  // same lie the side panel refuses to tell three functions down ("the panel
+  // listing an edge to a node the scrubber has not reached yet is the same lie
+  // as drawing the line would be, just in prose"). So the number is re-derived
+  // per frame, from the threads the frame actually holds.
+  var hubEls=gEls.filter(function(g){ return (nodes[g.getAttribute('data-id')]||{}).kind==='status'; });
+  // Only the digits are rewritten. The label may have been elided when it was
+  // drawn, and rebuilding it from the status would quietly un-elide it.
+  // Doubled backslashes, deliberately. This whole script is a template literal,
+  // where a backslash-s and a backslash-d are unrecognised escapes and collapse
+  // to a bare s and d. The regex shipped matching a literal s and d, matched
+  // nothing at all, and the label sat unchanged on the canvas while every check
+  // that read the SOURCE agreed the rewrite was there.
+  function recount(el,c){ if(!el)return; var t=el.textContent||''; var r=t.replace(/(\\u00b7\\s*)\\d+\\s*$/,'$1'+c); if(r!==t)el.textContent=r; }
+  // ONE definition of "the toggle has hidden this", for nodes and edges alike.
+  // Three handlers each spelling the comparison out is how a node ends up drawn
+  // in a state another handler thinks it is hidden in -- and the hub recount
+  // below is a third reader of it, which is what turned the duplication from a
+  // style question into a real one.
+  function offLayer(x){ return hidden&&x.layer==='authored'; }
   var eEls=[].slice.call(document.querySelectorAll('#gedges .ge'));
   var hidden=false, pinned=null, upto=d.maxTurn;
   function esc(x){var p=document.createElement('p');p.textContent=x==null?'':String(x);return p.innerHTML;}
@@ -1129,14 +1717,31 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
     var rel=live.map(function(i){var e=d.edges[i];var o=e.s===id?e.t:e.s;
       return '<li>'+(e.s===id?'&rarr; ':'&larr; ')+esc((nodes[o]||{}).label||o)+(e.rel?' <i>'+esc(e.rel)+'</i>':'')+'</li>';}).join('')
       +(held?'<li class="dim">'+held+' more, not yet at turn '+upto+'</li>':'');
+    // Three stamps, not two. A conclusion this session drew and one the store
+    // kept from an earlier session are both "written by the model", and a panel
+    // that says only that has told the reader this transcript produced work it
+    // never witnessed.
+    var ago=n.carried?(n.carried.ago===null||n.carried.ago===undefined?'an earlier recorded session'
+      :n.carried.ago===1?'1 recorded session ago':n.carried.ago+' recorded sessions ago'):'';
+    var days=n.carried&&typeof n.carried.days==='number'
+      ?(n.carried.days===0?', recorded today':n.carried.days===1?', recorded 1 day ago':', recorded '+n.carried.days+' days ago')
+      :'';
+    var stamp=n.layer==='derived'
+      ? esc(n.measured||'Measured from the transcript.')
+      : n.carried
+        ? 'Written by the model in session '+esc(String(n.carried.s).slice(0,8))+', '+esc(ago)+esc(days)
+          +'. Not this session, and not measured.'
+        : 'Written by the model at /qpact step 3. Not measured.';
     side.innerHTML='<h4>'+esc(n.label)+'</h4>'+
-      '<span class="gstamp '+n.layer+'">'+(n.layer==='derived'
-        ? esc(n.measured||'Measured from the transcript.')
-        : "Written by the model at /qpact step 3. Not measured.")+'</span>'+
+      '<span class="gstamp '+(n.carried?'carried':n.layer)+'">'+stamp+'</span>'+
+      (n.status?'<p class="gstat">status: <b>'+esc(n.status)+'</b> — what the analysis wrote down, not an outcome anything measured</p>':'')+
       (n.note?'<p>'+esc(n.note)+'</p>':'')+
       (n.turns&&n.turns.length?'<p class="dim">turn '+n.turns.join(', ')+'</p>':'')+
       '<p class="dim">'+(n.at<0?'not attributable to a turn &mdash; present from the first frame'
         :'enters the replay at turn '+n.at)+'</p>'+
+      // Quoted from the intent document, or, when it carried none, said in the
+      // renderer's own words rather than in a note nobody wrote.
+      (n.carried?'<p class="gstale">'+esc(d.stale||'Nothing has re-checked whether a conclusion from an earlier session still holds. Read the age as age, not as confidence.')+'</p>':'')+
       '<ul class="gsup">'+rel+'</ul>';
   }
   // One pass applies all three filters, because they compose: a node can be
@@ -1150,16 +1755,34 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
     gEls.forEach(function(g){
       var n=nodes[g.getAttribute('data-id')]||{};
       var pre=n.at>upto;
-      var gone=hidden&&n.layer==='authored';
+      var gone=offLayer(n);
       g.classList.toggle('pre',!!pre);
       g.classList.toggle('mute',!!(pre||gone||(near&&!near[n.id])));
       g.classList.toggle('near',!!(near&&near[n.id]&&!pre&&!gone));
       if(!pre&&!gone)shown++;
     });
+    if(hubEls.length){
+      var byStatus={};
+      d.nodes.forEach(function(n){
+        if(n.kind!=='intent'||n.carried||!n.status)return;
+        if(n.at>upto)return;
+        if(offLayer(n))return;
+        byStatus[n.status]=(byStatus[n.status]||0)+1;
+      });
+      hubEls.forEach(function(g){
+        var n=nodes[g.getAttribute('data-id')]||{};
+        var c=byStatus[n.status]||0;
+        recount(g.querySelector('text'),c);
+        recount(g.querySelector('title'),c);
+        var a=g.getAttribute('aria-label')||'';
+        var ra=a.replace(/(\\u00b7\\s*)\\d+/,'$1'+c);
+        if(ra!==a)g.setAttribute('aria-label',ra);
+      });
+    }
     eEls.forEach(function(l,i){
       var e=d.edges[i]||{};
       var pre=e.at>upto;
-      var gone=hidden&&e.layer==='authored';
+      var gone=offLayer(e);
       l.classList.toggle('pre',!!pre);
       var off=pre||gone||(near&&e.s!==id&&e.t!==id);
       l.classList.toggle('mute',!!off);
@@ -1183,7 +1806,7 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   });
   if(tog)tog.addEventListener('click',function(){
     hidden=!hidden; tog.classList.toggle('off',hidden);
-    tog.textContent=hidden?"Show the model's layer":"Hide the model's layer";
+    tog.textContent=hidden?"Show everything the model wrote":"Hide everything the model wrote";
     paint(pinned);
   });
 
@@ -1314,17 +1937,108 @@ if (isMain) {
     };
     // A flag's value is not a positional argument. Without this, `--intent
     // intent.json spine.json` rendered the intent file as the spine.
-    const VALUE_FLAGS = new Set(['--intent', '-o', '--out']);
+    const VALUE_FLAGS = new Set(['--intent', '-o', '--out', '--followup']);
     const spinePath = argv
         .filter((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(argv[i - 1] ?? ''))
         .find((a) => a.endsWith('.json'));
     if (!spinePath) {
-        console.error('usage: render.mjs spine.json [--intent intent.json] [-o out.html] [--open]');
+        console.error('usage: render.mjs spine.json [--intent intent.json] [-o out.html] [--open]\n' +
+            '       render.mjs spine.json --intent intent.json --followup <thread>   print one thread\n' +
+            '       render.mjs spine.json --intent intent.json --followups           list the unfinished ones');
         process.exit(1);
     }
     const session = JSON.parse(readFileSync(spinePath, 'utf8'));
     const intentPath = opt('--intent');
     const intent = intentPath ? JSON.parse(readFileSync(intentPath, 'utf8')) : null;
+    // ---- the text path to the same drill-down the page's button produces
+    //
+    // Same builder, same bytes. The page and this share followupPrompt(), so the
+    // person reading a terminal and the person reading the page cannot be handed
+    // two different accounts of one thread -- and test/followup.mjs compares the
+    // two outputs directly, which is what keeps that true rather than intended.
+    const wantList = argv.includes('--followups');
+    // A sentinel, not `undefined`. `--followup` as the LAST argument makes
+    // opt() return undefined, which is indistinguishable from the flag being
+    // absent -- so a bare `--followup` quietly rendered a whole page instead of
+    // saying which thread it wanted.
+    const asked = argv.includes('--followup');
+    const wantThread = asked ? String(opt('--followup') ?? '') : null;
+    if (wantList || asked) {
+        // The page raises a banner on this and the run below warns on stderr — but
+        // both of those come AFTER a branch that exits here, so the one surface
+        // built to be copied elsewhere was the only one that never checked. The
+        // prompt states it in its own text too; this is for whoever is watching the
+        // terminal.
+        if (intent?.sessionId && session.sessionId && intent.sessionId !== session.sessionId)
+            console.error(`warning: intent.sessionId (${String(intent.sessionId).slice(0, 8)}) does not match the spine ` +
+                `(${session.sessionId.slice(0, 8)}) -- these are different sessions, and the prompt says so too`);
+        const items = intent?.intents ?? [];
+        if (!items.length) {
+            console.error(intentPath
+                ? 'that intent file names no threads, so there is nothing to drill into'
+                : 'no --intent file was given, and the spine alone holds no threads: /qpact step 3 is what writes them');
+            process.exit(1);
+        }
+        const attr = attribute(session, items);
+        const eligible = items.map((it, i) => ({ it, i })).filter(({ it }) => unfinished(it));
+        const listing = () => eligible.length
+            ? eligible
+                .map(({ it, i }) => `  ${String(i).padEnd(3)} ${threadSlug(String(it.title || '')) || String(i)}\n      ${it.status} — ${it.title}`)
+                .join('\n')
+            // Not "every thread is done or partial": a status outside the four this
+            // tool knows is neither, and this line would have called it finished.
+            : '  (none: no thread the analysis named is marked abandoned or ongoing)';
+        if (wantList) {
+            console.log(`${eligible.length} of ${items.length} thread(s) were left abandoned or ongoing.\n` +
+                'A done thread has nothing to drill into and is not listed.\n' +
+                (intent?.sessionId && session.sessionId && intent.sessionId !== session.sessionId
+                    ? `These threads were written about session ${String(intent.sessionId).slice(0, 8)}, not about the spine ` +
+                        `given here (${session.sessionId.slice(0, 8)}).\n`
+                    : '') +
+                listing());
+            process.exit(0);
+        }
+        const want = String(wantThread ?? '').trim();
+        // A flag's own value, never the next flag: `--followup --open` asked for a
+        // thread called "--open" and got a listing that did not mention why.
+        if (!want) {
+            console.error(`--followup needs a thread. The ones that have a drill-down:\n${listing()}`);
+            process.exit(1);
+        }
+        // Index first, because it is unambiguous; then an exact slug; then a unique
+        // prefix. An ambiguous prefix is refused by name rather than resolved to
+        // whichever thread happens to sort first.
+        if (want.startsWith('--')) {
+            console.error(`--followup takes a thread, not the flag "${want}". The ones that have a drill-down:\n${listing()}`);
+            process.exit(1);
+        }
+        const byIndex = /^\d+$/.test(want) ? Number(want) : -1;
+        const slugs = items.map((it, i) => threadSlug(String(it.title || '')) || String(i));
+        let pick = byIndex >= 0 && byIndex < items.length ? byIndex : slugs.indexOf(want);
+        if (pick < 0) {
+            const hits = slugs.map((sl, i) => (sl.startsWith(want) ? i : -1)).filter((i) => i >= 0);
+            if (hits.length > 1) {
+                console.error(`"${want}" matches ${hits.length} threads: ${hits.map((i) => slugs[i]).join(', ')}`);
+                process.exit(1);
+            }
+            pick = hits[0] ?? -1;
+        }
+        if (pick < 0) {
+            console.error(`no thread called "${want}". The ones that have a drill-down:\n${listing()}`);
+            process.exit(1);
+        }
+        if (!unfinished(items[pick])) {
+            // A refusal and not a courtesy print. The whole rule is that a finished
+            // thread has no open question, so producing a prompt that asks one would
+            // be the page's claim inverted at the command line.
+            console.error(`"${items[pick].title}" is ${items[pick].status || 'unstated'}, so it has no drill-down. ` +
+                'Only an abandoned or ongoing thread has something left open to ask about.\n' +
+                `The ones that do:\n${listing()}`);
+            process.exit(1);
+        }
+        console.log(followupPrompt(session, items, attr, pick, intent?.sessionId ? String(intent.sessionId) : null));
+        process.exit(0);
+    }
     // Content-hashed filename: the load-bearing staleness mechanism.
     //
     // Hash the INPUTS, not the output -- the footer carries a wall clock, so
