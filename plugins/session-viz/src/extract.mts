@@ -102,7 +102,16 @@ export interface SessionTurn {
   typed: boolean
   /** true when the turn arrived as a queued_command mid-flight */
   steering: boolean
-  origin: string | null
+  /**
+   * Where a turn came from, verbatim from the harness's attachment record.
+   *
+   * Declared `string | null` for a long time and it has never been a string:
+   * Claude Code writes `{ kind: 'human' }`, and this field is passed through
+   * rather than parsed, so it is whatever shape that harness chose. A consumer
+   * that believed the old type called .replace() on it and crashed on every
+   * real session. Unknown, because that is what it is.
+   */
+  origin: unknown
   signals: TurnSignals
   tokens: TokenTotals
   assistantMessages: number
@@ -281,7 +290,7 @@ interface TranscriptAttachment {
   type?: string
   prompt?: string | ContentBlock[]
   source_uuid?: string
-  origin?: string
+  origin?: unknown
 }
 
 export interface TranscriptRecord {
@@ -350,7 +359,7 @@ interface NewTurnArgs {
   /** defaults true: everything but an IDE-wrapped record was typed */
   typed?: boolean
   steering?: boolean
-  origin?: string | null
+  origin?: unknown
   effort?: string | null
 }
 

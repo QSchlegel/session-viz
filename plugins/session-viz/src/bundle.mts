@@ -348,6 +348,34 @@ const HOME_DASH = /-(?:Users|home)-[A-Za-z0-9._-]*/g
 const HOME_WIN = /[A-Za-z]:\\Users\\[^\\\s"'`)\]},:;]+/g
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g
 
+/**
+ * Deep, and total.
+ *
+ * The first version took a string, because the spine's type said `origin` was
+ * one. It is `{ kind: 'human' }` in every real transcript, so /qpact crashed on
+ * the first session anyone pointed it at while the fixture -- which used a
+ * string, as the type promised -- stayed green. Walking the value means a shape
+ * this module has never seen cannot smuggle text past the scrubber either,
+ * which is the property that actually matters here.
+ */
+/** The `kind` off an origin shape, or '' -- never `[object Object]` in a cell. */
+const originKind = (o: unknown): string =>
+  o && typeof o === 'object' && typeof (o as { kind?: unknown }).kind === 'string'
+    ? scrub((o as { kind: string }).kind)
+    : typeof o === 'string'
+      ? scrub(o)
+      : ''
+
+export function scrubDeep<T>(value: T): T {
+  if (typeof value === 'string') return scrub(value) as unknown as T
+  if (Array.isArray(value)) return value.map(scrubDeep) as unknown as T
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, scrubDeep(v)])
+    ) as unknown as T
+  return value
+}
+
 function scrub(value: string): string {
   return value
     .replace(HOME_UNIX, '~')
@@ -483,7 +511,7 @@ function sessionJson(session: Session, generatedAt: string): string {
           },
           totals: session.totals,
           score: session.score,
-          turns: session.turns.map((t) => ({ ...t, text: scrub(t.text), origin: scrubOrNull(t.origin) })),
+          turns: session.turns.map((t) => ({ ...t, text: scrub(t.text), origin: scrubDeep(t.origin) })),
         },
       },
       null,
@@ -523,7 +551,10 @@ function turnsCsv(turns: SessionTurn[]): string {
       num(t.durationMs),
       bit(t.typed),
       bit(t.steering),
-      cell(scrubOrNull(t.origin) ?? ''),
+      // `origin` is a shape, not a string -- {kind:'human'} in every real
+      // transcript. A spreadsheet column takes the kind; the whole value is in
+      // session.json for anyone who needs it.
+      cell(originKind(t.origin)),
       cell(t.model ?? ''),
       bit(t.mixedModel),
       num(t.assistantMessages),

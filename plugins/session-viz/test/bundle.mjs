@@ -251,6 +251,12 @@ function readZip(buf) {
 }
 
 const sha = (b) => createHash('sha256').update(b).digest('hex')
+/** A member's text straight off the bundle, for assertions about content
+ *  rather than about the container. */
+const memberText = (bundle, name) => {
+  const m = bundle.members.find((x) => x.name === name)
+  return m ? Buffer.from(m.bytes ?? m.data).toString('utf8') : null
+}
 const textOf = (zip, name) => {
   const e = zip.entries.find((x) => x.name === name)
   return e && e.data.length ? e.data.toString('utf8') : null
@@ -401,6 +407,50 @@ const NAMED = [
 for (const [what, re] of NAMED) chk(`LIMITS.txt names: ${what}`, re.test(limitsFlat))
 chk('every limit reaches LIMITS.txt, in full', LIMITS.every((l) => limitsFlat.includes(flat(l))))
 chk('every limit reaches summary.md, in full', LIMITS.every((l) => flat(summary).includes(flat(l))))
+// ---- the spine's shapes, not the spine's type declarations
+//
+// `origin` was declared `string | null` and has never been a string: Claude Code
+// writes { kind: 'human' }. The fixture believed the declaration, so this suite
+// stayed green while `scrub` called .replace() on an object and /qpact could not
+// render a single real session. Fixtures copied from a type are fixtures that
+// test the type.
+{
+  const withShapes = {
+    ...fixture(),
+    turns: fixture().turns.map((t, i) => ({
+      ...t,
+      origin: i % 2 ? { kind: 'human' } : null,
+    })),
+  }
+  let boom = null
+  let built = null
+  try { built = buildBundle(withShapes, INTENT, META) } catch (e) { boom = e }
+  chk('a turn whose origin is a shape does not crash the build', boom === null,
+    boom ? `${boom.constructor.name}: ${boom.message}` : '')
+  if (built) {
+    const j = JSON.parse(memberText(built, 'session.json') ?? '{}')
+    const shaped = ((j.session && j.session.turns) || []).filter((t) => t.origin && typeof t.origin === 'object')
+    chk('and the shape survives into session.json', shaped.length > 0, `${shaped.length} shaped origins`)
+    chk('with its strings scrubbed rather than passed through',
+      shaped.every((t) => typeof t.origin.kind === 'string'), JSON.stringify(shaped[0]?.origin))
+    const csv = memberText(built, 'turns.csv') ?? ''
+    chk('and the CSV names the kind rather than [object Object]',
+      csv.includes('human') && !csv.includes('[object Object]'),
+      (csv.split('\n').find((l) => l.includes('human')) || '').slice(0, 90))
+  }
+}
+
+// ---- a nested string is still a string
+{
+  const deep = { ...fixture(), turns: fixture().turns.map((t) => ({
+    ...t, origin: { kind: 'human', note: 'from /Users/someone/git/api' },
+  })) }
+  const j = JSON.parse(memberText(buildBundle(deep, INTENT, META), 'session.json') ?? '{}')
+  const notes = ((j.session && j.session.turns) || []).map((t) => t.origin?.note).filter(Boolean)
+  chk('a home path nested inside an origin shape is scrubbed too',
+    notes.length > 0 && notes.every((x) => !x.includes('/Users/')), notes[0])
+}
+
 // ---- the redaction sentence is derived, not asserted
 //
 // The first version of LIMITS stated "prompt text is redacted for secrets" as a
