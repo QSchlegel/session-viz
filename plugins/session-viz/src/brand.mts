@@ -49,14 +49,21 @@ export const esc = (s: unknown): string =>
  * mark drawn once per page is a mark that will be wrong on at least one of
  * them, wrong in a way no compiler sees and no reviewer counts.
  *
- * The arrangement is not decoration either — it is the run wall the share
- * picker already draws in miniature: filled up to the frontier, one cell
- * landing, one not started. Reading order, so the frontier lands where the eye
- * finishes rather than somewhere it has to hunt for.
+ * The POSITIONS are not a design choice available here. This is the same mark
+ * the site's nav draws, the brand kit ships and the launch film animates, and it
+ * is only a logo if it is the same one in all of them: accent top-right, hollow
+ * middle-right. The first version of this file put them bottom-centre and
+ * bottom-right and wrote a rationale for that arrangement — the count was right,
+ * every page agreed with every other page, and it was still a different logo
+ * from the product's. Counting the cells is not the same as recognising the
+ * mark, which is exactly why the check below pins where they are.
+ *
+ * Canonical source: services/web/public/index.html, the <g class="lg"> block —
+ * `class="c a"` at index 2 and `class="c h"` at index 5, in reading order.
  */
 const CELLS = 9
-const ACCENT_AT = 7
-const HOLLOW_AT = 8
+const ACCENT_AT = 2
+const HOLLOW_AT = 5
 
 /**
  * The mark, as inline SVG.

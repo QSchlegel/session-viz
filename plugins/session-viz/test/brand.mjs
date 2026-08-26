@@ -186,6 +186,12 @@ const ASSET_PULLS = [
 
 // ------------------------------------------------------------ page assertions
 
+/** The mark's cell kinds in reading order, read off the emitted SVG. */
+function layout(svg) {
+  return [...svg.matchAll(/<rect[^>]*class="([^"]*)"/g)].map((m) =>
+    /sv-accent/.test(m[1]) ? 'accent' : /sv-hollow/.test(m[1]) ? 'hollow' : 'settled')
+}
+
 /** Everything true of the chrome on every page that carries it. */
 function brandChecks(page, html, { plain = false } = {}) {
   const found = marks(html)
@@ -198,6 +204,21 @@ function brandChecks(page, html, { plain = false } = {}) {
     chk(`${where}: 1 accent cell`, c.accent === 1, `got ${c.accent}`)
     chk(`${where}: 1 hollow cell`, c.hollow === 1, `got ${c.hollow}`)
     chk(`${where}: 9 cells in total`, c.total === 9, `got ${c.total}`)
+
+    // WHERE they are, not only how many. Counting nine cells with a 7/1/1 split
+    // passed 214 assertions while the plugin drew a mark whose accent sat
+    // bottom-centre and whose hollow sat bottom-right -- a different logo from
+    // the product's, agreeing with itself on every page. The arrangement is
+    // quoted from the canonical mark, the <g class="lg"> block in the site's
+    // index.html, so this fails if either one moves.
+    const order = layout(svg)
+    chk(`${where}: the accent is top-right, as the site draws it`,
+      order[2] === 'accent', `reading order: ${order.join(' ')}`)
+    chk(`${where}: the hollow is middle-right, as the site draws it`,
+      order[5] === 'hollow', `reading order: ${order.join(' ')}`)
+    chk(`${where}: and every other cell is settled`,
+      order.filter((_, i) => i !== 2 && i !== 5).every((k) => k === 'settled'),
+      order.join(' '))
   }
 
   chk(`${page}: wordmark reads SESSION·VIZ`,
