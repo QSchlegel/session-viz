@@ -217,6 +217,8 @@ export interface Sbom {
 // whole second checkout of the same project as part of this one.
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', 'target', 'vendor', '__pycache__'])
 
+
+
 const DEFAULT_MAX_DEPTH = 6
 
 // Files that are evidence of a dependency ecosystem. `covered` is the only
@@ -244,6 +246,12 @@ const ECOSYSTEM_FILES: ReadonlyArray<{ file: string; ecosystem: string; covered:
   { file: 'Gemfile.lock', ecosystem: 'rubygems', covered: false, kind: 'lock' },
   { file: 'composer.lock', ecosystem: 'packagist', covered: false, kind: 'lock' },
 ]
+
+/** Every filename above, by NAME rather than by path. Used where a file may no
+ *  longer exist to have a path: a manifest DELETED in the working tree still
+ *  changes what the local bill contains, and it is absent from any set built
+ *  out of what the scan found on disk. */
+const KNOWN_INPUT_NAMES = new Set(ECOSYSTEM_FILES.map((f) => f.file))
 
 const LOCK_ALTERNATIVES = new Set(
   ECOSYSTEM_FILES.filter((f) => f.ecosystem === 'npm' && f.kind === 'lock' && !f.covered).map((f) => f.file),
@@ -1185,6 +1193,11 @@ export interface LocalRef {
    *  upstream or it could not be read. Unpushed work is a difference GitHub
    *  cannot possibly know about yet. */
   ahead: number | null
+  /** Commits on the upstream that this checkout does not have, or null when
+   *  there is no upstream. GitHub's graph is built from what it has, so being
+   *  behind is a difference the ref DOES account for -- and reading it as clean
+   *  is how an un-pulled checkout blames the tool for somebody else's commit. */
+  behind: number | null
   upstream: string | null
   /** The manifests and lockfiles that FED THIS BOM and differ from HEAD in the
    *  working tree -- modified, staged or untracked. Scoped to the BOM's own
@@ -1212,9 +1225,14 @@ export interface GithubRef {
 }
 
 export type RefRelation =
-  | 'same-ref-clean'              // same ref, BOM inputs match HEAD, nothing unpushed
+  | 'same-ref-clean'              // same ref, BOM inputs match HEAD, nothing unpushed OR unpulled
   | 'same-ref-dirty-working-tree'
   | 'same-ref-unpushed-commits'
+  /** Same branch name, but the upstream has commits this checkout does not.
+   *  GitHub built its graph from what it has, so anything it lists and this
+   *  does not may simply be newer than this checkout -- which is an explanation,
+   *  not a defect, and was previously indistinguishable from clean. */
+  | 'same-ref-behind-upstream'
   | 'different-ref'
   | 'ref-unknown'
 
@@ -1415,15 +1433,24 @@ function parseRemotes(stdout: string): Array<{ name: string; url: string }> {
   return [...out].map(([name, url]) => ({ name, url }))
 }
 
-/** The `## ` header `git status --porcelain -b` puts on its first line. */
-function parseStatusBranch(line: string): { branch: string | null; upstream: string | null; ahead: number | null; detached: boolean } {
+/** The `## ` header `git status --porcelain -b` puts on its first line.
+ *
+ *  BOTH numbers in the bracket, not just `ahead`. Reading only `ahead` was the
+ *  worst defect this comparison could carry: a checkout that has fetched and not
+ *  pulled is `[behind 1]`, which parsed to `ahead: 0` and made the two sides
+ *  look like the same clean ref -- so the dependency somebody added upstream
+ *  yesterday was reported as an unexplained difference, under a sentence saying
+ *  the ref does not account for it. That is not an edge case; it is every
+ *  checkout anybody has left alone for a day. */
+function parseStatusBranch(line: string): { branch: string | null; upstream: string | null; ahead: number | null; behind: number | null; detached: boolean } {
   const head = line.startsWith('## ') ? line.slice(3) : line
-  if (head.startsWith('HEAD (no branch)')) return { branch: null, upstream: null, ahead: null, detached: true }
+  if (head.startsWith('HEAD (no branch)')) return { branch: null, upstream: null, ahead: null, behind: null, detached: true }
   const fresh = /^No commits yet on (.+)$/.exec(head)
-  if (fresh) return { branch: fresh[1]!.trim(), upstream: null, ahead: null, detached: false }
+  if (fresh) return { branch: fresh[1]!.trim(), upstream: null, ahead: null, behind: null, detached: false }
   const m = /^(\S+?)(?:\.\.\.(\S+))?(?:\s+\[(.+)\])?$/.exec(head)
-  if (!m) return { branch: head.trim() || null, upstream: null, ahead: null, detached: false }
+  if (!m) return { branch: head.trim() || null, upstream: null, ahead: null, behind: null, detached: false }
   const ahead = m[3] ? /ahead (\d+)/.exec(m[3]) : null
+  const behind = m[3] ? /behind (\d+)/.exec(m[3]) : null
   return {
     branch: m[1]!,
     upstream: m[2] ?? null,
@@ -1431,6 +1458,7 @@ function parseStatusBranch(line: string): { branch: string | null; upstream: str
     // upstream to be unpushed to" are different states, and only one of them is
     // evidence that GitHub could have seen this branch.
     ahead: m[2] ? (ahead ? Number(ahead[1]) : 0) : null,
+    behind: m[2] ? (behind ? Number(behind[1]) : 0) : null,
     detached: false,
   }
 }
@@ -1471,7 +1499,7 @@ const defaultGit = (root: string): GitRunner => (args) => {
  */
 function readLocalRef(sbom: Sbom, git: GitRunner): LocalRef {
   const blank: LocalRef = {
-    describes: 'working-tree', branch: null, head: null, detached: false, ahead: null, upstream: null,
+    describes: 'working-tree', branch: null, head: null, detached: false, ahead: null, behind: null, upstream: null,
     dirtyBomInputs: [], otherWorkingTreeChanges: false, read: false, reason: null,
   }
   const status = git(['status', '--porcelain', '-b'])
@@ -1479,7 +1507,7 @@ function readLocalRef(sbom: Sbom, git: GitRunner): LocalRef {
 
   const lines = status.stdout.split('\n')
   const branchLine = lines.find((l) => l.startsWith('## ')) ?? ''
-  const { branch, upstream, ahead, detached } = parseStatusBranch(branchLine)
+  const { branch, upstream, ahead, behind, detached } = parseStatusBranch(branchLine)
 
   const headRun = git(['rev-parse', '--short', 'HEAD'])
   const head = headRun.ok ? headRun.stdout.trim() || null : null
@@ -1500,10 +1528,18 @@ function readLocalRef(sbom: Sbom, git: GitRunner): LocalRef {
   for (const u of sbom.coverage.unread) inputs.add(`${prefix}${u.path}`)
 
   const changed = parseStatusPaths(lines)
-  const dirty = changed.filter((p) => inputs.has(p)).map((p) => (prefix && p.startsWith(prefix) ? p.slice(prefix.length) : p))
+  // A file that fed this BOM is one readSbom FOUND, and a manifest deleted in
+  // the working tree is by definition not among them -- so the single edit that
+  // most changes what the local bill contains was the one edit this field could
+  // not see, and the removed package's dependencies came out as an unexplained
+  // gap. The same failure the field exists to prevent, reached from the other
+  // side. So a changed path is also a BOM input when its NAME is one this reader
+  // recognises, whether or not the file is still there.
+  const isInput = (p: string): boolean => inputs.has(p) || KNOWN_INPUT_NAMES.has(p.slice(p.lastIndexOf('/') + 1))
+  const dirty = changed.filter(isInput).map((p) => (prefix && p.startsWith(prefix) ? p.slice(prefix.length) : p))
   return {
     describes: 'working-tree',
-    branch, head, detached, ahead, upstream,
+    branch, head, detached, ahead, behind, upstream,
     dirtyBomInputs: [...new Set(dirty)].sort(),
     otherWorkingTreeChanges: changed.length > dirty.length,
     read: true,
@@ -1667,6 +1703,24 @@ export function readGithubSbomDocument(body: unknown): GithubDocumentRead {
         refSource: version === null ? 'unknown' : 'spdx-self-package',
         repository: repo === '' ? null : repo,
       }
+    }
+  }
+
+  // A document whose only entry is the repository itself lists no dependency at
+  // all, and that is a real response: the graph is enabled but not yet indexed,
+  // or every manifest is one GitHub does not parse. It passed the array check
+  // above and then made every local dependency a finding -- which is the exact
+  // outcome the guard's own comment says an empty package list must never be
+  // allowed to produce. The self node also supplies a valid ref, so the
+  // ref-unknown safety net that incidentally rescues a literal `packages: []`
+  // does not fire here.
+  if (!packages.some((p) => !p.isRepositorySelf)) {
+    return {
+      ok: false,
+      reason:
+        packages.length === 0
+          ? 'the SPDX document lists no packages at all, so there is nothing to compare against'
+          : "the SPDX document lists only the repository itself and no dependency, so there is nothing to compare against -- GitHub's graph may be enabled but not yet indexed, or it may parse none of this repository's manifests",
     }
   }
 
@@ -1889,11 +1943,19 @@ function relateRefs(local: LocalRef, github: GithubRef): RefComparison {
   if (local.ahead !== null && local.ahead > 0) {
     return mk('same-ref-unpushed-commits', `both sides name ${github.ref}, and this branch is ${local.ahead} commit(s) ahead of ${local.upstream ?? 'its upstream'}, so GitHub has not seen the commits this reading is of`)
   }
+  // Checked AFTER ahead, so a branch that has diverged is reported by the half
+  // that is this checkout's own doing. Checked at all because a fetched-and-not-
+  // pulled checkout is the ordinary state of any repository left alone for a
+  // day, and calling it clean turned somebody else's commit into a finding
+  // against this tool.
+  if (local.behind !== null && local.behind > 0) {
+    return mk('same-ref-behind-upstream', `both sides name ${github.ref}, but this checkout is ${local.behind} commit(s) behind ${local.upstream ?? 'its upstream'}, so GitHub's document may describe content this working tree does not have yet`)
+  }
   return mk(
     'same-ref-clean',
     local.ahead === null
       ? `both sides name ${github.ref} and no input to this BOM differs from HEAD; this branch has no upstream, so whether GitHub has this commit is not something git could confirm here`
-      : `both sides name ${github.ref}, no input to this BOM differs from HEAD, and nothing is unpushed`,
+      : `both sides name ${github.ref}, no input to this BOM differs from HEAD, and nothing is unpushed or unpulled`,
   )
 }
 
@@ -2137,9 +2199,18 @@ export async function crossCheckWithGithub(
   return {
     status: 'compared',
     reason: `compared the working tree against GitHub's dependency graph for ${repository.owner}/${repository.name}`,
-    effect: refs.differencesExplainedByRef
-      ? 'the two sides do not describe the same content, so a difference below is accounted for by that alone and none of it is a defect'
-      : 'the two sides describe the same ref with nothing uncommitted or unpushed, so a difference below is not accounted for by the ref',
+    // Three states, not two. `ref-unknown` shares differencesExplainedByRef with
+    // `different-ref` but not its evidence: one KNOWS the two sides read
+    // different content, the other could not tell -- and this string is written
+    // to be printed verbatim, so it must not assert the stronger of the two.
+    // relationReason on the same object already said "cannot be said to";
+    // asserting "do not" three fields away had the object contradicting itself.
+    effect:
+      refs.relation === 'ref-unknown'
+        ? 'whether the two sides describe the same content could not be determined here, so a difference below is neither accounted for nor unaccounted for'
+        : refs.differencesExplainedByRef
+          ? 'the two sides do not describe the same content, so a difference below is accounted for by that alone and none of it is a defect'
+          : 'the two sides describe the same ref with nothing uncommitted, unpushed or unpulled, so a difference below is not accounted for by the ref',
     source: { tool: 'gh', endpoint: `repos/${repository.owner}/${repository.name}/dependency-graph/sbom` },
     repository,
     refs,

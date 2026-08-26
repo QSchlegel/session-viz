@@ -663,7 +663,12 @@ const gitFrom = (recorded) => (args) => {
 }
 const gitOn = (branchLine, opts = {}) => gitFrom({
   'remote -v': opts.remotes ?? ORIGIN_SSH,
-  'status --porcelain -b': `## ${branchLine}\n${(opts.dirty ?? []).map((p) => ` M ${p}`).join('\n')}${(opts.dirty ?? []).length ? '\n' : ''}`,
+  // `dirty` is modified; `deleted` is removed. Two porcelain codes, because a
+  // deleted manifest is the shape that used to be invisible here.
+  'status --porcelain -b': `## ${branchLine}\n${[
+    ...(opts.dirty ?? []).map((p) => ` M ${p}`),
+    ...(opts.deleted ?? []).map((p) => `D  ${p}`),
+  ].join('\n')}${((opts.dirty ?? []).length + (opts.deleted ?? []).length) ? '\n' : ''}`,
   'rev-parse --short HEAD': 'abc1234\n',
   'rev-parse --show-prefix': opts.prefix ?? '',
 })
@@ -779,11 +784,89 @@ console.log('\n── which ref each side describes, because that is where this 
   chk('and the count of them is stated', ahead.refs.local.ahead === 2, String(ahead.refs.local.ahead))
   chk('and it is explained by the ref too', ahead.refs.differencesExplainedByRef === true, String(ahead.refs.differencesExplainedByRef))
 
+  // BEHIND. The ordinary state of any checkout left alone for a day: fetched,
+  // not pulled. Only `ahead` was read out of the bracket, so this parsed to
+  // `ahead: 0` and came back same-ref-clean — and the dependency somebody added
+  // upstream yesterday was then reported as a difference the ref does NOT
+  // account for, under the count whose own comment calls it the number to look
+  // at. Of every way this comparison could lie, this was the reachable one.
+  const behind = await crossCheckWithGithub(s, { git: gitOn('main...origin/main [behind 3]'), fetchSbom: serves(ghDoc(AGREEING)) })
+  chk('a checkout that is behind its upstream is not called clean',
+    behind.refs.relation === 'same-ref-behind-upstream', behind.refs.relation + ' — ' + behind.refs.relationReason)
+  chk('and the count of commits it is missing is stated', behind.refs.local.behind === 3, String(behind.refs.local.behind))
+  chk('and a difference is therefore accounted for by the ref',
+    behind.refs.differencesExplainedByRef === true, String(behind.refs.differencesExplainedByRef))
+  chk("and the effect no longer tells the reader nothing explains it",
+    !/not accounted for by the ref/.test(behind.effect), behind.effect)
+  // Diverged: reported by the half that is this checkout's own doing.
+  const both = await crossCheckWithGithub(s, { git: gitOn('main...origin/main [ahead 1, behind 10]'), fetchSbom: serves(ghDoc(AGREEING)) })
+  chk('a diverged branch reads both numbers',
+    both.refs.local.ahead === 1 && both.refs.local.behind === 10, JSON.stringify([both.refs.local.ahead, both.refs.local.behind]))
+  chk('and is reported by what this checkout did, not by what it is missing',
+    both.refs.relation === 'same-ref-unpushed-commits', both.refs.relation)
+  // And clean stays clean: the guard must not fire on a checkout that is level.
+  const level = await crossCheckWithGithub(s, { git: gitOn('main...origin/main'), fetchSbom: serves(ghDoc(AGREEING)) })
+  chk('a branch level with its upstream is still clean',
+    level.refs.relation === 'same-ref-clean' && level.refs.local.behind === 0, level.refs.relationReason)
+
+  // A DELETED manifest. `dirtyBomInputs` was built out of the files the scan
+  // FOUND, so the one edit that most changes what the local bill contains was
+  // the one edit it structurally could not see — and the removed package's
+  // dependencies came out as an unexplained gap.
+  // The path matters. A manifest still on disk is in the input set whatever
+  // porcelain says about it, so deleting THE ROOT one proves nothing — the
+  // first version of this test passed with the fix reverted. The shape that was
+  // invisible is a manifest the scan never saw BECAUSE it was already gone:
+  // `sub/package.json`, removed from a workspace, present in HEAD and absent
+  // from every set built out of what the scan found.
+  const gone = await crossCheckWithGithub(s, {
+    git: gitOn('main...origin/main', { deleted: ['sub/package.json'] }),
+    fetchSbom: serves(ghDoc(AGREEING)),
+  })
+  chk('a manifest deleted before the scan still counts as an input that differs from HEAD',
+    gone.refs.local.dirtyBomInputs.includes('sub/package.json'), JSON.stringify(gone.refs.local.dirtyBomInputs))
+  chk('so the working tree is not called clean after one was removed',
+    gone.refs.relation === 'same-ref-dirty-working-tree', gone.refs.relation)
+  const goneLock = await crossCheckWithGithub(s, {
+    git: gitOn('main...origin/main', { deleted: ['sub/pnpm-lock.yaml'] }),
+    fetchSbom: serves(ghDoc(AGREEING)),
+  })
+  chk('and so does a deleted lockfile the scan never read', goneLock.refs.relation === 'same-ref-dirty-working-tree',
+    JSON.stringify(goneLock.refs.local.dirtyBomInputs))
+  // An unrelated deletion still explains nothing about the bill.
+  const goneElse = await crossCheckWithGithub(s, {
+    git: gitOn('main...origin/main', { deleted: ['README.md'] }),
+    fetchSbom: serves(ghDoc(AGREEING)),
+  })
+  chk('a deleted file that fed no manifest is not counted as one',
+    goneElse.refs.relation === 'same-ref-clean' && goneElse.refs.local.dirtyBomInputs.length === 0,
+    JSON.stringify(goneElse.refs.local.dirtyBomInputs))
+  // Nor a file that merely reads like one. The rule matches the whole basename,
+  // so a source file named after a manifest is not mistaken for it.
+  const lookalike = await crossCheckWithGithub(s, {
+    git: gitOn('main...origin/main', { deleted: ['docs/about-package.json.md', 'src/packagejson.ts'] }),
+    fetchSbom: serves(ghDoc(AGREEING)),
+  })
+  chk('and neither is a file whose name only resembles a manifest',
+    lookalike.refs.relation === 'same-ref-clean', JSON.stringify(lookalike.refs.local.dirtyBomInputs))
+
   const detached = await crossCheckWithGithub(s, { git: gitOn('HEAD (no branch)'), fetchSbom: serves(ghDoc(AGREEING)) })
   chk('a detached HEAD has no branch to relate, and says so rather than guessing',
     detached.refs.relation === 'ref-unknown' && detached.refs.local.detached === true, detached.refs.relationReason)
   chk('unknown is never treated as the same ref', detached.refs.differencesExplainedByRef === true,
     String(detached.refs.differencesExplainedByRef))
+  // "Could not tell" is not "they differ". relationReason on this same object
+  // says "cannot be said to describe the same content"; `effect` asserted "do
+  // not describe the same content" three fields away, so one object made two
+  // claims and the stronger one was the one the data did not support. `effect`
+  // is written to be printed verbatim, which is what made it matter.
+  chk('an unreadable ref says it could not tell rather than that the two differ',
+    /could not be determined/.test(detached.effect) && !/do not describe the same content/.test(detached.effect),
+    detached.effect)
+  chk('while a genuinely different ref still says they differ',
+    /do not describe the same content/.test(
+      (await crossCheckWithGithub(s, { git: gitOn('claude/x...origin/claude/x'), fetchSbom: serves(ghDoc(AGREEING)) })).effect
+    ))
 
   const noUpstream = await crossCheckWithGithub(s, { git: gitOn('main'), fetchSbom: serves(ghDoc(AGREEING)) })
   chk('no upstream is not zero commits ahead', noUpstream.refs.local.ahead === null, String(noUpstream.refs.local.ahead))
@@ -1093,16 +1176,40 @@ console.log('\n── their document is read the way it is actually shaped')
     String(doc.packages.find((p) => p.name === '@types/node')?.ecosystemSource))
   chk('the ref is read from their own node for the repository', doc.ref.ref === 'main', JSON.stringify(doc.ref))
   chk('and so is the repository it describes', doc.ref.repository === 'acme/widget', String(doc.ref.repository))
-  chk('an unwrapped document is accepted too', readGithubSbomDocument(ghDoc([]).sbom).ok === true, '')
+  // Carrying a dependency, because a document with none is now refused in its
+  // own right — see the pair below. Testing the unwrapping with an empty list
+  // would be testing two rules at once and asserting the wrong one.
+  chk('an unwrapped document is accepted too',
+    readGithubSbomDocument(ghDoc([ghPkg('npm', 'lodash', '4.17.21', 'MIT')]).sbom).ok === true, '')
+  // A response GitHub really sends: the graph is on, and it has indexed nothing
+  // (not yet, or because it parses none of these manifests). The array is
+  // non-empty — the repository's own node is in it — so the packages check
+  // passes, and every local dependency then reads as a package GitHub does not
+  // know about. That is the outcome the guard exists to prevent, arriving in the
+  // one shape the guard could not see.
+  const selfOnly = readGithubSbomDocument(ghDoc([]))
+  chk('a document listing only the repository itself is refused, not compared',
+    selfOnly.ok === false && /only the repository itself/.test(selfOnly.reason || ''), JSON.stringify(selfOnly))
+  chk('and a document with no packages at all says that instead',
+    (() => { const r = readGithubSbomDocument({ sbom: { spdxVersion: 'SPDX-2.3', packages: [] } })
+      return r.ok === false && /no packages at all/.test(r.reason || '') })(),
+    JSON.stringify(readGithubSbomDocument({ sbom: { spdxVersion: 'SPDX-2.3', packages: [] } })))
   for (const junk of [null, 'text', 42, {}, { sbom: {} }, { sbom: { packages: 'no' } }]) {
     const r = readGithubSbomDocument(junk)
     chk(`a body that is not a document is refused with a reason: ${JSON.stringify(junk)}`,
       r.ok === false && typeof r.reason === 'string' && r.reason.length > 0, JSON.stringify(r))
   }
   // A document with no DESCRIBES relationship still must not bill the repo.
-  const noRel = readGithubSbomDocument({ sbom: { packages: [{ name: 'com.github.acme/widget', SPDXID: 'SPDXRef-github-x', versionInfo: 'main', externalRefs: [{ referenceLocator: 'pkg:github/acme/widget@main' }] }] } })
+  const noRel = readGithubSbomDocument({ sbom: { packages: [
+    { name: 'com.github.acme/widget', SPDXID: 'SPDXRef-github-x', versionInfo: 'main', externalRefs: [{ referenceLocator: 'pkg:github/acme/widget@main' }] },
+    { name: 'lodash', SPDXID: 'SPDXRef-npm-lodash', versionInfo: '4.17.21', externalRefs: [{ referenceLocator: 'pkg:npm/lodash@4.17.21' }] },
+  ] } })
   chk('without a DESCRIBES relationship the purl still identifies the repository node',
-    noRel.ok === true && noRel.packages[0].isRepositorySelf === true, JSON.stringify(noRel))
+    noRel.ok === true && noRel.packages.find((p) => p.name === 'com.github.acme/widget')?.isRepositorySelf === true,
+    JSON.stringify(noRel))
+  chk('and the dependency beside it is not mistaken for the repository',
+    noRel.ok === true && noRel.packages.find((p) => p.name === 'lodash')?.isRepositorySelf === false,
+    JSON.stringify(noRel.packages?.map((p) => [p.name, p.isRepositorySelf])))
 }
 
 console.log('\n── the local reading is never changed by any of this')
