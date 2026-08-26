@@ -66,6 +66,41 @@ const ACCENT_AT = 2
 const HOLLOW_AT = 5
 
 /**
+ * The grid's own measurements, from the kit rather than chosen here.
+ *
+ * Counting the cells and placing the accent correctly still left this drawing a
+ * different logo from the product's, because the PROPORTIONS were its own: a
+ * 6-unit cell on a 9-unit pitch is a gutter half the width of its cell, where
+ * every other drawing of this mark -- the site nav, brand/svg/*.svg, the launch
+ * film -- uses an 8-unit cell on a 10-unit pitch, a gutter one QUARTER of its
+ * cell. Side by side at the same size the two read as different marks, and the
+ * one on the reports was the odd one out.
+ *
+ * The box is 34 and the art starts at 2 because that is the clear space the kit
+ * specifies -- one cell on all four sides, 23.5% of the mark's width -- and
+ * brand/usage.md's minimum-size table is computed from a 1.6-unit stroke in a
+ * 34-unit box. Reproducing those numbers is what makes the table true of this
+ * drawing too.
+ */
+const BOX = 34
+const CELL = 8
+const PITCH = 10
+const ORIGIN = 2
+const RADIUS = 1.6
+const STROKE = 1.6
+
+/**
+ * The smallest size at which this mark may be drawn, from brand/usage.md.
+ *
+ * Below it the hollow cell's outline falls under one device pixel, spreads
+ * across two at partial opacity, and stops reading as an outline at all -- so
+ * the mark says "nine cells" where it should say "one unresolved", which is the
+ * only part of it carrying an argument. The header used to draw at 22 and the
+ * footer at 15.
+ */
+export const MIN_MARK = 24
+
+/**
  * The mark, as inline SVG.
  *
  * `aria-hidden`, because in both lockups below the wordmark sits immediately
@@ -78,16 +113,21 @@ const HOLLOW_AT = 5
  * that one cell's outline are shaved off — which looks like a rendering bug in
  * exactly the cell whose whole job is to look deliberate.
  */
-export function brandMark(size = 22): string {
+export function brandMark(size = MIN_MARK): string {
   const rects: string[] = []
   for (let i = 0; i < CELLS; i++) {
     const kind = i === HOLLOW_AT ? 'sv-hollow' : i === ACCENT_AT ? 'sv-accent' : 'sv-settled'
     rects.push(
-      `<rect class="sv-cell ${kind}" x="${(i % 3) * 9}" y="${Math.floor(i / 3) * 9}" ` +
-      `width="6" height="6" rx="1.2"/>`,
+      `<rect class="sv-cell ${kind}" x="${ORIGIN + (i % 3) * PITCH}" y="${ORIGIN + Math.floor(i / 3) * PITCH}" ` +
+      `width="${CELL}" height="${CELL}" rx="${RADIUS}"/>`,
     )
   }
-  return `<svg class="sv-mark" viewBox="-1 -1 26 26" width="${size}" height="${size}" ` +
+  // The box carries the kit's clear space, so the mark is never crowded by
+  // whatever it is placed beside -- and the stroke on the hollow cell, half of
+  // which falls outside its own rect, has room rather than being shaved off by
+  // the viewport. A clipped outline looks like a rendering bug in exactly the
+  // cell whose whole job is to look deliberate.
+  return `<svg class="sv-mark" viewBox="0 0 ${BOX} ${BOX}" width="${size}" height="${size}" ` +
     `aria-hidden="true" focusable="false">${rects.join('')}</svg>`
 }
 
@@ -196,7 +236,7 @@ export function brandFooter(o: FooterOptions): string {
     )
   }
   const cls = o.plain ? 'sv-foot sv-plain' : 'sv-foot'
-  return `<footer class="${cls}">${brandLockup(15)}` +
+  return `<footer class="${cls}">${brandLockup()}` +
     `<span class="sv-ver">v${esc(version())}</span>` +
     `<span class="sv-prov">${parts.join(' · ')}</span></footer>`
 }
@@ -229,19 +269,19 @@ export function brandCss(): string {
 /* sv-brand — one definition, every page. See src/brand.mts. */
 :root{
   --sv-ink:#1c1b19; --sv-dim:#6b6862; --sv-line:#e6e2db;
-  --sv-accent:#bb4e18; --sv-cell:#847e74;
+  --sv-accent:#bb4e18; --sv-cell:#5f8a6d; --sv-hatch:#9a958c;
   --sv-sans:ui-sans-serif,-apple-system,"Segoe UI",Inter,sans-serif;
   --sv-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
   color-scheme:light;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --sv-ink:#ece9e4; --sv-dim:#9b968d; --sv-line:#302e37;
-  --sv-accent:#ff8a4c; --sv-cell:#858093;
+  --sv-accent:#ff8a4c; --sv-cell:#4c8a63; --sv-hatch:#6d6878;
   color-scheme:dark;
 }}
 :root[data-theme=dark]{
   --sv-ink:#ece9e4; --sv-dim:#9b968d; --sv-line:#302e37;
-  --sv-accent:#ff8a4c; --sv-cell:#858093;
+  --sv-accent:#ff8a4c; --sv-cell:#4c8a63; --sv-hatch:#6d6878;
   color-scheme:dark;
 }
 .sv-brand{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
@@ -252,12 +292,22 @@ export function brandCss(): string {
 .sv-brand .sv-acts{margin-left:auto;display:inline-flex;gap:8px;align-items:center}
 .sv-lockup{display:inline-flex;align-items:center;gap:9px}
 .sv-mark{display:block;flex:none}
+/* The settled cells are the kit's --cell-struct green, not a grey. This module
+   restates the family palette rather than reading the host page's tokens, and
+   the value it restated for the cells was one the brand does not contain. */
 .sv-cell{fill:var(--sv-cell)}
 .sv-cell.sv-accent{fill:var(--sv-accent)}
 /* Outlined, not faded. A cell at 20% opacity reads as a settled cell the
    renderer got wrong; an outline reads as a cell that has not happened yet,
    which is what it is. */
-.sv-cell.sv-hollow{fill:none;stroke:var(--sv-cell);stroke-width:1.1}
+/* --sv-hatch, not --sv-cell. The seven settled cells and the unresolved one are
+   two different statements in this product's vocabulary and two different
+   tokens everywhere else it draws them; painting the outline in the cell colour
+   said the hole was a cell that had merely been drawn differently. */
+.sv-cell.sv-hollow{fill:none;stroke:var(--sv-hatch);stroke-width:1.6}
+/* THE WORDMARK. Sans, 600, .13em, uppercase, letters in --sv-ink and the middle
+   dot in --sv-accent. Every other surface now matches this one; see
+   brand/typography.md, which was rewritten to say so. */
 .sv-word{font:600 13px/1 var(--sv-sans);letter-spacing:.13em;color:var(--sv-ink);white-space:nowrap}
 .sv-sep{color:var(--sv-accent);letter-spacing:0;padding:0 .05em}
 .sv-cmd{font:11px/1 var(--sv-mono);color:var(--sv-dim);border:1px solid var(--sv-line);
@@ -266,7 +316,8 @@ export function brandCss(): string {
   margin:44px 0 0;padding:14px 0 0;border-top:1px solid var(--sv-line);
   color:var(--sv-dim);font:12px/1.6 var(--sv-mono)}
 .sv-foot.sv-plain{margin-top:22px}
-.sv-foot .sv-word{font-size:11px;letter-spacing:.11em}
+/* One wordmark, one setting. The footer used to run 11px at .11em and the
+   header 13px at .13em, which is two specifications of the same logo. */
 .sv-ver{font:11px/1 var(--sv-mono);color:var(--sv-dim);border:1px solid var(--sv-line);
   border-radius:999px;padding:3px 8px;white-space:nowrap}
 /* min-width:0 or a long fingerprint refuses to wrap and pushes the flex row

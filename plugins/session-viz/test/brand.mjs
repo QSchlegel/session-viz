@@ -37,6 +37,7 @@ import { dirname, join } from 'node:path'
 import { render as renderTrends } from '../scripts/render-corpus.mjs'
 import { pickerPage } from '../scripts/qshare.mjs'
 import { PAGE as setupPage, done as setupDone } from '../scripts/qsetup.mjs'
+import { MIN_MARK } from '../scripts/brand.mjs'
 
 // src/render.mts is the one wrapper this stream does not own, so the chrome
 // reaches it as a snippet somebody else pastes. SV_BRAND_QPACT points these
@@ -46,6 +47,7 @@ import { PAGE as setupPage, done as setupDone } from '../scripts/qsetup.mjs'
 const { render: renderPact } = await import(process.env.SV_BRAND_QPACT || '../scripts/render.mjs')
 
 let failed = 0
+
 const chk = (name, ok, detail) => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok || !detail ? '' : `\n       ${detail}`}`)
   if (!ok) failed++
@@ -192,6 +194,43 @@ function layout(svg) {
     /sv-accent/.test(m[1]) ? 'accent' : /sv-hollow/.test(m[1]) ? 'hollow' : 'settled')
 }
 
+/** Every cell's x, y and width, off the emitted SVG. */
+function geometry(svg) {
+  return [...svg.matchAll(/<rect[^>]*\sx="([\d.]+)"[^>]*\sy="([\d.]+)"[^>]*\swidth="([\d.]+)"/g)]
+    .map((m) => ({ x: +m[1], y: +m[2], w: +m[3] }))
+}
+
+// The mark's measurements, from the kit rather than from this file. Canonical
+// source: services/web/public/brand/svg/lockup-on-light.svg in the cloud
+// repository, and the <g class="lg"> block in the site's index.html — an 8-unit
+// cell on a 10-unit pitch, so the gutter is a QUARTER of the cell.
+//
+// Counting nine cells and checking where they sit is still not enough to
+// recognise a mark. This plugin drew the correct nine in the correct
+// arrangement at a 6-unit cell on a 9-unit pitch — a gutter HALF its cell — and
+// every assertion here passed while the reports carried visibly different
+// proportions from every other surface. Where the cells are and how big they
+// are are two different questions and both have to be asked.
+const KIT_CELL = 8
+const KIT_PITCH = 10
+/** Kit palette: --cell-struct, --accent and --hatch, light and dark. The accent
+ *  is deliberately a shade deeper than the site's #c2521a — see brand.mts, it is
+ *  measured for AA on the warmest surface it lands on — so it is not pinned
+ *  here; the two that carry no contrast argument are. */
+const KIT_CELL_LIGHT = '#5f8a6d'
+const KIT_CELL_DARK = '#4c8a63'
+const KIT_HATCH_LIGHT = '#9a958c'
+const KIT_HATCH_DARK = '#6d6878'
+/** brand/usage.md's minimum, spelled out here so the module cannot lower it. */
+const KIT_MIN_PX = 24
+
+// The module's own minimum has to BE the kit's. Asserted separately from the
+// per-page check that nothing is drawn below it, so the two cannot satisfy each
+// other -- which is exactly what they did while the per-page check read its
+// threshold from this same constant.
+chk(`brand.mts agrees with the kit about the minimum size`, MIN_MARK === KIT_MIN_PX,
+  `brand.mts says ${MIN_MARK}px, brand/usage.md says ${KIT_MIN_PX}px`)
+
 /** Everything true of the chrome on every page that carries it. */
 function brandChecks(page, html, { plain = false } = {}) {
   const found = marks(html)
@@ -219,6 +258,31 @@ function brandChecks(page, html, { plain = false } = {}) {
     chk(`${where}: and every other cell is settled`,
       order.filter((_, i) => i !== 2 && i !== 5).every((k) => k === 'settled'),
       order.join(' '))
+
+    // HOW BIG they are, not only where. A 3x3 grid in the right arrangement is
+    // still a different logo if its gutters are twice the kit's.
+    const g = geometry(svg)
+    const xs = [...new Set(g.map((c) => c.x))].sort((a, b) => a - b)
+    const pitch = xs.length > 1 ? xs[1] - xs[0] : 0
+    const cell = g[0]?.w ?? 0
+    chk(`${where}: the cell sits on the kit's pitch, so the gutter is a quarter of the cell`,
+      cell === KIT_CELL && pitch === KIT_PITCH,
+      `cell ${cell} on pitch ${pitch}; the kit is ${KIT_CELL} on ${KIT_PITCH}`)
+    chk(`${where}: all nine cells are the same size`,
+      g.length === 9 && g.every((c) => c.w === cell), g.map((c) => c.w).join(' '))
+
+    // Never below the size at which the hollow cell's outline stops being an
+    // outline. brand/usage.md computes 24px from a 1.6-unit stroke in a 34-unit
+    // box; the footer used to draw this at 15.
+    //
+    // Held against a LITERAL, not against the module's own MIN_MARK. The first
+    // version of this compared the drawn width to the constant that also
+    // supplies the default width, so both sides moved together: lowering
+    // MIN_MARK back to 15 lowered the bar with it and the check passed on a mark
+    // drawn at 15px. A threshold a change can move is not a threshold.
+    const drawn = Number(/width="([\d.]+)"/.exec(svg)?.[1] ?? 0)
+    chk(`${where}: is drawn at or above the kit's minimum size`, drawn >= KIT_MIN_PX,
+      `drawn at ${drawn}px, and the kit's minimum is ${KIT_MIN_PX}px`)
   }
 
   chk(`${page}: wordmark reads SESSION·VIZ`,
@@ -230,6 +294,41 @@ function brandChecks(page, html, { plain = false } = {}) {
   chk(`${page}: separator carries the accent colour`,
     /\.sv-sep\{[^}]*color:var\(--sv-accent\)/.test(region),
     'no .sv-sep rule painting the separator with --sv-accent')
+
+  // THE WORDMARK'S SETTING. brand/typography.md: uppercase, 600, 0.13em, in the
+  // sans stack, letters in --ink and the middle dot in --accent. Five surfaces
+  // drew these six letters and four of them chose their own weight and tracking
+  // -- 700/.1em mono on the site, 600/.13em mono in the console, 800/.13em mono
+  // in the launch film -- while every check anybody had asked only whether the
+  // letters were present.
+  const word = /\.sv-word\{([^}]*)\}/.exec(region)?.[1] ?? ''
+  chk(`${page}: the wordmark is set in the sans stack`,
+    /var\(--sv-sans\)/.test(word) && !/var\(--sv-mono\)/.test(word), word || 'no .sv-word rule')
+  chk(`${page}: at the one weight the kit states`, /\b600\b/.test(word), word)
+  chk(`${page}: and the one tracking`, /letter-spacing:\.13em/.test(word), word)
+  chk(`${page}: and the letters take the ink, not the accent`,
+    /color:var\(--sv-ink\)/.test(word), word)
+  // One setting, not one per placement: the footer used to restate the wordmark
+  // at 11px and .11em, which is a second specification of the same logo.
+  chk(`${page}: nothing restates the wordmark for one placement`,
+    !/\.sv-word\{[^}]*\}[\s\S]*\.sv-word\{/.test(region.replace(/\.sv-foot \.sv-word\{[^}]*\}/g, '')) &&
+      !/letter-spacing:\.11em/.test(region),
+    (region.match(/\.sv-foot \.sv-word\{[^}]*\}/) || [''])[0])
+
+  // The cells and the outline are the kit's colours. The accent is exempt and
+  // says why at KIT_CELL_LIGHT above.
+  for (const [name, value] of [
+    ['settled cells, light', KIT_CELL_LIGHT], ['settled cells, dark', KIT_CELL_DARK],
+    ['the unresolved outline, light', KIT_HATCH_LIGHT], ['the unresolved outline, dark', KIT_HATCH_DARK],
+  ])
+    chk(`${page}: ${name} is the kit's colour`, region.includes(value),
+      `${value} is not among the tokens this page declares`)
+  // The outline is not painted in the cell colour: the seven settled cells and
+  // the unresolved one are two statements, and one token for both said the hole
+  // was just a cell drawn differently.
+  chk(`${page}: the outline takes --sv-hatch, not the cell colour`,
+    /\.sv-hollow\{[^}]*stroke:var\(--sv-hatch\)/.test(region),
+    (region.match(/\.sv-hollow\{[^}]*\}/) || [''])[0])
 
   chk(`${page}: footer states the tool version`,
     new RegExp(`<span class="sv-ver">v${VERSION.replace(/\./g, '\\.')}</span>`).test(html),
