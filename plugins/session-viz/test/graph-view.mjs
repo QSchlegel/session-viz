@@ -291,10 +291,10 @@ const SKEW = base(
   // The layer test moved behind a named predicate when a third reader of it
   // arrived (the status-hub recount), so the shape to assert is that this pass
   // still applies all three filters — not the exact spelling of one of them.
-  chk('one pass applies the replay, the layer toggle and the focus together',
+  chk('one pass applies the replay, the layer toggles and the focus together',
     html.includes("g.classList.toggle('pre',!!pre)") &&
       html.includes('var gone=offLayer(n);') &&
-      html.includes("function offLayer(x){ return hidden&&x.layer==='authored'; }"))
+      (html.match(/function offLayer\(x\)\{/g) || []).length === 1)
 }
 
 // ---------------------------------------------------------------- 5. undated

@@ -16,7 +16,9 @@ import { dirname, join } from 'node:path'
 import { version } from './version.mjs'
 import { unlinkSync, readdirSync, statSync } from 'node:fs'
 import { jsonForScript } from './html.mjs'
-import { deriveGraph, mergeAuthored, layoutGraph } from './graph.mjs'
+import { deriveGraph, mergeAuthored, mergeDependencies, layoutGraph } from './graph.mjs'
+import { readSbom, matchImportRoots } from './sbom.mjs'
+import type { DependencyBom, DependencyMatches } from './graph.mjs'
 import type { IntentGraph, GraphNode, GraphEdge, Suppression } from './graph.mjs'
 import { brandCss, brandHeader, brandFooter } from './brand.mjs'
 import { buildBundle, bundleScript, BUNDLE_GLOBAL, DOWNLOAD_HOOK, pathLimit } from './bundle.mjs'
@@ -229,6 +231,13 @@ const KIND_DARK: Record<string, string> = {
   // the layer only: the diamond is what says authored, and the ring is what
   // says carried.
   intent: '#f0a868', status: '#8b8b95', prior: '#8b8b95',
+  // The dependency layer. `dep` takes the SAME hue as `package` on purpose:
+  // a package this session imported and the bill entry it resolves to are two
+  // views of one thing, and the edge between them reads as a join rather than
+  // as a relation between two unrelated nodes. The square is what says which
+  // side of it you are looking at. `manifest` sits in the stack family, which is
+  // where files that describe a project already live.
+  dep: '#6a9fd4', manifest: '#c47ab0',
 }
 const KIND_LIGHT: Record<string, string> = {
   session: '#b45f1f', harness: '#2c7676', repo: '#b45f1f', model: '#2f6fae',
@@ -238,6 +247,7 @@ const KIND_LIGHT: Record<string, string> = {
   decision: '#15803d', defect: '#b91c1c', guard: '#92400e',
   thread: '#7c22ce', subsystem: '#1d4ed8', question: '#57534e', concept: '#57534e',
   intent: '#a2521a', status: '#5b5b66', prior: '#5b5b66',
+  dep: '#2f6fae', manifest: '#94438a',
 }
 const KIND_FALLBACK = 'question'
 
@@ -605,6 +615,12 @@ footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono)
 .gn .gring{fill:none;stroke:var(--kg-carried);stroke-width:calc(1.4px / var(--kgz,1));
   pointer-events:none}
 .gk.gcar{background:none;border:1.5px solid var(--kg-carried)}
+/* The dependency layer. A SOLID outline where the authored layer is dashed:
+   dashed says "somebody asserted this", solid says "a file declares it". Both
+   differ from the derived layer's plain ring, and the square differs from both
+   shapes, so the three are told apart without colour. */
+.gn.dependency .gs{stroke:var(--kg-label);stroke-width:calc(1.2px / var(--kgz,1))}
+.gk.gsq{border-radius:2px}
 .gn text{font-size:calc(9.5px / var(--kgz,1));fill:var(--kg-label);text-anchor:middle;
   paint-order:stroke;stroke:var(--kg-halo);stroke-width:calc(3px / var(--kgz,1));
   stroke-linejoin:round;pointer-events:none}
@@ -1381,7 +1397,7 @@ const elide = (s: string, max = 26): string =>
  *  through to the neutral. */
 const kindClass = (kind: string): string => String(kind).replace(/[^a-z0-9_-]/gi, '').slice(0, 24)
 
-function renderGraph(session: Session, intent: Intent | null | undefined): string {
+function renderGraph(session: Session, intent: Intent | null | undefined, bom?: RenderMeta['bom']): string {
   const derived = deriveGraph(session as never)
   // The intents and the carried layer are handed to the same merge as the
   // concept bag, so the namespacing, the caps and the suppression report stay
@@ -1401,7 +1417,17 @@ function renderGraph(session: Session, intent: Intent | null | undefined): strin
       graph: p.graph,
     })),
   })
-  const { nodes, edges } = merged
+  // Third and last, so the dependency layer is folded into a graph that already
+  // knows which turns are drawn -- it hangs an edge off a turn node, and can
+  // only do that for turns that survived the derived layer's own gates.
+  const withDeps = mergeDependencies(merged, bom?.sbom, bom?.matched, {
+    importRoots: Object.keys(session.artifacts?.packages ?? {}),
+    turnFiles: session.turns.map((t) => ({
+      index: t.index,
+      paths: (t.files ?? []).map((f) => f.path),
+    })),
+  })
+  const { nodes, edges } = withDeps
   if (!nodes.length) return ''
 
   const W = 1000
@@ -1482,10 +1508,15 @@ function renderGraph(session: Session, intent: Intent | null | undefined): strin
     const r = radius(n)
     // Shape, not colour, carries the layer: a diamond survives greyscale,
     // colour-blindness, and a stylesheet that failed to load.
+    // A SQUARE for a dependency: a third shape for a third kind of claim, and a
+    // deliberately blunt one. A circle was measured here, a diamond was written
+    // here, and a square was declared somewhere else entirely and merely found.
     const body =
       n.layer === 'authored'
         ? `<polygon class="gs" points="${p.x},${p.y - r} ${p.x + r},${p.y} ${p.x},${p.y + r} ${p.x - r},${p.y}"/>`
-        : `<circle class="gs" cx="${p.x}" cy="${p.y}" r="${r}"/>`
+        : n.layer === 'dependency'
+          ? `<rect class="gs" x="${(p.x - r * 0.86).toFixed(1)}" y="${(p.y - r * 0.86).toFixed(1)}" width="${(r * 1.72).toFixed(1)}" height="${(r * 1.72).toFixed(1)}" rx="1.5"/>`
+          : `<circle class="gs" cx="${p.x}" cy="${p.y}" r="${r}"/>`
     // A conclusion carried in from an earlier session keeps the diamond -- the
     // layer is still the layer -- and gains a ring around it. A second outline
     // rather than a second colour, for the reason the diamond is a diamond: it
@@ -1497,7 +1528,9 @@ function renderGraph(session: Session, intent: Intent | null | undefined): strin
       : ''
     // The accessible name carries the two things the shape carries, because a
     // screen reader gets neither the diamond nor the ring.
-    const aria = `${n.label}${n.status ? ` — ${n.status}` : ''}${
+    const layerWord =
+      n.layer === 'dependency' ? ' — declared by a manifest, not observed in this session' : ''
+    const aria = `${n.label}${layerWord}${n.status ? ` — ${n.status}` : ''}${
       n.carried
         ? n.carried.sessionsAgo === null
           ? ' — carried from an earlier session, not this one'
@@ -1512,13 +1545,17 @@ function renderGraph(session: Session, intent: Intent | null | undefined): strin
 
   const derivedCount = nodes.filter((n) => n.layer === 'derived').length
   const carriedNodes = nodes.filter((n) => n.carried)
-  const authoredCount = nodes.length - derivedCount - carriedNodes.length
+  const depCount = nodes.filter((n) => n.layer === 'dependency').length
+  // Subtracted, not assumed. This was `length - derived - carried`, which was
+  // right while there were two layers and would have counted every dependency
+  // node as something the model wrote the moment there were three.
+  const authoredCount = nodes.length - derivedCount - carriedNodes.length - depCount
   // Counted off the NODES that were actually drawn, not off the intent document
   // -- the caps and the id rules can drop a thread, and a legend that counted
   // the input would print a number the canvas does not contain.
   const threadNodes = nodes.filter((n) => n.kind === 'intent' && !n.carried)
   const openThreads = threadNodes.filter((n) => n.status === 'abandoned' || n.status === 'ongoing').length
-  const drops: Suppression[] = [...derived.suppressed, ...merged.dropped]
+  const drops: Suppression[] = [...derived.suppressed, ...withDeps.dropped]
   const suppressedHtml = drops.length
     ? `<ul class="gsup">${drops
         .map((d) => `<li><b>${esc(String(d.dropped))}</b> ${esc(d.what)} not drawn &mdash; ${esc(d.why)}.</li>`)
@@ -1578,6 +1615,11 @@ function renderGraph(session: Session, intent: Intent | null | undefined): strin
         : ''
     }
     ${
+      depCount
+        ? `<span class="ghalf"><b>Declared by the repository</b> <i class="gk gsq"></i> ${depCount} nodes, hidden until asked for</span>`
+        : ''
+    }
+    ${
       threadNodes.length
         ? `<span class="ghalf dim" title="A thread hangs off the turns its author cited, and off a hub shared with the other threads of its status.">${threadNodes.length} threads, ${openThreads} unfinished</span>`
         : ''
@@ -1585,6 +1627,11 @@ function renderGraph(session: Session, intent: Intent | null | undefined): strin
     ${loose}
     ${dense}
     <button id="gtog" class="gbtn gpush" type="button">Hide everything the model wrote</button>
+    ${
+      depCount
+        ? `<button id="gdep" class="gbtn off" type="button" aria-pressed="false">Show what the repository declares (${depCount})</button>`
+        : ''
+    }
   </div>
   <div class="gcanvas" id="gcanvas" tabindex="0" aria-label="Knowledge graph canvas. Scroll to zoom, drag to pan, plus and minus to zoom, 0 to fit.">
     <svg viewBox="0 0 ${W} ${H}" id="qkg" aria-hidden="false">
@@ -1834,6 +1881,17 @@ export interface RenderMeta {
   /** How old the spine was when this rendered. Surfaces the case where step 1
    *  silently failed and this is the PREVIOUS run's spine. */
   spineAgeMin?: number
+  /**
+   * The repository's bill of materials, and this session's imports resolved
+   * against it. Handed IN rather than read here: readSbom walks a directory
+   * tree, and a renderer that touches the filesystem cannot be called on a
+   * spine from another machine -- which is exactly what /qshare and the cloud
+   * console do with it. The CLI reads it; render() only draws it.
+   *
+   * Absent means the page draws no dependency layer and offers no toggle for
+   * one. That is not the same as an empty bill, and the two do not look alike.
+   */
+  bom?: { sbom: DependencyBom; matched: DependencyMatches } | null
 }
 
 export function render(session: Session, intent: Intent | null | undefined, meta?: RenderMeta): string {
@@ -1959,7 +2017,7 @@ ${
 }
 ${renderIntents(session, intent)}
 ${renderQuality(intent)}
-${renderGraph(session, intent)}
+${renderGraph(session, intent, meta?.bom)}
 
 ${renderAppendix(session, intent)}
 
@@ -2048,6 +2106,9 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
 // show off the layout algorithm instead of the session.
 (function(){
   var d=window.__qkg; if(!d) return;
+  // Counted off the payload, not interpolated a second time: the button's number
+  // and the canvas's contents are then the same number by construction.
+  var depTotal=d.nodes.filter(function(n){return n.layer==='dependency';}).length;
   var side=document.getElementById('gside'), tog=document.getElementById('gtog');
   var svg=document.getElementById('qkg'), view=document.getElementById('gview');
   var canvas=document.getElementById('gcanvas'), zl=document.getElementById('gzl');
@@ -2076,12 +2137,19 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   // nothing at all, and the label sat unchanged on the canvas while every check
   // that read the SOURCE agreed the rewrite was there.
   function recount(el,c){ if(!el)return; var t=el.textContent||''; var r=t.replace(/(\\u00b7\\s*)\\d+\\s*$/,'$1'+c); if(r!==t)el.textContent=r; }
-  // ONE definition of "the toggle has hidden this", for nodes and edges alike.
+  // ONE definition of "a toggle has hidden this", for nodes and edges alike.
   // Three handlers each spelling the comparison out is how a node ends up drawn
   // in a state another handler thinks it is hidden in -- and the hub recount
   // below is a third reader of it, which is what turned the duplication from a
-  // style question into a real one.
-  function offLayer(x){ return hidden&&x.layer==='authored'; }
+  // style question into a real one. There are two toggles now and still one
+  // predicate, which is the whole point.
+  //
+  // The dependency layer is off until asked for, and that is not a default it
+  // could go either way on: it is the answer to a different question from the
+  // rest of the canvas, and overlaying it unasked buries a session graph of a
+  // hundred nodes under the repository's dependencies.
+  var showDep=false;
+  function offLayer(x){ return (hidden&&x.layer==='authored')||(!showDep&&x.layer==='dependency'); }
   var eEls=[].slice.call(document.querySelectorAll('#gedges .ge'));
   var hidden=false, pinned=null, upto=d.maxTurn;
   function esc(x){var p=document.createElement('p');p.textContent=x==null?'':String(x);return p.innerHTML;}
@@ -2107,7 +2175,9 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
     var days=n.carried&&typeof n.carried.days==='number'
       ?(n.carried.days===0?', recorded today':n.carried.days===1?', recorded 1 day ago':', recorded '+n.carried.days+' days ago')
       :'';
-    var stamp=n.layer==='derived'
+    var stamp=n.layer==='dependency'
+      ? 'Declared by a manifest in this repository. Not measured from this transcript and not written by the model \u2014 it was true before this session opened.'
+      : n.layer==='derived'
       ? esc(n.measured||'Measured from the transcript.')
       : n.carried
         ? 'Written by the model in session '+esc(String(n.carried.s).slice(0,8))+', '+esc(ago)+esc(days)
@@ -2188,6 +2258,13 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   if(tog)tog.addEventListener('click',function(){
     hidden=!hidden; tog.classList.toggle('off',hidden);
     tog.textContent=hidden?"Show everything the model wrote":"Hide everything the model wrote";
+    paint(pinned);
+  });
+  var dep=document.getElementById('gdep');
+  if(dep)dep.addEventListener('click',function(){
+    showDep=!showDep; dep.classList.toggle('off',!showDep);
+    dep.setAttribute('aria-pressed',showDep?'true':'false');
+    dep.textContent=(showDep?"Hide what the repository declares":"Show what the repository declares")+" ("+depTotal+")";
     paint(pinned);
   });
 
@@ -2325,9 +2402,13 @@ if (isMain) {
     .find((a) => a.endsWith('.json'))
   if (!spinePath) {
     console.error(
-      'usage: render.mjs spine.json [--intent intent.json] [-o out.html] [--open]\n' +
+      'usage: render.mjs spine.json [--intent intent.json] [-o out.html] [--open] [--no-bom]\n' +
         '       render.mjs spine.json --intent intent.json --followup <thread>   print one thread\n' +
-        '       render.mjs spine.json --intent intent.json --followups           list the unfinished ones'
+        '       render.mjs spine.json --intent intent.json --followups           list the unfinished ones\n' +
+        '\n' +
+        '  --no-bom  skip the repository scan. The page then draws no dependency layer\n' +
+        '            and offers no toggle for one, which is a different page from one\n' +
+        '            whose repository has no manifest -- that case says so.'
     )
     process.exit(1)
   }
@@ -2490,7 +2571,29 @@ if (isMain) {
       return undefined
     }
   })()
-  writeFileSync(out, render(session, intent, { fingerprint: hash8, spineAgeMin }), { mode: 0o600 })
+  // The bill, read HERE and not inside render(): readSbom walks a directory
+  // tree, and a renderer that touches the filesystem cannot be handed a spine
+  // from another machine -- which is exactly what /qshare and the cloud console
+  // do with it.
+  //
+  // Opt-out rather than opt-in, because it costs a bounded local scan and no
+  // network. `--no-bom` skips it; a repository with no manifest is a stated
+  // result rather than a silent absence, and a scan that throws leaves the page
+  // exactly as it was before this existed.
+  const bom = (() => {
+    if (argv.includes('--no-bom')) return null
+    const root = typeof session.cwd === 'string' ? session.cwd : ''
+    if (!root) return null
+    try {
+      const sbom = readSbom(root)
+      return { sbom, matched: matchImportRoots(sbom, Object.keys(session.artifacts?.packages ?? {})) }
+    } catch {
+      // A page that renders without the layer is better than no page. The
+      // toggle simply does not appear.
+      return null
+    }
+  })()
+  writeFileSync(out, render(session, intent, { fingerprint: hash8, spineAgeMin, bom }), { mode: 0o600 })
   chmodSync(out, 0o600) // writeFileSync honours mode only when it creates the file
 
   // Remove superseded pages for this session. Be precise about what this buys:

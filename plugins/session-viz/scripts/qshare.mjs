@@ -344,8 +344,8 @@ Nothing is selected, and nothing is sent until you press the button.</p>
 
 <div class="warn"><b>Prompt text is the number to read.</b> It counts fields carrying what
 you literally typed. Absolute paths and your username are stripped before anything leaves
-— the paths below are shown because this page is served from your own machine and never
-leaves it.<br><b>Your local reading also records which files each turn touched</b>, relative
+— the paths below are shown because this page is served from a socket bound to
+127.0.0.1, which no other host can reach.<br><b>Your local reading also records which files each turn touched</b>, relative
 to the working directory that session ran in. ${esc(pathNote)}</div>
 
 <div id="msg"></div>
@@ -383,7 +383,14 @@ ${brandFooter({
             unmeasured
                 ? `${n(filePathCount)} field(s) naming a file, across the ${n(measured.length)} payload(s) that were measured`
                 : `${n(filePathCount)} field(s) naming a file, counted across every payload on this page`,
-            'served on 127.0.0.1 — this page never leaves this machine',
+            // What the socket gives, and not a word more. `server.listen(0,'127.0.0.1')`
+            // means no other host can open a connection to this port -- that is checkable
+            // and it is what this line now says. "This page never leaves this machine"
+            // was a promise about the future that the page cannot keep or observe: it
+            // covers neither what the reader does with the window nor anything running
+            // as them on this machine, and the one surface built to be trusted about
+            // what leaves should not be the one guessing.
+            'bound to 127.0.0.1 — no other host can reach this port',
         ],
     })}
 </div>

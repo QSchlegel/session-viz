@@ -466,13 +466,22 @@ console.log('\n/qshare — the picker')
 const picker = pickerPage(ROWS, 'test-nonce', new Set(['alpha']))
 brandChecks('/qshare', picker)
 selfContained('/qshare', picker)
+// The page states what the socket gives and stops there. It used to promise
+// "this page never leaves this machine", which is a claim about the future that
+// nothing on the page can keep or check — and this suite was pinning that exact
+// sentence, so the guard was holding the overclaim in place rather than catching
+// it. Asserted as an absence as well as a presence: the sentence must be gone,
+// not merely accompanied.
+chk('/qshare: does not promise what happens to the page after it is served',
+  !/never leaves (this|it)/i.test(picker),
+  (picker.match(/never leaves[^<.]*/) || [''])[0])
 provenance('/qshare', picker, [
   // The redaction note the page has always carried, in its own words, above the
   // table. The footer restates it; neither is allowed to be the only copy.
   'Absolute paths and your username are stripped before anything leaves',
   '2 projects · 7 sessions counted on this machine',
   '1 already shared',
-  'served on 127.0.0.1 — this page never leaves this machine',
+  'bound to 127.0.0.1 — no other host can reach this port',
 ])
 // The picker's whole page is one template literal and its script lives inside
 // it. brandCss() is now interpolated into that literal, so a stray backtick in

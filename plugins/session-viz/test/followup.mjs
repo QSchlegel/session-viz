@@ -647,10 +647,16 @@ section('8. the whole authored layer is still hideable in one toggle', () => {
   // toggle has hidden something -- nodes, edges, and the status-hub recount --
   // and the property worth holding is that they all ask the same function, not
   // that only one of them asks.
-  chk('the toggle decides by layer in exactly one place',
-    (html.match(/function offLayer\(x\)\{ return hidden&&x\.layer==='authored'; \}/g) || []).length === 1)
-  chk('and nothing spells that comparison out for itself',
-    (html.match(/hidden&&[ne]\.layer==='authored'/g) || []).length === 0)
+  // TWO toggles now — the authored layer and the dependency layer — and still
+  // one predicate. That is the property worth holding: the count of definitions,
+  // not the text of the one that happened to exist when this was written.
+  chk('the toggles decide by layer in exactly one place',
+    (html.match(/function offLayer\(x\)\{/g) || []).length === 1)
+  chk('and that one place covers both layers',
+    /function offLayer\(x\)\{[^}]*x\.layer==='authored'[^}]*x\.layer==='dependency'[^}]*\}/.test(html),
+    (html.match(/function offLayer\(x\)\{[^}]*\}/) || [''])[0])
+  chk('and nothing spells either comparison out for itself',
+    (html.match(/(?:hidden|showDep)&&[ne]\.layer===/g) || []).length === 0)
   chk('edges are decided by it too, or a line would outlive both its ends',
     /var gone=offLayer\(e\);/.test(html))
   chk('the button says it hides everything the model wrote, not only this session\'s',

@@ -49,7 +49,22 @@
 
 // ---------------------------------------------------------------- types
 
-export type GraphLayer = 'derived' | 'authored'
+/**
+ * Three kinds of claim, not two.
+ *
+ *   derived     measured out of this transcript
+ *   authored    written by the model at /qpact step 3
+ *   dependency  declared by a manifest in the repository
+ *
+ * The third is neither of the first two and must not be folded into either. It
+ * was not observed in the session -- the manifest said it before the session
+ * started -- and no model wrote it. Giving it its own layer is what lets one
+ * predicate hide it, the legend count it apart, and a reader know which of three
+ * different things they are looking at.
+ */
+import type { ImportRootReason } from './sbom.mjs'
+
+export type GraphLayer = 'derived' | 'authored' | 'dependency'
 
 export interface GraphNode {
   id: string
@@ -1257,4 +1272,284 @@ export function mergeAuthored(
   for (const e of live)
     if (e.firstTurn === undefined) e.firstTurn = Math.max(at(e.source), at(e.target))
   return { nodes, edges: live, dropped }
+}
+
+// ══════════════════════════════════════════════════ the dependency layer
+//
+// WHY THIS IS NOT THE BILL OF MATERIALS DRAWN AS A GRAPH.
+//
+// A real bill is hundreds to thousands of packages where this canvas holds about
+// a hundred nodes. Drawing it produces a hairball that says nothing about the
+// session, and it answers a question nobody asked here: "what does this
+// repository depend on" is a list, and a list is what `readSbom` already
+// returns. What belongs on a canvas about ONE SESSION is the part of the bill
+// that session reached.
+//
+// So nothing here draws a package because it exists. A package is drawn when
+// one of two measured things points at it:
+//
+//   1. THE SESSION'S CODE IMPORTED IT. `package:<root>` nodes are already on
+//      the derived layer -- import roots harvested out of file contents this
+//      session wrote or read. matchImportRoots resolves those to bill entries,
+//      and the edge between them is the correlation: the import you can see in
+//      the transcript, joined to the version the repository actually declares.
+//
+//   2. A TURN EDITED THE MANIFEST THAT DECLARES IT. Per-turn file paths make
+//      this attributable to a turn rather than to the session, which is the
+//      only reason it can be drawn as an edge to a turn at all.
+//
+// Everything else in the bill is COUNTED. A gate that drops silently is the
+// defect the suppression list exists to prevent, so every package not drawn is
+// in a Suppression with the reason it was not.
+//
+// DATES. Every node here is dated null -- present from the first frame. A
+// dependency did not happen at a turn: the manifest declared it before the
+// session opened, and giving it a turn would be inventing a moment. The one
+// thing that did happen at a turn is a turn TOUCHING a manifest, and that is
+// the edge, which is dated.
+
+/**
+ * Every reason matchImportRoots can give, in words.
+ *
+ * A Record keyed by the real union rather than a chain of comparisons, so
+ * ADDING a reason in sbom.mts fails this build until somebody writes the
+ * sentence for it. The first version of this was a ternary chain with a
+ * fallback, and it got `node-builtin` wrong -- the page printed "reported as
+ * node-builtin", which reads like a deliberate phrase rather than like the
+ * default branch nobody noticed. A wrong reason is worse than a missing one
+ * here: this list is the page's account of what it did not draw.
+ */
+const WHY_UNMATCHED: Record<ImportRootReason, string> = {
+  // Written without a subject pronoun, because the sentence is printed after a
+  // count that may be one or many and "1 imported name ... they name" reads as
+  // a template nobody proofread.
+  'node-builtin': 'a node built-in is declared by no manifest',
+  'maybe-node-builtin':
+    'the name is a node built-in that no installed package shadows, so nothing here can tell which was meant',
+  'bom-incomplete':
+    'the bill is not a full closure, so absence from it is not evidence of being missing',
+  'not-in-bom': 'the bill was searched in full and does not contain the name',
+  'no-bom': 'there is no bill to search against',
+  'empty-specifier': 'the import named nothing',
+  'relative-specifier': 'the specifier is a path inside this repository, not a package',
+  'absolute-specifier': 'the specifier is an absolute path, not a package',
+  'subpath-import': "the specifier is a package's own internal subpath import",
+  'url-specifier': 'the specifier is a URL, which no manifest declares',
+}
+
+/** At most this many bill entries reach the canvas, per reading. */
+const MAX_DEP_NODES = 60
+
+export interface DependencySource {
+  /** Import roots harvested from the session, i.e. the keys of
+   *  `session.artifacts.packages` -- the same strings the derived layer drew. */
+  importRoots: readonly string[]
+  /** One entry per turn that touched at least one file. */
+  turnFiles: ReadonlyArray<{ index: number; paths: readonly string[] }>
+}
+
+/** The shape of `readSbom`'s result that this file needs. Declared structurally
+ *  rather than imported, so graph.mts keeps depending on nothing. */
+export interface DependencyBom {
+  status: 'ok' | 'no-manifest'
+  reason: string | null
+  transitiveClosure: string
+  manifests: ReadonlyArray<{ id: string; path: string; name: string | null; declaredCount: number }>
+  entries: ReadonlyArray<{
+    id: string; name: string; version: string | null; versionKind: string
+    relation: 'direct' | 'transitive'; scope: 'runtime' | 'development'
+    license: string | null; versionSource: string
+  }>
+  edges: ReadonlyArray<{ from: string; to: string; kind: string }>
+}
+
+/** What `matchImportRoots` returns, structurally. */
+export interface DependencyMatches {
+  matches: ReadonlyArray<{
+    root: string; packageName: string | null; entryIds: readonly string[]
+    status: 'matched' | 'unmatched'; reason: string | null
+  }>
+}
+
+/**
+ * Fold the bill into a graph that already holds the derived and authored layers.
+ *
+ * Returns the same shape mergeAuthored does, so a caller can chain them and the
+ * renderer keeps one list of nodes. When there is no bill, or the reading found
+ * no manifest, this adds NO nodes and one Suppression saying why -- an empty
+ * dependency layer and a missing one are different facts and the page has to be
+ * able to tell a reader which it is looking at.
+ */
+export function mergeDependencies(
+  base: MergeResult,
+  bom: DependencyBom | null | undefined,
+  matched: DependencyMatches | null | undefined,
+  source: DependencySource,
+): MergeResult {
+  const nodes = [...base.nodes]
+  const edges = [...base.edges]
+  const dropped = [...base.dropped]
+  if (!bom) return { nodes, edges, dropped }
+  if (bom.status !== 'ok') {
+    dropped.push({
+      what: 'the bill of materials',
+      dropped: 1,
+      of: 1,
+      why: bom.reason || 'the reading found no manifest, so there is no bill to draw',
+    })
+    return { nodes, edges, dropped }
+  }
+
+  const have = new Set(nodes.map((n) => n.id))
+  const entryById = new Map(bom.entries.map((e) => [e.id, e]))
+  const add = (id: string, kind: string, label: string, extra: Partial<GraphNode>): boolean => {
+    if (have.has(id)) return true
+    nodes.push({ id, kind, label, degree: 0, layer: 'dependency', firstTurn: null, ...extra })
+    have.add(id)
+    return true
+  }
+
+  // ---- 1. the correlation: an import this session made, and what it resolves to
+  //
+  // Budgeted first, because this is the half a reader came for: it is the only
+  // place the transcript and the repository meet.
+  let budget = MAX_DEP_NODES
+  let matchedDrawn = 0
+  const ambiguous: string[] = []
+  const unmatched = new Map<string, number>()
+  for (const m of matched?.matches ?? []) {
+    if (m.status !== 'matched' || m.entryIds.length === 0) {
+      const why = m.reason || 'unstated'
+      unmatched.set(why, (unmatched.get(why) ?? 0) + 1)
+      continue
+    }
+    // One name can be installed at several versions in one tree. Picking one
+    // would be a guess, so all of them are drawn and the count is reported --
+    // the ambiguity is the finding.
+    if (m.entryIds.length > 1) ambiguous.push(m.root)
+    for (const id of m.entryIds) {
+      const e = entryById.get(id)
+      if (!e) continue
+      if (budget <= 0) break
+      const depId = `dep:${e.id}`
+      if (!have.has(depId)) {
+        budget--
+        matchedDrawn++
+        add(depId, 'dep', `${e.name}${e.version ? ` ${e.version}` : ''}`, {
+          note:
+            `Declared by this repository, not observed in this session. ` +
+            `${e.relation === 'direct' ? 'A direct dependency' : 'Pulled in by another package'}, ` +
+            `${e.scope === 'development' ? 'development only' : 'used at runtime'}. ` +
+            `Version ${e.version ?? 'not stated by any manifest or lockfile'}` +
+            `${e.versionKind === 'locked' ? '' : ` (${e.versionKind}, not a resolved version)`}` +
+            `, read from ${e.versionSource}. Licence ${e.license ?? 'unknown -- which never means MIT'}.`,
+        })
+      }
+      // The import root is a DERIVED node and stays one. This edge is the join.
+      const rootId = `package:${m.root}`
+      if (have.has(rootId))
+        edges.push({
+          source: rootId, target: depId, rel: 'resolves to',
+          layer: 'dependency', dashed: true, firstTurn: null,
+        })
+    }
+  }
+
+  // ---- 2. a manifest a turn actually edited
+  const manifestByPath = new Map(bom.manifests.map((m) => [m.path, m]))
+  const directOf = new Map<string, string[]>()
+  for (const e of bom.edges)
+    if (e.kind === 'declares') {
+      let l = directOf.get(e.from)
+      if (!l) directOf.set(e.from, (l = []))
+      l.push(e.to)
+    }
+  const touchedAt = new Map<string, number>()
+  for (const t of source.turnFiles)
+    for (const path of t.paths) {
+      const man = manifestByPath.get(path)
+      if (!man) continue
+      const prev = touchedAt.get(man.path)
+      if (prev === undefined || t.index < prev) touchedAt.set(man.path, t.index)
+    }
+
+  let declaredDrawn = 0
+  for (const [path, turn] of [...touchedAt].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const man = manifestByPath.get(path)!
+    const manId = `manifest:${path}`
+    add(manId, 'manifest', path, {
+      note:
+        `A manifest in this repository, edited during this session. It declares ` +
+        `${man.declaredCount} dependenc${man.declaredCount === 1 ? 'y' : 'ies'}. ` +
+        `Being edited is a tool call naming this path -- it does not say what changed in it.`,
+    })
+    // Dated, because this one really did happen at a turn.
+    if (have.has(`turn:${turn}`))
+      edges.push({
+        source: `turn:${turn}`, target: manId, rel: 'edited',
+        layer: 'dependency', dashed: true, firstTurn: turn,
+      })
+    for (const id of directOf.get(man.id) ?? []) {
+      const e = entryById.get(id)
+      if (!e) continue
+      const depId = `dep:${e.id}`
+      if (!have.has(depId)) {
+        if (budget <= 0) continue
+        budget--
+        declaredDrawn++
+        add(depId, 'dep', `${e.name}${e.version ? ` ${e.version}` : ''}`, {
+          note:
+            `Declared by ${path}, which a turn of this session edited. Not observed ` +
+            `in the transcript. Version ${e.version ?? 'not stated'}` +
+            `${e.versionKind === 'locked' ? '' : ` (${e.versionKind})`}. ` +
+            `Licence ${e.license ?? 'unknown -- which never means MIT'}.`,
+        })
+      }
+      edges.push({
+        source: manId, target: depId, rel: 'declares',
+        layer: 'dependency', dashed: true, firstTurn: null,
+      })
+    }
+  }
+
+  // ---- 3. what the gate dropped, every bit of it
+  // The renderer prints `<b>N</b> <what> not drawn`, so `what` carries its own
+  // number agreement. "1 bill entries" is the kind of thing that makes a reader
+  // stop trusting the numbers around it.
+  const many = (n: number, one: string, more: string): string => (n === 1 ? one : more)
+  const drawn = matchedDrawn + declaredDrawn
+  const rest = bom.entries.length - drawn
+  if (rest > 0)
+    dropped.push({
+      what: many(rest, 'bill entry', 'bill entries'),
+      dropped: rest,
+      of: bom.entries.length,
+      why:
+        'nothing measured in this session points at ' + many(rest, 'it', 'them') +
+        ' -- no import resolved to one and no turn edited a manifest that declares one' +
+        (budget <= 0 ? `, and the canvas takes at most ${MAX_DEP_NODES} in any case` : ''),
+    })
+  for (const [why, n] of [...unmatched].sort((a, b) => b[1] - a[1]))
+    dropped.push({
+      what: many(n, 'imported name with no entry in the bill', 'imported names with no entry in the bill'),
+      dropped: n,
+      of: (matched?.matches ?? []).length,
+      why: WHY_UNMATCHED[why as ImportRootReason] ?? `the reading reported them as ${why}`,
+    })
+  if (ambiguous.length)
+    dropped.push({
+      what: many(ambiguous.length, 'import drawn to more than one entry', 'imports drawn to more than one entry'),
+      dropped: ambiguous.length,
+      of: (matched?.matches ?? []).length,
+      why: 'one name is installed at several versions here, and choosing one of them would be a guess',
+    })
+  const untouched = bom.manifests.length - touchedAt.size
+  if (untouched > 0)
+    dropped.push({
+      what: many(untouched, 'manifest', 'manifests'),
+      dropped: untouched,
+      of: bom.manifests.length,
+      why: 'no turn of this session named ' + many(untouched, 'its path', 'their paths'),
+    })
+  return { nodes, edges, dropped }
 }
