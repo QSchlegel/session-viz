@@ -140,6 +140,11 @@ jobs:
       # The consent gate on shipping a session to the cloud — "nothing leaves
       # this machine unless you were shown what would leave". It is the largest
       # claim the tool makes and it was the last suite running nowhere.
+      # The dependency layer, which is mostly a set of assertions about what it
+      # refuses to draw.
+      - name: The bill on the canvas
+        run: node plugins/session-viz/test/bom-view.mjs
+
       - name: Consent before anything is sent
         run: node plugins/session-viz/test/ship.mjs
 
