@@ -204,6 +204,14 @@ export const LIMITS: readonly string[] = [
     "the `prompt_chars` column and the turn's `fullChars` field give the length before " +
     'truncation, so a stored prompt shorter than that number is a fragment.',
 
+  'In the CSV members, a value that begins =, +, -, @, a tab or a carriage return is ' +
+    "written with a leading apostrophe. Those characters open a formula in Excel, Numbers " +
+    'and Sheets, and tool, package and MCP names are harvested out of tool-call inputs ' +
+    'rather than constrained upstream -- so a name beginning `=` would otherwise arrive as ' +
+    'a live cell in a file its reader was told to treat as a record. The apostrophe is not ' +
+    'part of the value. Compare a CSV cell against the same value in session.json and this ' +
+    'is the difference; numeric columns do not get it, so a negative number stays negative.',
+
   'This package additionally rewrites home-directory paths and email-shaped strings in ' +
     'every field before writing them, so prompt text here can differ from the page it was ' +
     'generated from. The page is the unrewritten form. Prompt text is also where a path ' +
@@ -723,7 +731,14 @@ function turnsCsv(turns: SessionTurn[]): string {
       num(t.tokens.cacheRead),
       num(t.tokens.cacheCreate),
       num(t.fullChars),
-      num(t.text.length),
+      // The length of the text AS THIS PACKAGE STORES IT, which is the scrubbed
+      // form. `t.text.length` measured the raw string, and the raw string is not
+      // what session.json carries: scrub() rewrites a home path to `~` (shorter)
+      // and an address to «redacted-email» (usually longer), so the column named
+      // `_stored` was the one number here describing a string the package does
+      // not contain. A reader checking the two against each other found them
+      // disagreeing with no stated reason.
+      num(scrub(t.text).length),
       bit(t.signals.terse),
       bit(t.signals.hasFileRef),
       bit(t.signals.hasCodeBlock),

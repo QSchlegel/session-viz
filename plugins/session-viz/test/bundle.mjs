@@ -666,6 +666,50 @@ for (const m of bundle.members) {
   chk(`${m.name}: names no framework it could be read as claiming conformance with`, !hit, hit ? `found ${JSON.stringify(hit[0])}` : '')
 }
 
+console.log('\n── every number describes the string the package actually holds')
+{
+  // `prompt_chars_stored` measured the RAW text while session.json stores the
+  // scrubbed form, so the one column named for what is stored described a string
+  // the package does not contain. The fixture's turn 0 carries both a home path
+  // and an address, so scrubbing changes its length in both directions.
+  // Column indices off the CSV's own header, not off an imported constant: the
+  // header is what a reader of the file has.
+  const head = (rows[0] ?? '').split(',')
+  const t0 = (rows[1] ?? '').split(',')
+  const stored = Number(t0[head.indexOf('prompt_chars_stored')])
+  const full = Number(t0[head.indexOf('prompt_chars')])
+  const json = JSON.parse(textOf(zip, 'session.json') ?? '{}')
+  // Nested under `session`, which is where the member actually puts it.
+  const text = String(json.session?.turns?.[0]?.text ?? '')
+  chk('session.json really does carry the turn text this is measuring', text.length > 0, `${text.length} chars`)
+  const raw = String(fixture().turns[0].text ?? '')
+  chk('prompt_chars_stored is the length of the text session.json carries',
+    stored === text.length, `column says ${stored}, session.json holds ${text.length}`)
+  // Without this the check could pass on a fixture scrubbing changed nothing in.
+  chk('and scrubbing really did change that length, so this is not a coincidence',
+    text.length !== raw.length, `scrubbed ${text.length}, raw ${raw.length}`)
+  chk('while prompt_chars still reports the length before truncation', full > 0, String(full))
+}
+
+console.log('\n── the CSV formula guard is disclosed, not just applied')
+{
+  // Read off the MEMBER, not off the exported constant: LIMITS.txt is what the
+  // reader opens, and a sentence that exists in the array but never reaches the
+  // file would satisfy a check against the array.
+  // Whitespace-normalised: LIMITS.txt is hard-wrapped at 78 columns, so a
+  // sentence tested as written spans a line break and matches nothing. The first
+  // version of these three read the unwrapped text and failed on the wrap.
+  const flatLimits = limits.replace(/\s+/g, ' ')
+  chk('LIMITS.txt says a cell can gain a leading apostrophe',
+    /leading apostrophe/i.test(flatLimits), '')
+  chk('and names the characters that trigger it',
+    /begins =, \+, -, @/.test(flatLimits), '')
+  chk('and says the apostrophe is not part of the value',
+    /not part of the value/i.test(flatLimits), '')
+  chk('and says a numeric column does not get it',
+    /negative number stays negative/i.test(flatLimits), '')
+}
+
 console.log('\n── nothing carries an account name or a home path')
 // "A home root can only ever be at the HEAD of a path" is what this check used
 // to assume, and it is false. `/System/Volumes/Data/Users/<name>/.zshrc` is what
