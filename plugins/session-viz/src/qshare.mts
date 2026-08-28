@@ -13,6 +13,15 @@
 //
 //   1. Strips the machine-local parts nobody else can use. An absolute path
 //      becomes a repo name. Your username is not analysis, it is incidental.
+//      The spine also records, per turn, which files that turn touched —
+//      relative to the WORKING DIRECTORY the session ran in, which is not the
+//      same thing as the repository root and must not be described as it: a
+//      session started in `packages/api` anchors there, and a transcript that
+//      never said what directory it ran in has nothing to relativise against and
+//      keeps the path with its home root cut to `~`. Nothing built here reads a
+//      turn, so no payload carries one today; the picker and --review both COUNT
+//      them in the bytes rather than asserting that, because an assertion would
+//      outlive whoever widens the producer next.
 //   2. Refuses to send an item you have not reviewed. --share prints a summary
 //      of what is in the payload and requires --yes, so the first time anyone
 //      shares a session they see that prompt text is in it.
@@ -31,6 +40,7 @@ import { emitJson } from './out.mjs'
 // where that lives now, so this finds it wherever /qsetup was able to put it,
 // which under a sandboxed harness is not necessarily the preferred location.
 import { config, api } from './cloud.mjs'
+import { brandCss, brandHeader, brandFooter } from './brand.mjs'
 import type { Config } from './cloud.mjs'
 
 const run = promisify(execFile)
@@ -75,13 +85,32 @@ function stripPaths<T>(value: T): T {
 }
 
 /** Counts the things a person should be told are in a payload before it leaves. */
-export function describe(payload: unknown): { bytes: number; textFields: number; homePaths: number; keys: string[] } {
+export function describe(payload: unknown): {
+  bytes: number
+  textFields: number
+  homePaths: number
+  filePaths: number
+  keys: string[]
+} {
   const body = JSON.stringify(payload ?? null)
   const textFields = (body.match(/"text":/g) || []).length
   const homePaths = (body.match(new RegExp(HOME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length
+  // The spine now records WHICH file each turn touched, per turn, under a
+  // `path`. Nothing this command sends is built from a turn today -- the corpus
+  // digests and incidents are field lists, and neither names a file -- so this
+  // counts zero on every payload as it stands.
+  //
+  // Counted anyway, and counted out of the actual bytes rather than reasoned
+  // about, for the same reason textFields is: a promise about what a payload
+  // does not contain rots the moment somebody widens the producer, and nobody
+  // re-reads this comment when they do. A number read off the wire cannot rot.
+  // It over-counts rather than under-counts by design -- any `path` key answers
+  // it -- because being told there is more in the payload than there is costs a
+  // second look, and the other direction costs a leak.
+  const filePaths = (body.match(/"path":/g) || []).length
   const keys = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? Object.keys(payload as Record<string, unknown>) : []
-  return { bytes: body.length, textFields, homePaths, keys }
+  return { bytes: body.length, textFields, homePaths, filePaths, keys }
 }
 
 // ---------------------------------------------------------------- corpus
@@ -223,6 +252,11 @@ interface PickRow {
   turns: number
   bytes: number
   textFields: number
+  /** Fields in this row's payload that name a file, or null when the payload
+   *  would not build and nothing was measured. Null is not zero: the page says
+   *  "not measured" for it rather than reporting a reassuring number it does not
+   *  have. */
+  filePaths: number | null
   ambiguous: boolean
   /** Which harnesses produced these sessions, most sessions first. */
   harnesses: Array<[string, number]>
@@ -240,13 +274,14 @@ async function pickRows(m: CorpusModel): Promise<PickRow[]> {
     // the picker hands back a ref that already works.
     const ref = ambiguous ? String(p['cwd'] ?? p.name) : p.name
     let bytes = 0, textFields = 0
+    let filePaths: number | null = null
     try {
       // projectPayload against the corpus already in hand, NOT payloadFor —
       // which rebuilds the corpus on every call. Sixty projects meant sixty
       // full corpus runs at about a minute each, so the picker was an hour from
       // opening and looked simply hung.
       const d = describe(projectPayload(m, ref))
-      bytes = d.bytes; textFields = d.textFields
+      bytes = d.bytes; textFields = d.textFields; filePaths = d.filePaths
     } catch { /* a project whose payload will not build is shown with zeros */ }
     // Already on every project as a per-harness session count. Shown because a
     // project is rarely one harness — the busiest here is 205 Cursor sessions
@@ -258,7 +293,7 @@ async function pickRows(m: CorpusModel): Promise<PickRow[]> {
     rows.push({
       ref, name: p.name, cwd: String(p['cwd'] ?? ''),
       sessions: Number(p.sessions || 0), turns: Number(p.turns || 0),
-      bytes, textFields, ambiguous, harnesses,
+      bytes, textFields, filePaths, ambiguous, harnesses,
     })
   }
   // Most prompt text first: the rows that most need a decision should be met
@@ -283,14 +318,36 @@ const HARNESS_LABEL: Record<string, string> = {
  *  is a syntax error that kills the whole page — and that has happened twice. */
 export function pickerPage(rows: PickRow[], nonce: string, shared: Set<string>): string {
   const n = (x: number): string => x.toLocaleString('en-GB')
+  // The reading on this machine now keeps the path of every file a turn touched.
+  // Nothing built below carries one today, and saying so as a promise would be a
+  // sentence that stays on the page long after somebody widens the producer. So
+  // the page reports the count it measured in the bytes it is about to offer,
+  // and admits the rows it could not measure instead of scoring them zero.
+  const measured = rows.filter((r) => typeof r.filePaths === 'number')
+  const unmeasured = rows.length - measured.length
+  const filePathCount = measured.reduce((a, r) => a + (r.filePaths as number), 0)
+  const pathNote = unmeasured
+    ? `${n(measured.length)} of ${n(rows.length)} payload(s) on this page were measured for that and ` +
+      `carry ${n(filePathCount)}; the other ${n(unmeasured)} were not measured, and are not being reported as zero.`
+    : `${n(filePathCount)} of the fields in the payloads on this page name one — counted in the bytes ` +
+      `themselves, not promised.`
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Choose what to share — session-viz</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{--bg:#fbfaf8;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;--line:#e6e2db;--accent:#c2521a;
---warn:#9a6a12;--ok:#2f6b46;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
-@media(prefers-color-scheme:dark){:root{--bg:#16151a;--panel:#1e1d23;--ink:#ece9e4;--muted:#9b968d;
---line:#302e37;--accent:#ff8a4c;--warn:#e0b055;--ok:#6fbf8e}}
+--warn:#9a6a12;--ok:#2f6b46;--on-accent:#fff;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+--h-cc:#c2521a;--h-cx:#4a7fb5;--h-cu:#5f8a6d;--h-cu-line:#5f8a6d}
+/* Guarded and repeated, matching the reports. The system query alone was two
+   states, not three: the brand chrome beside it flips on
+   :root:not([data-theme=light]), so the day anything sets that attribute here
+   the logo and the page would disagree about which theme they were in. */
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#16151a;--panel:#1e1d23;--ink:#ece9e4;--muted:#9b968d;
+--line:#302e37;--accent:#ff8a4c;--warn:#e0b055;--ok:#6fbf8e;
+--h-cc:#ff8a4c;--h-cx:#6a9fd4;--h-cu:#8fbc6b;--h-cu-line:#4c8a63}}
+:root[data-theme=dark]{--bg:#16151a;--panel:#1e1d23;--ink:#ece9e4;--muted:#9b968d;
+--line:#302e37;--accent:#ff8a4c;--warn:#e0b055;--ok:#6fbf8e;
+--h-cc:#ff8a4c;--h-cx:#6a9fd4;--h-cu:#8fbc6b;--h-cu-line:#4c8a63}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Inter,sans-serif}
 .wrap{max-width:920px;margin:0 auto;padding:36px 22px 120px}
@@ -327,13 +384,14 @@ padding:1px 8px;margin:0 4px 3px 0;border:1px solid var(--line);color:var(--mute
    — which is the whole request. */
 @media (prefers-reduced-motion: reduce){ .cells rect.at{animation:none} }
 tr.sent td{opacity:.55}
-.h-claude-code{border-color:#c2521a;color:#c2521a}
-.h-codex{border-color:#4a7fb5;color:#4a7fb5}
-.h-cursor{border-color:#5f8a6d;color:#5f8a6d}
-@media(prefers-color-scheme:dark){
-.h-claude-code{border-color:#ff8a4c;color:#ff8a4c}
-.h-codex{border-color:#6a9fd4;color:#6a9fd4}
-.h-cursor{border-color:#4c8a63;color:#8fbc6b}}
+/* One token per harness rather than a second media query. The chips used to
+   restate their own colours under prefers-color-scheme, which meant the page
+   had two places that decided what "dark" was and only one of them learned
+   about [data-theme]. Cursor keeps a separate border token because its dark
+   pair genuinely differs — the ink is lifted for contrast, the rule is not. */
+.h-claude-code{border-color:var(--h-cc);color:var(--h-cc)}
+.h-codex{border-color:var(--h-cx);color:var(--h-cx)}
+.h-cursor{border-color:var(--h-cu-line);color:var(--h-cu)}
 /* Now a badge beside the project name rather than a cell of its own, so it
    needs the gap the checkbox column used to give it. */
 .done{color:var(--ok);font-size:12px;margin-left:7px}
@@ -341,7 +399,7 @@ input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:po
 .bar{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);
 padding:14px 22px;display:flex;gap:16px;align-items:center;justify-content:center;flex-wrap:wrap}
 .sum{font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
-button{appearance:none;border:0;border-radius:9px;background:var(--accent);color:#fff;font:inherit;
+button{appearance:none;border:0;border-radius:9px;background:var(--accent);color:var(--on-accent);font:inherit;
 font-weight:600;padding:10px 20px;cursor:pointer}
 button:disabled{opacity:.4;cursor:not-allowed}
 .warn{background:var(--panel);border:1px solid var(--warn);border-radius:10px;padding:13px 16px;
@@ -349,7 +407,9 @@ margin:0 0 24px;font-size:13.5px;color:var(--muted)}
 .warn b{color:var(--ink)}
 #msg{padding:13px 16px;border-radius:10px;margin:0 0 20px;display:none;font-size:14px;
 background:var(--panel);border:1px solid var(--line)}
+${brandCss()}
 </style></head><body><div class="wrap">
+${brandHeader({ command: '/qshare' })}
 <h1>Choose what to share</h1>
 <p class="lede">Each of these publishes to your workspace, readable by everyone in it.
 Nothing is selected, and nothing is sent until you press the button.</p>
@@ -357,7 +417,8 @@ Nothing is selected, and nothing is sent until you press the button.</p>
 <div class="warn"><b>Prompt text is the number to read.</b> It counts fields carrying what
 you literally typed. Absolute paths and your username are stripped before anything leaves
 — the paths below are shown because this page is served from your own machine and never
-leaves it.</div>
+leaves it.<br><b>Your local reading also records which files each turn touched</b>, relative
+to the working directory that session ran in. ${esc(pathNote)}</div>
 
 <div id="msg"></div>
 
@@ -383,6 +444,23 @@ ${r.ambiguous && r.cwd ? `<span class="pth">${esc(r.cwd)}</span>` : ''}</td>
 <td class="num">${n(Math.round(r.bytes / 1024))} kB</td>
 </tr>`).join('')}
 </tbody></table>
+${brandFooter({
+  // No `command`, so no timestamp. This page is not generated at a moment, it
+  // is served at one — and a generation time on a live picker is a fact about
+  // the page that the page cannot support.
+  facts: [
+    `${n(rows.length)} projects · ${n(rows.reduce((a, r) => a + r.sessions, 0))} sessions counted on this machine`,
+    shared.size ? `${n(shared.size)} already shared` : null,
+    'absolute paths and your username are stripped before anything leaves',
+    // Counted, not claimed. The local reading records which files each turn
+    // touched; whether any of that reaches a payload is a question about the
+    // bytes, and this is the answer for the bytes on this page.
+    unmeasured
+      ? `${n(filePathCount)} field(s) naming a file, across the ${n(measured.length)} payload(s) that were measured`
+      : `${n(filePathCount)} field(s) naming a file, counted across every payload on this page`,
+    'served on 127.0.0.1 — this page never leaves this machine',
+  ],
+})}
 </div>
 <div class="bar">
   <span class="sum" id="sum">Nothing selected</span>
@@ -709,6 +787,10 @@ if (isMain) {
       console.log(`  ${d.bytes.toLocaleString('en-GB')} bytes · sections: ${d.keys.join(', ')}`)
       console.log(`  ${d.textFields} field(s) carrying verbatim prompt text`)
       console.log(`  ${d.homePaths} absolute home path(s) — ${d.homePaths === 0 ? 'stripped' : 'STILL PRESENT, this is a bug'}`)
+      // Measured, not promised. The local reading records which files each turn
+      // touched; whether any of them reach a payload is a question about these
+      // bytes, and this is the answer for these bytes.
+      console.log(`  ${d.filePaths} field(s) naming a file this machine's sessions touched`)
 
       if (review >= 0) {
         console.log('\n--- the literal payload ---')

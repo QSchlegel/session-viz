@@ -209,7 +209,11 @@ const SKEW = base(
   const gcss = style.slice(style.indexOf('/* knowledge graph */'))
   const hex = [...gcss.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map((m) => m[0])
   chk('the graph stylesheet carries no literal colours at all', hex.length === 0, hex.join(', '))
-  const svg = html.slice(html.indexOf('<svg viewBox'), html.indexOf('</svg>'))
+  // Anchored FROM the graph's own opening tag. The page gained a brand mark
+  // above this one, so a bare indexOf('</svg>') finds the MARK's close, the
+  // slice comes back empty, and every assertion over it passes on nothing.
+  const svgFrom = html.indexOf('<svg viewBox')
+  const svg = html.slice(svgFrom, html.indexOf('</svg>', svgFrom))
   chk('and the SVG paints nothing with an inline fill', !/fill="#/.test(svg))
 
   chk('a kind carries its colour as a class, so one rule fills every shape',
@@ -225,7 +229,11 @@ const SKEW = base(
 // ---------------------------------------------------------------- 3. zoom
 {
   const html = render(SKEW, null)
-  const svg = html.slice(html.indexOf('<svg viewBox'), html.indexOf('</svg>'))
+  // Anchored FROM the graph's own opening tag. The page gained a brand mark
+  // above this one, so a bare indexOf('</svg>') finds the MARK's close, the
+  // slice comes back empty, and every assertion over it passes on nothing.
+  const svgFrom = html.indexOf('<svg viewBox')
+  const svg = html.slice(svgFrom, html.indexOf('</svg>', svgFrom))
   chk('one group wraps both edges and nodes, so one transform moves everything',
     /<g id="gview">\s*<g id="gedges">/.test(svg) && svg.indexOf('<g id="gnodes">') > svg.indexOf('<g id="gview">'))
   const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
@@ -280,8 +288,13 @@ const SKEW = base(
     html.includes(`min="0" max="${g.maxTurn}" step="1" value="${g.maxTurn}"`), `maxTurn ${g.maxTurn}`)
   chk('an unborn node is hidden outright, not faded',
     html.includes('.ge.pre,.gn.pre{display:none}'))
+  // The layer test moved behind a named predicate when a third reader of it
+  // arrived (the status-hub recount), so the shape to assert is that this pass
+  // still applies all three filters — not the exact spelling of one of them.
   chk('one pass applies the replay, the layer toggle and the focus together',
-    html.includes("g.classList.toggle('pre',!!pre)") && html.includes("var gone=hidden&&n.layer==='authored'"))
+    html.includes("g.classList.toggle('pre',!!pre)") &&
+      html.includes('var gone=offLayer(n);') &&
+      html.includes("function offLayer(x){ return hidden&&x.layer==='authored'; }"))
 }
 
 // ---------------------------------------------------------------- 5. undated

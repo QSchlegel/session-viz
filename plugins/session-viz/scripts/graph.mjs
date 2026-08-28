@@ -10,11 +10,38 @@
 // not a property of the styling. A model that writes `"id": "session:abc"` gets
 // `concept:session-abc`; it cannot overwrite or impersonate a measured node.
 //
+// -- The authored layer is a structure, not a scatter ------------------------
+// The model's conclusions used to arrive as one flat bag of concepts, so what
+// it CONCLUDED -- the intents, and whether each one finished -- was legible
+// only by reading every diamond. It now arrives as three kinds that hang
+// together: an `intent:` per thread, a `status:` hub the threads of one status
+// share, and an edge from each thread to the measured turns it cited. The hub
+// is what makes "four threads, three of them unfinished" a shape rather than a
+// caption, and the edges to `turn:` are the only place the authored layer
+// touches the skeleton besides an anchor.
+//
+// -- A conclusion from an earlier session is not a conclusion from this one ---
+// The intent store carries a project's conclusions across its sessions, so the
+// authored layer can hold work this transcript never witnessed. Those nodes get
+// `carried` -- the session they were drawn in and how far back that is -- and
+// three separate things follow from it, none of them decorative. They hang off
+// a `prior:` hub of their own rather than mixing into this session's status
+// hubs. They are never dated onto this session's replay: an earlier session's
+// turn 4 is a different turn 4, so `firstTurn` is null and the citation is
+// printed as prose naming its own session. And they are never anchored to this
+// session's measured nodes, because `tool:git` here and `tool:git` there are
+// the same id and not the same evidence; the refusal is counted and reported
+// rather than done quietly.
+//
 // -- What this file will not do ---------------------------------------------
-// No file nodes. `harvestPath` reduces a path to a basename match, a bare
-// extension and `fileTouches++`, then discards it -- `artifacts.fileTouches` is
-// an integer, so there is no file to draw and no way to recover one without
-// re-reading the transcript. It is printed as a count on the session node.
+// No file nodes. The spine now records WHICH files each turn touched, so this
+// is no longer a limit of the data -- it is a choice about the picture. A file
+// per turn on a real session is several hundred more nodes hung off the busiest
+// part of the graph, and they would swamp the structure the graph exists to
+// show. The files are attributed to tasks in the report's appendix instead,
+// where a table can carry the caveat that a touch is evidence and not proof.
+// `artifacts.fileTouches` is still what the session node prints, and it is
+// still only a count.
 //
 // No repeat CHAINS. `derived.repeatOf` stores the FIRST index per normalised
 // prompt, so the 2nd, 3rd and 4th repeat all point at the first occurrence,
@@ -295,7 +322,13 @@ export function deriveGraph(session) {
     const sessionNode = add(`session:${sid}`, 'session', sid.slice(0, 8), {
         weight: turns.length,
         measured: `Measured -- ${turns.length} human turn(s), ${art.fileTouches ?? 0} file touch(es)`,
-        note: `${art.fileTouches ?? 0} file touches. Which files is not recorded.`,
+        // A count, and only a count. The spine may well carry the paths behind it
+        // -- `turn.files` since the reading gained them -- but this graph draws no
+        // file node, so what this NUMBER says is how many tool calls named a file
+        // and nothing about which. The report's appendix is where the paths are
+        // attributed; a note that implied this node knew them would send a reader
+        // hunting the canvas for something that is not on it.
+        note: `${art.fileTouches ?? 0} file touches. This graph draws no file node, so the number says how many, never which.`,
     });
     if (session.harness)
         link(sessionNode, add(`harness:${session.harness}`, 'harness', session.harness, {
@@ -531,19 +564,37 @@ export function deriveGraph(session) {
 /** Closed, and disjoint from every derived kind, so an authored node cannot
  *  claim to be a repo, a harness, a model or a tool. */
 export const AUTHORED_GROUPS = ['decision', 'defect', 'guard', 'thread', 'subsystem', 'question'];
+/** The four statuses an intent can carry, closed so a status the model invents
+ *  cannot mint a hub of its own. Anything else is filed under `unstated`, which
+ *  is a fact about the analysis rather than a fifth kind of outcome. */
+export const INTENT_STATUSES = ['done', 'partial', 'abandoned', 'ongoing'];
 const MAX_CONCEPTS = 60;
 const MAX_RELATIONS = 120;
+const MAX_INTENTS = 40;
+const MAX_PRIOR = 4;
+const MAX_PRIOR_NODES = 24;
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-export function mergeAuthored(derived, graph, turnCount) {
+/** Titles are prose, ids are not. Slugged rather than hashed so the id stays
+ *  legible in `data-id` and in a test failure, and capped so one runaway title
+ *  cannot make an id longer than every other id put together. */
+const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+const statusOf = (v) => INTENT_STATUSES.includes(String(v)) ? String(v) : 'unstated';
+export function mergeAuthored(derived, graph, turnCount, extra) {
     const nodes = [...derived.nodes];
     const edges = [...derived.edges];
     const dropped = [];
-    if (!graph)
+    // The concept bag, the intents and the carried layer are three independent
+    // reasons to have an authored layer at all. Returning early on a missing
+    // `graph` used to be right because it was the only one; it would now throw
+    // away a whole session's intents whenever the model wrote no concepts.
+    const threads = extra?.intents ?? [];
+    const priors = extra?.prior ?? [];
+    if (!graph && !threads.length && !priors.length)
         return { nodes, edges, dropped };
     const derivedIds = new Set(derived.nodes.map((n) => n.id));
     const derivedBirth = new Map(derived.nodes.map((n) => [n.id, n.firstTurn ?? null]));
-    const concepts = graph.concepts || [];
-    const relations = graph.relations || [];
+    const concepts = graph?.concepts || [];
+    const relations = graph?.relations || [];
     const byId = new Map(); // authored id -> namespaced id
     let badId = 0;
     let badGroup = 0;
@@ -605,11 +656,107 @@ export function mergeAuthored(derived, graph, turnCount) {
         dropped.push({ what: 'concept turn refs', dropped: badTurn, of: badTurn, why: 'out of range for this session' });
     if (badAnchor)
         dropped.push({ what: 'anchors', dropped: badAnchor, of: badAnchor, why: 'named a node that is not in the derived graph' });
+    // ---- the intents, as a structure
+    //
+    // Each thread becomes a node, the threads of one status share a hub, and a
+    // thread reaches the skeleton through the turns its author CITED. That is the
+    // whole of the coupling: an intent is drawn beside the measured turns it
+    // named, and beside nothing it did not name.
+    //
+    // The hub is not decoration. Four threads with three statuses between them is
+    // a shape a reader takes in at a glance and a caption they have to count; and
+    // when the graph is packed to a third of its size, the shape is the half that
+    // survives.
+    const intentIds = new Map(); // slug -> namespaced id
+    let badIntent = 0;
+    let uncitedTurn = 0;
+    {
+        const hubs = new Map();
+        const hubCount = new Map();
+        const hubBirth = new Map();
+        for (const t of threads.slice(0, MAX_INTENTS)) {
+            const title = String(t?.title ?? '').trim();
+            const raw = slug(title);
+            if (!title || !raw || intentIds.has(raw)) {
+                badIntent++;
+                continue;
+            }
+            const id = `intent:${raw}`;
+            if (derivedIds.has(id)) {
+                badIntent++;
+                continue;
+            }
+            const status = statusOf(t?.status);
+            const turns = (t?.turns || []).filter((n) => Number.isInteger(n) && n >= 0 && n < turnCount);
+            uncitedTurn += (t?.turns || []).length - turns.length;
+            const firstTurn = turns.length ? Math.min(...turns) : null;
+            intentIds.set(raw, id);
+            nodes.push({
+                id,
+                kind: 'intent',
+                label: title.slice(0, 60),
+                degree: 0,
+                layer: 'authored',
+                status,
+                note: t?.summary ? String(t.summary).slice(0, 400) : undefined,
+                turns: turns.length ? turns : undefined,
+                firstTurn,
+            });
+            const hub = hubs.get(status) ?? `status:${status}`;
+            hubs.set(status, hub);
+            hubCount.set(status, (hubCount.get(status) ?? 0) + 1);
+            if (typeof firstTurn === 'number') {
+                const cur = hubBirth.get(status);
+                if (cur === undefined || firstTurn < cur)
+                    hubBirth.set(status, firstTurn);
+            }
+            edges.push({ source: id, target: hub, rel: 'status', layer: 'authored', dashed: false });
+            // Only turns the derived gates actually drew. A line to a node that is
+            // not on the canvas is a stub, and the count of the ones that could not
+            // be drawn is reported below rather than left as a silent shortfall.
+            for (const n of turns) {
+                if (derivedIds.has(`turn:${n}`))
+                    edges.push({ source: id, target: `turn:${n}`, rel: 'cited turn', layer: 'authored', dashed: true, firstTurn: n });
+                else
+                    uncitedTurn++;
+            }
+        }
+        for (const [status, hub] of hubs)
+            nodes.push({
+                id: hub,
+                kind: 'status',
+                label: `${status} · ${hubCount.get(status) ?? 0}`,
+                degree: 0,
+                layer: 'authored',
+                status,
+                note: status === 'unstated'
+                    ? 'Threads whose status the analysis did not state, or stated as something outside done, partial, abandoned and ongoing.'
+                    : `Threads the analysis marked ${status}.`,
+                firstTurn: hubBirth.get(status) ?? null,
+            });
+    }
+    if (threads.length > MAX_INTENTS)
+        dropped.push({ what: 'intents', dropped: threads.length - MAX_INTENTS, of: threads.length, why: `capped at ${MAX_INTENTS}` });
+    if (badIntent)
+        dropped.push({ what: 'intents', dropped: badIntent, of: threads.length, why: 'no title, or a title that slugs to one already drawn' });
+    if (uncitedTurn)
+        dropped.push({
+            what: 'intent turn citations',
+            dropped: uncitedTurn,
+            of: uncitedTurn,
+            why: 'the turn is out of range for this session, or the turn gates did not draw it; the citation stands, the line has nowhere to land',
+        });
     let badEnd = 0;
     const resolve = (v) => {
         const s = String(v ?? '');
         if (byId.has(s))
             return byId.get(s);
+        // A relation may name a thread by its title, which is how the model would
+        // refer to one; concepts win the name, because they were here first and
+        // their ids are declared rather than derived from prose.
+        const asIntent = intentIds.get(slug(s));
+        if (asIntent)
+            return asIntent;
         if (derivedIds.has(s))
             return s;
         return null;
@@ -633,6 +780,183 @@ export function mergeAuthored(derived, graph, turnCount) {
         dropped.push({ what: 'relations', dropped: relations.length - MAX_RELATIONS, of: relations.length, why: `capped at ${MAX_RELATIONS}` });
     if (badEnd)
         dropped.push({ what: 'relations', dropped: badEnd, of: relations.length, why: 'an endpoint resolved to nothing' });
+    // ---- what the store carried in from earlier sessions
+    //
+    // Everything here is drawn under a hub of its own and dated to no turn. Both
+    // of those are refusals, not layout preferences. An earlier session's turn 4
+    // is a different turn 4, so placing a carried conclusion on this session's
+    // replay would put it on a timeline it was never on; and mixing it into this
+    // session's status hubs would make "three threads still ongoing" a number
+    // covering two different weeks of work.
+    let carriedAnchor = 0;
+    let badCarried = 0;
+    let carriedBudget = 0;
+    for (const p of priors.slice(0, MAX_PRIOR)) {
+        const sid = String(p?.session ?? '').trim();
+        if (!sid) {
+            badCarried++;
+            continue;
+        }
+        // Eight characters of the id, which is how every other surface on the page
+        // names a session. Two priors that agree on all eight collide, and the
+        // collision is REFUSED below rather than silently merging one session's
+        // conclusions into another's hub.
+        const tag = slug(sid.slice(0, 8)) || 'prior';
+        const hub = `prior:${tag}`;
+        if (nodes.some((n) => n.id === hub)) {
+            badCarried++;
+            continue;
+        }
+        const ago = Number.isInteger(p?.sessionsAgo) && p.sessionsAgo > 0 ? p.sessionsAgo : null;
+        const days = typeof p?.daysAgo === 'number' ? p.daysAgo : null;
+        // `ago` is resolved to null two lines up when the document did not say how
+        // far back this session was, and the hub label honours that ("an earlier
+        // session"). Passing `?? 1` on to the children threw the null away and wrote
+        // "carried from a session 1 back" into the title, the accessible name and
+        // the side panel of every one of them -- a number nothing in the document
+        // stated, on the one field a reader is told to trust here, contradicting the
+        // hub they hang off.
+        const from = { session: sid, sessionsAgo: ago, daysAgo: days };
+        const when = ago === null ? 'an earlier session' : ago === 1 ? '1 session ago' : `${ago} sessions ago`;
+        nodes.push({
+            id: hub,
+            kind: 'prior',
+            label: when,
+            degree: 0,
+            layer: 'authored',
+            carried: from,
+            // No `measured`, and the wording is deliberately about the RECORD rather
+            // than the work: the store knows this session was analysed, not what
+            // happened in it.
+            note: `Conclusions the intent store kept from session ${sid.slice(0, 8)}` +
+                (days === null ? '' : days === 0 ? ', recorded today' : days === 1 ? ', recorded 1 day ago' : `, recorded ${days} days ago`) +
+                '. Nothing has re-checked whether they still hold.',
+            firstTurn: null,
+        });
+        let budget = MAX_PRIOR_NODES;
+        // Every other cap in this function pushes a Suppression; this one broke out
+        // of two loops and pushed nothing, so a prior session's conclusions past the
+        // budget were on no canvas and in no count -- while the footer stated a bare
+        // total of what survived and `priorOmitted` read 0, because the store had
+        // emitted everything the graph then threw away. A truncated history
+        // presented as a whole one is the same defect class as an undated
+        // conclusion. Concepts are drawn after intents from ONE shared budget, so a
+        // session's decisions can disappear wholesale while its threads all survive:
+        // the count below is what makes that visible.
+        const offered = (p?.intents || []).length + (p?.graph?.concepts || []).length;
+        const localIds = new Map();
+        for (const t of p?.intents || []) {
+            if (budget <= 0)
+                break;
+            const title = String(t?.title ?? '').trim();
+            const raw = slug(title);
+            if (!title || !raw || localIds.has(`intent:${raw}`)) {
+                badCarried++;
+                continue;
+            }
+            budget--;
+            const id = `prior:${tag}:intent:${raw}`;
+            localIds.set(`intent:${raw}`, id);
+            const cited = (t?.turns || []).filter((n) => Number.isInteger(n));
+            nodes.push({
+                id,
+                kind: 'intent',
+                label: title.slice(0, 60),
+                degree: 0,
+                layer: 'authored',
+                status: statusOf(t?.status),
+                carried: from,
+                // The citation is prose, not `turns`. `turns` is read as an index into
+                // THIS session's turn list everywhere it is rendered, and these numbers
+                // index another session's.
+                note: (t?.summary ? `${String(t.summary).slice(0, 320)} ` : '') +
+                    (cited.length
+                        ? `Cited turn ${cited.join(', ')} of session ${sid.slice(0, 8)}, not of this one.`
+                        : 'No turns were cited for it.'),
+                firstTurn: null,
+            });
+            edges.push({ source: id, target: hub, rel: 'carried from', layer: 'authored', dashed: true, firstTurn: null });
+        }
+        for (const c of p?.graph?.concepts || []) {
+            if (budget <= 0)
+                break;
+            const raw = String(c?.id ?? '');
+            if (!ID_RE.test(raw) || !c?.label || localIds.has(`concept:${raw}`)) {
+                badCarried++;
+                continue;
+            }
+            budget--;
+            const id = `prior:${tag}:concept:${raw}`;
+            localIds.set(`concept:${raw}`, id);
+            const group = AUTHORED_GROUPS.includes(String(c.group)) ? String(c.group) : 'concept';
+            const cited = (c.turns || []).filter((n) => Number.isInteger(n));
+            nodes.push({
+                id,
+                kind: group,
+                label: String(c.label).slice(0, 60),
+                degree: 0,
+                layer: 'authored',
+                carried: from,
+                note: (c.note ? `${String(c.note).slice(0, 320)} ` : '') +
+                    (cited.length
+                        ? `Cited turn ${cited.join(', ')} of session ${sid.slice(0, 8)}, not of this one.`
+                        : 'No turns were cited for it.'),
+                firstTurn: null,
+            });
+            edges.push({ source: id, target: hub, rel: 'carried from', layer: 'authored', dashed: true, firstTurn: null });
+            // Anchors are refused, and this is the point where it would be easiest to
+            // be helpful and wrong: `tool:git` in that session and `tool:git` in this
+            // one are the same id and not the same evidence, and an anchor drawn
+            // across them would let a conclusion about last week's code hang off a
+            // node measured out of today's transcript.
+            carriedAnchor += (c.anchors || []).length;
+        }
+        // After BOTH loops, because they share the budget: counted here, the number
+        // is what this session offered and the canvas did not take.
+        if (offered > MAX_PRIOR_NODES)
+            carriedBudget += offered - MAX_PRIOR_NODES;
+        if ((p?.graph?.relations || []).length) {
+            for (const r of p.graph.relations) {
+                const from2 = localIds.get(`concept:${String(r?.from ?? '')}`) || localIds.get(`intent:${slug(String(r?.from ?? ''))}`);
+                const to2 = localIds.get(`concept:${String(r?.to ?? '')}`) || localIds.get(`intent:${slug(String(r?.to ?? ''))}`);
+                if (!from2 || !to2 || from2 === to2) {
+                    badCarried++;
+                    continue;
+                }
+                edges.push({
+                    source: from2,
+                    target: to2,
+                    layer: 'authored',
+                    dashed: true,
+                    rel: r?.label ? String(r.label).slice(0, 40) : undefined,
+                    firstTurn: null,
+                });
+            }
+        }
+    }
+    if (priors.length > MAX_PRIOR)
+        dropped.push({ what: 'earlier sessions', dropped: priors.length - MAX_PRIOR, of: priors.length, why: `capped at ${MAX_PRIOR}` });
+    if (badCarried)
+        dropped.push({
+            what: 'carried conclusions',
+            dropped: badCarried,
+            of: badCarried,
+            why: 'no title or id, a duplicate within its own session, or a relation whose endpoint was not carried with it',
+        });
+    if (carriedBudget)
+        dropped.push({
+            what: 'carried conclusions',
+            dropped: carriedBudget,
+            of: carriedBudget,
+            why: `each earlier session is drawn at most ${MAX_PRIOR_NODES} conclusions deep, and threads are drawn before decisions`,
+        });
+    if (carriedAnchor)
+        dropped.push({
+            what: 'anchors on carried conclusions',
+            dropped: carriedAnchor,
+            of: carriedAnchor,
+            why: 'they name nodes measured out of THIS transcript, and the same id in an earlier session is not the same evidence',
+        });
     const index = new Map(nodes.map((n) => [n.id, n]));
     for (const n of nodes)
         n.degree = 0;
@@ -645,8 +969,12 @@ export function mergeAuthored(derived, graph, turnCount) {
         const v = index.get(id)?.firstTurn;
         return typeof v === 'number' ? v : 0;
     };
+    // `=== undefined`, not `typeof !== 'number'`. A carried edge is dated null on
+    // purpose -- it belongs to no turn of this session -- and the looser test
+    // read that deliberate null as "not filled in yet" and stamped turn 0 on it,
+    // which is a date, and a date is what the null was refusing to give.
     for (const e of live)
-        if (typeof e.firstTurn !== 'number')
+        if (e.firstTurn === undefined)
             e.firstTurn = Math.max(at(e.source), at(e.target));
     return { nodes, edges: live, dropped };
 }

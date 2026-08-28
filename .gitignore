@@ -19,3 +19,4 @@ qtrends-*.html
 qpact-*.html
 telemetry.json
 embed.json
+.session-viz/

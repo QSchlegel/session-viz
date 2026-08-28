@@ -519,7 +519,16 @@ const inReduced = (r) => r.at.some((a) => a.includes('prefers-reduced-motion'))
     // only ever drawn inside a surface, so the surface is where they are
     // measured. --warn is the tight one: it starts at 4.53:1 on the flat
     // background and there is no theme headroom above it.
-    const rest = [...textTokens].filter((t) => !['--ink', '--muted', '--bg', '--alarm-ink'].includes(t))
+    //
+    // --alarm-ink and --tag-ink are excluded for the SAME reason and it is not
+    // "they are hard": neither is ever painted on a page surface. Both sit on a
+    // solid fill of their own -- the mismatch band and the friction tag -- so
+    // sweeping them across the page grounds measures a pair that never meets.
+    // They are asserted against the fill they actually sit on, just below.
+    const ON_OWN_FILL = { '--alarm-ink': '--alarm', '--tag-ink': '--bad' }
+    const rest = [...textTokens].filter(
+      (t) => !['--ink', '--muted', '--bg'].includes(t) && !(t in ON_OWN_FILL)
+    )
     const onGlass = rest.map((t) => {
       const rgb = hex(resolve(vars, vars[t]))
       // --kg-label is the zoom readout over the graph canvas, and that canvas
@@ -530,6 +539,17 @@ const inReduced = (r) => r.at.some((a) => a.includes('prefers-reduced-motion'))
       return [t, Math.min(ratio(rgb, w.glass), ratio(rgb, w.cell))]
     })
     console.log(`     ${name}: on a surface — ${onGlass.map(([t, r]) => `${t.slice(2)} ${r.toFixed(2)}`).join(', ')}`)
+    // The pair the sweep above cannot see, on the surface each is actually
+    // drawn on. --tag-ink is the friction label: it was #fff on --bad, which is
+    // 5.90:1 in light and 2.79:1 in DARK, because the dark theme's red is a
+    // light red -- the label failed AA on exactly the cards a reader most needs.
+    for (const [ink, fill] of Object.entries(ON_OWN_FILL)) {
+      if (!vars[ink] || !vars[fill]) continue
+      const r = ratio(hex(resolve(vars, vars[ink])), hex(resolve(vars, vars[fill])))
+      chk(`${name}: ${ink} clears AA on ${fill}, the fill it is actually drawn on`,
+        r >= 4.5, `${r.toFixed(2)}:1`)
+    }
+
     const short = onGlass.filter(([, r]) => r < 4.5)
     chk(`${name}: every other text token clears 4.5:1 on the surface it is drawn on`,
       rest.length > 0 && short.length === 0,

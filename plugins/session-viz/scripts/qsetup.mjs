@@ -43,6 +43,11 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { rmSync, existsSync } from 'node:fs';
 import { findConfig, configPaths, configTarget, loadConfig, saveConfig, harnessLabel } from './home.mjs';
+// The `plain` variants throughout. This page takes a bearer token, and chrome
+// that reads as a seal of office is chrome that teaches the reader to trust a
+// layout — the exact habit the page impersonating this one would need them to
+// have. The mark says which tool opened the tab; it does not vouch for it.
+import { brandCss, brandHeader, brandFooter, esc } from './brand.mjs';
 const DEFAULT_URL = 'https://cloud.session-viz.com';
 const DEADLINE_MS = 5 * 60 * 1000;
 const CLIENT_ID = 'session-viz-cli';
@@ -99,31 +104,58 @@ const constEq = (a, b) => {
     return x.length === y.length && crypto.timingSafeEqual(x, y);
 };
 // ---------------------------------------------------------------- the pages
+/**
+ * The palette both setup pages paint from.
+ *
+ * Split out of PAGE because `done` used to carry its own four literals, and a
+ * page that hardcodes a light background is a page that stays light while the
+ * brand chrome beside it — which declares `color-scheme` across three states —
+ * has already gone dark. The visible failure is a dark scrollbar and a dark
+ * form control on a cream card.
+ *
+ * Three states, guarded, like the reports: nothing here sets [data-theme]
+ * today, but a palette that only knows the system query is a palette that
+ * cannot be told otherwise later.
+ */
+const TOKENS = `:root{--bg:#f7f5f0;--card:#fffefb;--ink:#1b1a17;--dim:#6d6a63;--line:#e2ded4;
+  --green:#4a7c59;--red:#a8443a;--accent:#c25a2b;--shadow:rgba(27,26,23,.3);
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;--sans:ui-sans-serif,-apple-system,"Segoe UI",sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#16151a;--card:#1e1d23;--ink:#ece9e4;--dim:#9b968d;--line:#302e37;
+  --green:#6fbf8e;--red:#ff6b5e;--accent:#ff8a4c;--shadow:rgba(0,0,0,.55)}}
+:root[data-theme=dark]{
+  --bg:#16151a;--card:#1e1d23;--ink:#ece9e4;--dim:#9b968d;--line:#302e37;
+  --green:#6fbf8e;--red:#ff6b5e;--accent:#ff8a4c;--shadow:rgba(0,0,0,.55)}`;
 /** The loopback replies are the last thing the browser shows before it is sent
- *  back to the workspace, so they are plain and short rather than styled. */
-const done = (heading, detail, goto) => `<!doctype html>
+ *  back to the workspace, so they are plain and short rather than styled. The
+ *  mark is the one addition: it is the only thing on the page that says which
+ *  tool put it there. Exported so the brand test can render the real page. */
+export const done = (heading, detail, goto) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>${heading} — session-viz</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ${goto ? `<meta http-equiv="refresh" content="1;url=${goto}">` : ''}
-<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f5f0;color:#1b1a17;
-font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;padding:24px}
-div{max-width:44ch}h1{font-size:20px;margin:0 0 8px}p{color:#6d6a63;margin:0}
-a{color:#c25a2b}</style></head><body><div>
+<style>${TOKENS}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);
+font:15px/1.55 var(--sans);padding:24px}
+body > div{max-width:44ch}h1{font-size:20px;margin:0 0 8px}p{color:var(--dim);margin:0}
+a{color:var(--accent)}${brandCss()}</style></head><body><div>
+${brandHeader({ plain: true })}
 <h1>${heading}</h1><p>${detail}</p>
 ${goto ? `<p style="margin-top:14px"><a href="${goto}">Open your workspace</a></p>` : ''}
+${brandFooter({ plain: true, facts: ['written by /qsetup — check the address bar says 127.0.0.1 before typing a token'] })}
 </div></body></html>`;
-const PAGE = (nonce, defaultUrl, target, actor) => `<!doctype html>
+/** Exported for the same reason as `done`: the brand test renders the real
+ *  page rather than a copy of its markup. */
+export const PAGE = (nonce, defaultUrl, target, actor) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Connect session-viz</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root{--bg:#f7f5f0;--card:#fffefb;--ink:#1b1a17;--dim:#6d6a63;--line:#e2ded4;
-  --green:#4a7c59;--red:#a8443a;--accent:#c25a2b;
-  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;--sans:ui-sans-serif,-apple-system,"Segoe UI",sans-serif}
+${TOKENS}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);
   color:var(--ink);font:15px/1.55 var(--sans);padding:24px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
-  padding:26px 28px;max-width:520px;width:100%;box-shadow:0 6px 24px -14px rgba(27,26,23,.3)}
+  padding:26px 28px;max-width:520px;width:100%;box-shadow:0 6px 24px -14px var(--shadow)}
 h1{font-size:20px;margin:0 0 6px}
 p{color:var(--dim);margin:0 0 18px}
 label{display:block;font:600 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
@@ -137,19 +169,28 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .msg{margin-top:14px;font:13px var(--mono);min-height:20px}
 .ok{color:var(--green)} .bad{color:var(--red)}
 code{font-family:var(--mono);font-size:12.5px;color:var(--accent)}
+${brandCss()}
 </style></head><body>
 <div class="card">
+  ${brandHeader({ plain: true })}
   <h1>Connect this machine</h1>
   <p>Paste the token from your workspace. It is checked against the server before anything
-     is written, and stored only in <code>${target}</code>.</p>
+     is written, and stored only in <code>${esc(target)}</code>.</p>
   <label for="u">Server</label>
-  <input id="u" type="text" value="${defaultUrl}" spellcheck="false">
+  <input id="u" type="text" value="${esc(defaultUrl)}" spellcheck="false">
   <label for="t">Plugin token</label>
   <input id="t" type="password" placeholder="svt_…" spellcheck="false" autocomplete="off" autofocus>
   <label for="a">Actor label (optional)</label>
-  <input id="a" type="text" placeholder="you@example.com" spellcheck="false" value="${actor}">
+  <input id="a" type="text" placeholder="you@example.com" spellcheck="false" value="${esc(actor)}">
   <button id="go" type="button">Verify and save</button>
   <p class="msg" id="m"></p>
+  ${brandFooter({
+    plain: true,
+    // What this page is, stated flatly. No claim about the token, the server or
+    // the transport — the page has no way to know any of that yet, and a
+    // reassuring footer under a secret field is worth less than nothing.
+    facts: ['written by /qsetup — check the address bar says 127.0.0.1 before typing a token'],
+})}
 </div>
 <script>
 const $ = (id) => document.getElementById(id)

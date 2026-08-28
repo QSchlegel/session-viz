@@ -8,6 +8,61 @@
 //
 // Segmentation note: assistant records carry no promptId, so turns are cut by
 // document order between human turns rather than grouped by id.
+//
+// -- Which files a turn touched, and what a recorded path IS -----------------
+//
+// For a long time this counted THAT a file was touched and threw the path away.
+// The counter is still here; the path is now kept too, per turn, because the
+// question people actually bring to a session record is "which files did this
+// task change" and a count cannot answer it.
+//
+// A recorded path is RELATIVE TO THE SESSION'S WORKING DIRECTORY. Absolute was
+// the other candidate -- it is verbatim, it is what the tool call said -- and it
+// loses on the two grounds that decide it here:
+//
+//   1. An absolute path on this machine begins with the account name of whoever
+//      ran the session. This spine is built to be forwarded: /qpact embeds it in
+//      an evidence package, /qpush posts that page to a console, /qshare
+//      publishes readings to colleagues. Every one of those has a scrubber, and
+//      a leak that has to be scrubbed in three places eventually is not scrubbed
+//      in one of them. Relativising removes the prefix that holds the home
+//      directory, so in the ordinary case the leak never enters the spine at all
+//      rather than being cleaned on the way out. In the case that is NOT
+//      ordinary -- a working directory outside the home tree, which the climb
+//      would walk back down through -- `~` replaces the home root instead.
+//      Neither form carries the account name; that is the property, not the
+//      syntax.
+//   2. `src/extract.mts` is the answer to the question. The rest of an absolute
+//      path is a fact about a disk, and two people reading the same repository
+//      produce two different strings for one file.
+//
+// The cost is real and is stated rather than hidden: a path outside the working
+// directory comes out as `../../.claude/settings.json`, which is legible but
+// says nothing about where the tree it climbs into actually is; and when a
+// transcript never says what the working directory was, there is nothing to
+// relativise against and the path is kept with its home root rewritten to `~`.
+// Consumers that forward this must still fail closed on an absolute path
+// arriving from that last case -- bundle.mts does.
+//
+// WHAT THIS DOES NOT REACH. Two shapes of account name are removed: the home
+// root -- at the head of a path or anywhere along it, because the route to a
+// home directory is not always the shortest one (`/System/Volumes/Data/Users/x`
+// is what macOS resolves every home file to, and a Windows path begins with a
+// drive letter before it ever reaches `Users`) -- and a whole directory named
+// after one with the slashes turned into dashes, which is how Claude Code names
+// its own project and scratch directories. A name that is part of an ordinary FILENAME is not
+// reachable -- Claude Code writes plan files called
+// `users-<name>-downloads-<slug>.md` -- because no rule that catches it leaves
+// `users-list.ts` alone, and withholding every file called that would cost more
+// than it saves. It is a small residue and it is not zero: 7 of the 1,690 paths
+// recorded across the corpus this was written against. Said out loud here, and
+// in the evidence package's own limits, rather than rounded down to "paths carry
+// no account name".
+//
+// Verbatim prompt text is untouched by all of this. People type absolute paths
+// into prompts, and `turn.text` still holds whatever they typed; every consumer
+// that scrubs prompt text already has to handle the absolute form appearing
+// there, and still does.
 
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs'
 import { createInterface } from 'node:readline'
@@ -39,6 +94,30 @@ export interface TurnToolCall {
 /** One model name, and how many assistant messages it produced inside a turn. */
 export interface TurnModelUse {
   name: string
+  count: number
+}
+
+/**
+ * One file a turn's tool calls named, and how many of them named it.
+ *
+ * A pair, not a repeated string: a busy turn reads the same file dozens of times
+ * and a list would carry it dozens of times. The count is the whole reason this
+ * is not a Set -- "touched forty times" and "touched once" are different facts
+ * about a turn, and only one of them is worth looking at.
+ *
+ * It counts TOOL CALLS THAT NAMED THE FILE IN A FILE-PATH INPUT -- the same
+ * three fields `fileTouches` has always counted. Two limits follow from that and
+ * both matter more than the number does. A file named only inside a shell
+ * command is not here at all: nothing reads paths out of command text, so a
+ * session that works through `sed` and `grep` can show few files or none. And a
+ * file that was only read sits here beside one that was rewritten with nothing
+ * to tell them apart -- `toolCalls` on the same turn says which tools ran, but
+ * not which of them named which file.
+ */
+export interface TurnFileTouch {
+  /** Relative to the session's working directory; `../` when the file is
+   *  outside it. See the module header for why it is not absolute. */
+  path: string
   count: number
 }
 
@@ -102,7 +181,16 @@ export interface SessionTurn {
   typed: boolean
   /** true when the turn arrived as a queued_command mid-flight */
   steering: boolean
-  origin: string | null
+  /**
+   * Where a turn came from, verbatim from the harness's attachment record.
+   *
+   * Declared `string | null` for a long time and it has never been a string:
+   * Claude Code writes `{ kind: 'human' }`, and this field is passed through
+   * rather than parsed, so it is whatever shape that harness chose. A consumer
+   * that believed the old type called .replace() on it and crashed on every
+   * real session. Unknown, because that is what it is.
+   */
+  origin: unknown
   signals: TurnSignals
   tokens: TokenTotals
   assistantMessages: number
@@ -114,6 +202,16 @@ export interface SessionTurn {
   timeToFirstToolMs: number | null
   toolCalls: TurnToolCall[]
   toolCallCount: number
+  /**
+   * The files this turn's tool calls named, most-touched first.
+   *
+   * Empty means one of three things and cannot tell them apart on its own: the
+   * turn touched no file, the reading was extracted with --no-paths, or it
+   * predates paths entirely. `session.recordedPaths` is the field that
+   * distinguishes them, and it is the one a consumer must read before writing a
+   * sentence about an empty list.
+   */
+  files: TurnFileTouch[]
   models: TurnModelUse[]
   /** the model that produced most of the turn's assistant messages */
   model: string | null
@@ -132,6 +230,10 @@ export interface SessionArtifacts {
   extensions: Record<string, number>
   skills: Record<string, number>
   mcp: Record<string, number>
+  /** Every tool call that named a file, counted. Session-scoped, so it also
+   *  counts calls made before the first human turn — which belong to no turn and
+   *  appear in no `turn.files`. The two numbers are not required to agree, and
+   *  nothing downstream may present one as a total of the other. */
   fileTouches: number
 }
 
@@ -193,11 +295,43 @@ export interface Session {
   turns: SessionTurn[]
   score: SessionScore
   durationMs: number
+  /**
+   * Whether prompt text in this spine went through the secret patterns.
+   *
+   * Recorded because `--no-redact` exists and nothing downstream could tell.
+   * The evidence package printed "prompt text is redacted for secrets" as a
+   * flat statement, which was a claim about how a DIFFERENT program had been
+   * invoked, made by a file that could not observe it -- so a bundle built from
+   * a --no-redact spine asserted a redaction that had not happened, over the top
+   * of the unredacted key. A reader cannot check this by looking; the extractor
+   * is the only thing that knows, so the extractor says.
+   */
+  redactedPrompts: boolean
+  /**
+   * Whether this reading kept the path of each file its tool calls named.
+   *
+   * The same field, for the same reason, as `redactedPrompts` above: `--no-paths`
+   * exists, and without a record of how the extractor was invoked every consumer
+   * downstream has to guess -- and the comfortable guess is the wrong one. An
+   * empty `turn.files` is indistinguishable, by looking, from a turn that touched
+   * nothing. A reader who takes "no paths here" for "no files were touched" has
+   * been misled by silence, which is the one failure this whole file is written
+   * against.
+   *
+   * A spine written before this field existed has it `undefined`. That reads as
+   * UNKNOWN. It must never be read as `false`: absence of the field is absence of
+   * knowledge about the reading, not knowledge that the reading recorded nothing.
+   */
+  recordedPaths: boolean
 }
 
 export interface ExtractOptions {
   redactText?: boolean
   maxPromptChars?: number
+  /** Keep the path of each file a tool call named, attributed to the turn that
+   *  made the call. Default true; `--no-paths` turns it off, and the spine says
+   *  which happened. */
+  recordPaths?: boolean
   /** Overrides the harness inferred from the path. */
   harness?: string
 }
@@ -269,7 +403,7 @@ interface TranscriptAttachment {
   type?: string
   prompt?: string | ContentBlock[]
   source_uuid?: string
-  origin?: string
+  origin?: unknown
 }
 
 export interface TranscriptRecord {
@@ -319,6 +453,10 @@ type TurnDraft = Omit<SessionTurn, LateTurnField | 'endedAt'> &
     endedAt: string | null
     _tools?: Record<string, number>
     _models?: Record<string, number>
+    /** Paths exactly as the tool calls gave them. Survives closeTurn, unlike the
+     *  other two: relativising needs the session's working directory, which is
+     *  only final once the stream has drained. */
+    _files?: Record<string, number>
   }
 
 type LateSessionField = 'score' | 'durationMs'
@@ -338,7 +476,7 @@ interface NewTurnArgs {
   /** defaults true: everything but an IDE-wrapped record was typed */
   typed?: boolean
   steering?: boolean
-  origin?: string | null
+  origin?: unknown
   effort?: string | null
 }
 
@@ -674,16 +812,31 @@ function harvestBash(cmd: string | undefined, out: SessionArtifacts): void {
   }
 }
 
-function harvestPath(p: unknown, out: SessionArtifacts): void {
+function harvestPath(p: unknown, out: SessionArtifacts, files: Record<string, number> | null): void {
   if (typeof p !== 'string' || !p) return
   const base = p.replace(/^.*\//, '').toLowerCase()
   if (STACK_FILES.has(base)) bump(out.stack, base)
   const ext = base.includes('.') ? base.replace(/^.*\./, '') : null
   if (ext && ext.length <= 5 && /^[a-z0-9]+$/.test(ext)) bump(out.extensions, ext)
   out.fileTouches++
+  // Raw here, relativised once the stream has drained: the working directory
+  // arrives on a record and the first tool call can precede it. Rewriting each
+  // path as it is seen would key the same file two ways in one turn depending on
+  // where in the file the transcript happened to mention its own cwd.
+  if (files) files[p] = (files[p] || 0) + 1
 }
 
-export function harvestTool(block: ToolUseBlock, out: SessionArtifacts): void {
+/**
+ * @param files where this call's paths are counted, or null to record none --
+ *   which is both `--no-paths` and a tool call that ran outside any turn. The
+ *   counters in `out` are bumped either way, so the session-level count of file
+ *   touches does not change when paths are turned off.
+ */
+export function harvestTool(
+  block: ToolUseBlock,
+  out: SessionArtifacts,
+  files: Record<string, number> | null = null
+): void {
   const i = block.input
   if (!i || typeof i !== 'object') return
   const name = block.name
@@ -692,10 +845,20 @@ export function harvestTool(block: ToolUseBlock, out: SessionArtifacts): void {
   if (name === 'Skill' && typeof i.skill === 'string') bump(out.skills, i.skill)
   if (name === 'Bash') harvestBash(i.command, out)
 
+  // `path` is the generic one, and it is generic on the other side too: an
+  // `mcp__*` tool is somebody else's schema, where `path` is as likely to be an
+  // HTTP route, a JSON pointer or an object key as a file. That was tolerable
+  // while the value was thrown away and only bumped an anonymous counter; now it
+  // is stored, relativised against the working directory into something that
+  // reads exactly like a repo-relative file, rolled up as a `file,` row in the
+  // evidence package and listed on the page under the files a turn touched --
+  // and `/v1/customers/4821/invoices` is none of those things. `file_path` and
+  // `notebook_path` are this tool's own names and stay trusted from any caller.
+  const generic = name.startsWith('mcp__') ? [] : (['path'] as const)
   let ext: string | null = null
-  for (const key of ['file_path', 'path', 'notebook_path'] as const) {
+  for (const key of ['file_path', ...generic, 'notebook_path'] as const) {
     if (!i[key]) continue
-    harvestPath(i[key], out)
+    harvestPath(i[key], out, files)
     const base = String(i[key]).replace(/^.*\//, '').toLowerCase()
     if (base.includes('.')) ext = base.replace(/^.*\./, '')
   }
@@ -706,6 +869,154 @@ export function harvestTool(block: ToolUseBlock, out: SessionArtifacts): void {
 
 export function emptyArtifacts(): SessionArtifacts {
   return { packages: {}, tools: {}, stack: {}, extensions: {}, skills: {}, mcp: {}, fileTouches: 0 }
+}
+
+// ---------------------------------------------------------------- paths
+
+// A leading `/`, a drive letter, or a UNC root. Both separators, because a
+// transcript written on Windows is read on whatever machine opens it and
+// node:path would answer for the reader's platform rather than the writer's.
+const ABSOLUTE = /^\/|^[A-Za-z]:[\\/]|^\\\\/
+
+/** A segment that starts somebody's home, when another segment follows it. */
+const HOME_DIR = /^(?:Users|home)$/i
+
+/**
+ * Where an account's home root begins inside an absolute path, or -1.
+ *
+ * Found by SEGMENT and at any depth, which is the whole point. A home directory
+ * is not always the first thing on the route to it, and a `^`-anchored pattern
+ * sees none of the ways it is not: macOS resolves every home file through
+ * `/System/Volumes/Data/Users/<name>`, which is what `realpath` prints; an
+ * external disk puts one under `/Volumes/<disk>/Users/<name>`; an automounter
+ * under `/net/<host>/home/<name>`; and EVERY Windows absolute path begins with
+ * a drive letter, so a rule that reads only the first segment can never fire on
+ * one at all. Each of those walked the account name out into the middle of a
+ * path that is relative, and therefore looked safe.
+ *
+ * The FIRST such pair, not the last: the pair that names an account is the
+ * outermost one, so a repository that contains a `home/` or `Users/` directory
+ * of its own keeps it -- that inner one is a project directory. It must be
+ * followed by something, because `/Users` alone names nobody.
+ */
+function homeRootAt(segs: string[]): number {
+  for (let h = 0; h < segs.length - 1; h++) if (HOME_DIR.test(segs[h] ?? '')) return h
+  return -1
+}
+
+/**
+ * An absolute path with its home root -- wherever that root sits -- cut to `~`.
+ *
+ * A path with no home root is returned unchanged, and unchanged means still
+ * absolute: `/etc/hosts` has nothing to remove, and pretending otherwise would
+ * hand consumers a path that looks scrubbed. bundle.mts fails closed on it.
+ */
+function tilde(p: string): string {
+  const segs = segments(p)
+  const h = homeRootAt(segs)
+  return h < 0 ? p : ['~', ...segs.slice(h + 2)].join('/')
+}
+
+// A whole directory named after a home path with the slashes turned into dashes.
+//
+// Claude Code names its own project and scratch directories that way, so
+// `-Users-someone-git-api` is a real directory NAME sitting inside a path under
+// /private/tmp -- and on the corpus this was written against, that is where
+// nearly every account name that survived relativising was found. Nothing about
+// the path is a home root, so cancelling prefixes does not touch it.
+//
+// It cannot be cut precisely: the account name is itself dash-separated, so a
+// pattern that stops at the first dash leaks half the name and corrupts the
+// rest. The whole segment goes, which is the rule bundle.mts already applies to
+// this shape in prose -- and this is anchored to a segment boundary, which that
+// one cannot be, so an ordinary `find-home-fast/` is not touched.
+const HOME_DASH_SEGMENT = /(^|\/)-(?:Users|home)-[^/]*/g
+// bundle.mts's marker, deliberately. One withheld-marker vocabulary across the
+// tool means a reader who has seen it once knows what it means everywhere.
+const WITHHELD = '«path-withheld»'
+
+const segments = (s: string): string[] => s.replace(/\\/g, '/').split('/').filter((x) => x && x !== '.')
+
+/**
+ * One tool-call path, as the spine stores it.
+ *
+ * Relative to `root` when there is one -- including upward, so a file outside
+ * the working directory reads `../../.claude/settings.json` and is visibly
+ * outside rather than silently renamed to something inside. A path that is
+ * already relative is left alone: it was written relative to the same working
+ * directory, so it is already in this form and normalising it again would key
+ * `./src/a.ts` and `src/a.ts` as two files.
+ *
+ * The `..` form cancels the account name WHEN BOTH PATHS ARE UNDER THE HOME
+ * DIRECTORY, which is the usual case and was very nearly assumed to be the only
+ * one. It is not: a session run from a worktree in /private/tmp, or a checkout
+ * on another volume, shares nothing with the file it edits under `~`, so the
+ * climb walks back down through `Users/<name>` and the account name lands in the
+ * middle of a path that is relative and therefore looks safe. Every session on
+ * the corpus with a working directory outside the home tree did exactly that.
+ * Where that happens, `~` replaces the home root instead -- shorter, and it is
+ * what the relative form was chosen to achieve in the first place.
+ *
+ * With no root there is nothing to cancel, and the same `~` rewrite is all there
+ * is. What remains may be absolute -- `/etc/hosts` has no home root to remove.
+ * Consumers that forward the spine must fail closed on that rather than assume
+ * this function made it safe.
+ */
+export function spinePath(p: string, root: string | null): string {
+  if (!ABSOLUTE.test(p)) return deName(segments(p).join('/') || '.')
+  if (!root || !ABSOLUTE.test(root)) return deName(tilde(p))
+  const from = segments(root)
+  const to = segments(p)
+  // Different roots share no prefix that means anything, and counting `..`
+  // between them would invent a relationship. A drive letter against a POSIX
+  // root is the obvious case; `C:` against `D:` is the SAME case and was missed,
+  // because the test asked whether each side had a drive letter and not whether
+  // it was the same one -- so two accounts on two disks produced
+  // `../../../../D:/Users/someone/x.ts`, which names the account and resolves
+  // nowhere. The test is on the root segment itself now, not on its shape.
+  const driveRoot = (x: string): boolean => /^[A-Za-z]:$/.test(x)
+  if (driveRoot(from[0] ?? '') || driveRoot(to[0] ?? ''))
+    if ((from[0] ?? '').toLowerCase() !== (to[0] ?? '').toLowerCase()) return deName(tilde(p))
+  let i = 0
+  while (i < from.length && i < to.length && from[i] === to[i]) i++
+  // The climb is safe only when the shared prefix reaches PAST the account name.
+  // Anything less and the `..` walk goes up over the home root and back down
+  // through it, carrying the name into a path that is relative and therefore
+  // looks safe -- `../../../Users/someone/.claude/x`. The old rule asked this of
+  // the FIRST segment only, which is a home root on a plain POSIX box and is
+  // `System`, `Volumes`, `net` or a drive letter on every other shape a home
+  // path really takes; homeRootAt finds it wherever it is.
+  //
+  // Tested on the segments and not on the resulting text, which is what keeps it
+  // precise: a repository with an `app/home/page` in it produces the same
+  // substring and is not this.
+  const h = homeRootAt(to)
+  if (h >= 0 && i <= h + 1) return deName(tilde(p))
+  const up = from.length - i
+  return deName([...Array<string>(up).fill('..'), ...to.slice(i)].join('/') || '.')
+}
+
+/** The last shape an account name arrives in, after the prefixes have cancelled.
+ *  Applied to every return above rather than at one exit, because there is no
+ *  single exit and a scrub that runs on three of four paths is the failure this
+ *  file is written against. */
+const deName = (s: string): string => s.replace(HOME_DASH_SEGMENT, `$1${WITHHELD}`)
+
+/** The turn's raw path counts, relativised and ordered. Most-touched first, ties
+ *  broken by path, so two readings of one transcript serialise identically. */
+function fileList(raw: Record<string, number> | undefined, root: string | null): TurnFileTouch[] {
+  if (!raw) return []
+  const merged: Record<string, number> = {}
+  // Two raw spellings can collapse to one stored path -- `/repo/src/a.ts` and
+  // `src/a.ts` are the same file named twice -- so the counts are summed after
+  // rewriting, not before.
+  for (const [p, n] of Object.entries(raw)) {
+    const key = spinePath(p, root)
+    merged[key] = (merged[key] || 0) + n
+  }
+  return Object.entries(merged)
+    .map(([path, count]) => ({ path, count }))
+    .sort((a, b) => b.count - a.count || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
 // ---------------------------------------------------------------- token accum
@@ -760,7 +1071,7 @@ function rootOf(file: string): TranscriptRoot | null {
 
 export async function extract(
   file: string,
-  { redactText = true, maxPromptChars = 4000, harness: harnessOpt }: ExtractOptions = {}
+  { redactText = true, maxPromptChars = 4000, recordPaths = true, harness: harnessOpt }: ExtractOptions = {}
 ): Promise<Session> {
   const root = rootOf(file)
   // Cursor is sniffed ahead of the root lookup, not after it. Its sessions are
@@ -786,6 +1097,8 @@ export async function extract(
     cwd: null,
     gitBranch: null,
     version: null,
+    redactedPrompts: redactText,
+    recordedPaths: recordPaths,
     title: null,
     startedAt: null,
     endedAt: null,
@@ -831,8 +1144,12 @@ export async function extract(
     effort,
     firstToolAt: null,
     timeToFirstToolMs: null,
+    files: [],
     _tools: {},
     _models: {},
+    // Absent, not empty, when paths are off. `harvestTool` records nothing when
+    // handed null, so the switch lives in one place rather than at every call.
+    _files: recordPaths ? {} : undefined,
   })
 
   const closeTurn = (ts: string | null | undefined): void => {
@@ -941,7 +1258,11 @@ export async function extract(
         for (const block of (rec.message?.content || []) as ToolUseBlock[]) {
           if (block.type !== 'tool_use') continue
           session.totals.toolCalls++
-          harvestTool(block, session.artifacts)
+          // A tool call before the first human turn belongs to no turn, so its
+          // path has nowhere to be attributed and is not recorded. It is still
+          // counted in `fileTouches`, which is why that count can exceed the
+          // paths below and why nothing may present one as the total of the other.
+          harvestTool(block, session.artifacts, current?._files ?? null)
           if (!current) continue
           current._tools![block.name] = (current._tools![block.name] || 0) + 1
           if (!current.firstToolAt) {
@@ -1013,6 +1334,14 @@ export async function extract(
   const seen = new Map<string, number>()
 
   session.turns.forEach((t, i) => {
+    // Here rather than in closeTurn, because closeTurn runs while the stream is
+    // still going and `session.cwd` is set by the first record that carries one.
+    // A turn closed before that record would relativise against null and store
+    // the same file under a different key than every later turn.
+    const draft = t as TurnDraft
+    t.files = fileList(draft._files, session.cwd)
+    delete draft._files
+
     const next = session.turns[i + 1]
     const key = norm(t.text)
     // A near-identical prompt sent twice means the first one did not land.
@@ -1167,6 +1496,14 @@ function summarize(s: Session): string {
     `tokens  in ${fmtTokens(t.tokens.input)}  out ${fmtTokens(t.tokens.output)}  ` +
       `cache-read ${fmtTokens(t.tokens.cacheRead)}  cache-write ${fmtTokens(t.tokens.cacheCreate)}`
   )
+  // Said in the terminal too, because a person running this to see what the tool
+  // holds should not have to read the JSON to find out that it now holds paths.
+  const distinct = new Set(s.turns.flatMap((turn) => turn.files.map((f) => f.path))).size
+  L.push(
+    s.recordedPaths
+      ? `files   ${s.artifacts.fileTouches} tool call(s) named a file; ${distinct} distinct path(s) kept, per turn`
+      : `files   ${s.artifacts.fileTouches} tool call(s) named a file; no path kept (--no-paths)`
+  )
   L.push('')
   L.push('  #  dur     tools  out-tok  flags  prompt')
   for (const turn of s.turns) {
@@ -1226,6 +1563,9 @@ if (isMain) {
     console.error('no session found. try --list')
     process.exit(1)
   }
-  const result = await extract(target, { redactText: !flag('--no-redact') })
+  const result = await extract(target, {
+    redactText: !flag('--no-redact'),
+    recordPaths: !flag('--no-paths'),
+  })
   console.log(flag('--json') ? JSON.stringify(result, null, 2) : summarize(result))
 }

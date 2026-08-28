@@ -96,6 +96,21 @@ jobs:
       - name: Backlog
         run: node plugins/session-viz/test/qbl.mjs
 
+      # The turn cards’ hierarchy and the contrast that carries it.
+      - name: Cards
+        run: node plugins/session-viz/test/cards.mjs
+
+      # The brand chrome on every wrapper, the evidence package, and the two
+      # together on the rendered report pages.
+      - name: Brand
+        run: node plugins/session-viz/test/brand.mjs
+
+      - name: Evidence package
+        run: node plugins/session-viz/test/bundle.mjs
+
+      - name: Reports
+        run: node plugins/session-viz/test/reports.mjs
+
       # /qlive sends turn shape to a workspace console. Two rules carry the
       # whole feature: the trailing turn is never sent (extract closes it
       # artificially, so it looks finished when it is not), and the live ledger
@@ -105,8 +120,45 @@ jobs:
       - name: Live
         run: node plugins/session-viz/test/qlive.mjs
 
+      # Five suites that gated nothing until this block existed. Each one covers
+      # a claim the tool makes to a reader who cannot check it: which files a
+      # turn touched, what an earlier session concluded and how old that is,
+      # what a follow-up prompt may say about a session it was not built from,
+      # and what the bill of materials does and does not know.
+      - name: Recorded file paths
+        run: node plugins/session-viz/test/paths.mjs
+
+      - name: Intent carried across sessions
+        run: node plugins/session-viz/test/intent.mjs
+
+      - name: Drill-down and the appendix
+        run: node plugins/session-viz/test/followup.mjs
+
+      - name: Bill of materials
+        run: node plugins/session-viz/test/sbom.mjs
+
+      # The consent gate on shipping a session to the cloud — "nothing leaves
+      # this machine unless you were shown what would leave". It is the largest
+      # claim the tool makes and it was the last suite running nowhere.
+      - name: Consent before anything is sent
+        run: node plugins/session-viz/test/ship.mjs
+
       - name: Committed output matches source
         run: |
+          # --porcelain, not `git diff`: a build that emits a NEW module leaves it
+          # untracked, and `git diff` cannot see an untracked file. A source file
+          # added without its compiled output therefore passed this gate green
+          # while the plugin shipped without the module it imports.
+          untracked="$(git status --porcelain -- plugins/session-viz/scripts | grep '^??' || true)"
+          if [ -n "$untracked" ]; then
+            echo "$untracked"
+            echo
+            echo "::error::plugins/session-viz/scripts has build output that was never committed."
+            echo "Run 'npm run build' and 'git add plugins/session-viz/scripts'. An untracked"
+            echo "module is invisible to 'git diff', so this gate used to pass while the"
+            echo "installed plugin was missing a file it imports at startup."
+            exit 1
+          fi
           if ! git diff --exit-code --stat -- plugins/session-viz/scripts; then
             echo
             echo "::error::plugins/session-viz/scripts is stale — it does not match plugins/session-viz/src."
