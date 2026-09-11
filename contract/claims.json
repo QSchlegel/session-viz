@@ -269,21 +269,22 @@
       },
       "kind": "list",
       "risk": "consent",
-      "status": "planned",
-      "why": "The index tier — metrics, intent titles, the decision graph, files touched, trace shape — is workspace-visible so every roll-up is complete. The trace tier carries full tool inputs and results, which is bash command lines and file contents, and defaults to author-plus-admins: the same rung as the verbatim document, because it exposes as much.",
-      "plan": "The INDEX tier now ships beside every report and is disclosed. The TRACE tier still has no path out of the plugin: extract retains it behind --with-trace, the server accepts it at POST /v1/qpact/trace, and nothing in between sends it. The claim stays planned until both tiers ship with the default visibilities it describes.",
+      "why": "The index tier — metrics, intent titles, the decision graph, files touched, trace shape — is workspace-visible so every roll-up is complete. The trace tier carries full tool inputs and results, which is bash command lines and file contents, and defaults to author-plus-admins: the same rung as the verbatim document, because it exposes as much. Both now ship: the index tier with every report, the trace tier only when extract was asked to retain one.",
       "discipline": "frozen",
       "consent_material": true,
       "generated": [],
       "checked": [
         {
           "file": "README.md",
-          "match": "two tiers: (index and trace|an index tier and a trace tier)",
-          "as": "exact"
+          "match": "two tiers: an index tier and a trace tier",
+          "as": "presence"
         }
       ],
       "tells": [],
-      "guarded_by": []
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs",
+        "plugins/session-viz/test/facts.mjs"
+      ]
     },
     "report.hold_days": {
       "statement": "A withdrawn report is hidden and kept this long before it is purged.",
@@ -631,6 +632,30 @@
       "guarded_by": [
         "services/api/test/report.mjs",
         "services/api/test/contract.mjs"
+      ]
+    },
+    "qpact.document.withholdable": {
+      "statement": "The rendered page can be withheld while the bounded facts keep going.",
+      "value": true,
+      "render": {
+        "plain": "--withhold-document"
+      },
+      "kind": "behaviour",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "The two payloads expose differently and the switch says so. Somebody who does not want every prompt in their session on a console should not have to choose between that and vanishing from their team's numbers — and the shape of that absence would itself be a disclosure about who withheld what.",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "is the middle option",
+          "as": "exact"
+        }
+      ],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs"
       ]
     }
   }

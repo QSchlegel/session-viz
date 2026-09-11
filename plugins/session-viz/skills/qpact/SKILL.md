@@ -267,9 +267,20 @@ summarised as one the user read.
 Turning it OFF is different, and you may do it when asked:
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --off              # stop shipping from this machine
-node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --skip <session>   # this session only
+node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --off                  # stop shipping from this machine
+node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --skip <session>       # this session only
+node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --withhold-document    # keep the facts, stop the page
 ```
+
+`--withhold-document` is the middle answer and worth offering when somebody is
+uneasy about the page but not about the numbers: it stops sending the rendered
+report — every prompt in the session, verbatim — and keeps sending the 48
+bounded fields, so they stay in their team's roll-up without their prompts going
+with them.
+
+A step 7 run prints two outcomes now, and sometimes three: the page, the facts,
+and a trace when the extractor was asked to keep one. Relay all of them. "Shipped"
+on its own is no longer a true summary of what happened.
 
 `push.mjs` with no arguments says what the next run would do and why, and changes
 nothing.

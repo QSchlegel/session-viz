@@ -5,6 +5,8 @@
 //   node push.mjs --on                             # prints the disclosure, refuses
 //   node push.mjs --on --yes                       # prints the disclosure, turns it on
 //   node push.mjs --off                            # off, from the next run onward
+//   node push.mjs --withhold-document              # keep the facts, stop sending the page
+//   node push.mjs --skip <session-id>              # this session only
 //   node push.mjs --ship --spine S.json --report R.html
 //
 // -- Why this ships the DOCUMENT and not the spine --------------------------
@@ -564,6 +566,16 @@ export interface PushState {
   /** Sessions the person skipped one at a time. Bounded — see SKIP_LIMIT. */
   skipped?: string[]
   /**
+   * Withhold the rendered page, keep sending the bounded facts.
+   *
+   * The two payloads expose differently and this is the switch that says so.
+   * The document is every prompt in the session, verbatim; the index tier is
+   * counts, bands and names, and it is what makes a workspace roll-up complete.
+   * Somebody who wants the second without the first should not have to choose
+   * between shipping their prompts and vanishing from their team's numbers.
+   */
+  documentWithheld?: boolean
+  /**
    * What was shown, to whom, and where the print went.
    *
    * Keyed on four things and not on the digest alone. The digest says the TEXT
@@ -611,6 +623,7 @@ export const SKIP_LIMIT = 200
  * shorten it by leaving fields out.
  */
 export const FACTS_PATH = '/v1/qpact/facts'
+export const TRACE_PATH = '/v1/qpact/trace'
 
 /**
  * The facts sidecar's disclosure, and why it is grouped rather than itemised.
@@ -1106,6 +1119,23 @@ export function optOut(): { path: string; lines: string[] } {
   }
 }
 
+/** Withhold the page and keep sending the facts, or the reverse. */
+export function withholdDocument(on: boolean): { path: string; lines: string[] } {
+  const prev = loadPush()
+  const path = savePush({ ...prev, origin: undefined, schema_version: STATE_SCHEMA_VERSION, documentWithheld: on })
+  return {
+    path,
+    lines: on
+      ? [
+        `The rendered page will NOT be sent from this machine. Recorded in ${path}.`,
+        'The bounded facts still are, so this session keeps appearing in your workspace\u2019s',
+        'roll-up — counts, bands, repo and branch, and nothing that can quote a prompt.',
+        'Pages already sent stay until you withdraw them.',
+      ]
+      : [`The rendered page will be sent again from this machine. Recorded in ${path}.`],
+  }
+}
+
 /** One session, skipped. Bounded, oldest first. */
 export function skipSession(sessionId: string): { path: string; lines: string[] } {
   const prev = loadPush()
@@ -1228,6 +1258,10 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
     return fail(`could not read the spine at ${args.spinePath}: ${(e as Error).message}`)
   }
 
+  // The local record, read before the size check so the next two decisions can
+  // both see it. It touches nothing and sends nothing.
+  const state = loadPush()
+
   // The size refusal comes BEFORE the gate, and stays there.
   //
   // It is a local fact: this file is too large to send anywhere, to any
@@ -1243,12 +1277,14 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
   }
 
   const bytes = Buffer.byteLength(html, 'utf8')
-  if (bytes > MAX_DOCUMENT_BYTES)
+  // Not when the page is withheld: its size decides nothing, and refusing a
+  // send that was never going to happen would report a problem the person has
+  // already solved.
+  if (!state.documentWithheld && bytes > MAX_DOCUMENT_BYTES)
     return fail(
       `${args.reportPath} is ${(bytes / 1048576).toFixed(1)} MB, over the ${MAX_DOCUMENT_BYTES / 1048576} MB limit`,
       ['  The local report is unaffected. Nothing was sent.'])
 
-  const state = loadPush()
   let cfg: Config | null = null
   let configError: string | null = null
   try { cfg = config() } catch (e) { configError = (e as Error).message }
@@ -1326,6 +1362,24 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
   }
   lines.push(...termsLines(terms, dest.url, Boolean(freshTerms)))
 
+  // ── The page withheld, the facts still sent ─────────────────────────────
+  //
+  // Before the document is even read. The two payloads expose differently: the
+  // page is every prompt in the session, verbatim; the sidecar is counts, bands
+  // and names. Somebody who wants their team's roll-up to be complete should
+  // not have to ship their prompts to achieve it, and somebody who withholds
+  // their prompts should not vanish from the numbers as a side effect — the
+  // shape of that absence is its own disclosure.
+  if (state.documentWithheld) {
+    const withheld = await sendSidecars(spine, dest, args, lines, {
+      shipped: false,
+      head: '  PAGE WITHHELD — you turned the rendered report off; the bounded facts still go',
+    })
+    return { ...withheld, reason: 'the rendered page is withheld from this machine' }
+  }
+
+
+
   let payload: ReportPayload
   try {
     payload = reportPayload({ spine, html, now: args.now })
@@ -1398,7 +1452,31 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
   // 404s and read as a failed upload.
   const link = body.url || `${dest.url.replace(/\/$/, '')}/r/${body.id}`
 
-  // ── The sidecar, sent after the document and reported separately ─────────
+  return await sendSidecars(spine, dest, args, lines, {
+    shipped: true, id: body.id, url: link, bytes,
+    head: `  SHIPPED to ${link}`,
+  })
+}
+
+/**
+ * The sidecar and the trace, sent after the document — or instead of it.
+ *
+ * One function because both callers send the same things for the same reasons,
+ * and two copies of "what else goes with a report" is how one of them acquires
+ * a field the other does not have.
+ *
+ * ── The sidecar, reported separately ─────────────────────────────────────
+ *
+ * Two payloads, two outcomes, and the word "shipped" never stands alone again.
+ * The report is the page somebody can check; the sidecar is the structure a
+ * colleague can query, and they succeed and fail independently. The document's
+ * success is not conditional on either: a sidecar that fails leaves a report
+ * that is already there, and saying so beats unwinding a send that worked.
+ */
+async function sendSidecars(
+  spine: Spine, dest: Config, args: ShipArgs, lines: string[],
+  out: { shipped: boolean; id?: string; url?: string; bytes?: number; head: string },
+): Promise<ShipResult> {
   //
   // Two payloads, two outcomes, and the word "shipped" never stands alone
   // again. The report is the page somebody can check; the sidecar is the
@@ -1416,24 +1494,39 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
     // does not name never reaches a socket, and a field it promises never goes
     // missing without somebody being told.
     return {
-      shipped: true, id: body.id, url: link, bytes, reason: '',
-      lines: [...lines, `  SHIPPED to ${link}`,
+      ...out, reason: '', factsShipped: false,
+      lines: [...lines, out.head,
         `  FACTS NOT SENT — the sidecar carries ${und.extra.length} field(s) the disclosure does not name` +
         `${und.missing.length ? ` and is missing ${und.missing.length} it promises` : ''}.`,
         `    ${[...und.extra, ...und.missing].slice(0, 6).join(', ')}`,
-        '    This is a defect in this build, not something you can fix. The report above went.'],
+        `    This is a defect in this build, not something you can fix.${out.shipped ? ' The report above went.' : ''}`],
     }
   }
 
   const fr = await post(`${dest.url}${FACTS_PATH}`, dest, { schema_version: SCHEMA_VERSION, facts }, args.timeoutMs)
   const factsLine = fr.ok
     ? '  FACTS SENT — the session is in the workspace roll-up'
-    : `  FACTS NOT SENT — ${fr.why}. The report above went and is unaffected.`
+    : `  FACTS NOT SENT — ${fr.why}.${out.shipped ? ' The report above went and is unaffected.' : ''}`
+
+  // ── The trace, only when the extractor was asked to keep one ────────────
+  //
+  // There is no flag here and there should not be: retention is extract's
+  // decision, made with --with-trace, and a spine without one has nothing to
+  // send. A switch in this file would be a second place to turn the most
+  // exposing payload in the product on.
+  const calls = Array.isArray((spine as { trace?: unknown[] }).trace) ? (spine as { trace: unknown[] }).trace : []
+  let traceLine: string | null = null
+  if (calls.length) {
+    const tr = await post(`${dest.url}${TRACE_PATH}`, dest,
+      { sessionId: spine.sessionId, calls }, args.timeoutMs)
+    traceLine = tr.ok
+      ? `  TRACE SENT — ${calls.length} tool call(s), inputs and results, readable by you and workspace admins`
+      : `  TRACE NOT SENT — ${tr.why}`
+  }
 
   return {
-    shipped: true, id: body.id, url: link, bytes, reason: '',
-    factsShipped: fr.ok,
-    lines: [...lines, `  SHIPPED to ${link}`, factsLine,
+    ...out, reason: '', factsShipped: fr.ok,
+    lines: [...lines, out.head, factsLine, ...(traceLine ? [traceLine] : []),
       `  Turn this off at any time with:  node push.mjs --off`],
   }
 }
@@ -1479,6 +1572,12 @@ if (isMain) {
   try {
     if (argv.includes('--off')) {
       const r = optOut()
+      say(r.lines)
+      process.exit(0)
+    }
+
+    if (argv.includes('--withhold-document') || argv.includes('--send-document')) {
+      const r = withholdDocument(argv.includes('--withhold-document'))
       say(r.lines)
       process.exit(0)
     }

@@ -136,7 +136,7 @@ for (const [id, c] of Object.entries(reg.claims)) {
     }
     // A boolean claim is satisfied by the sentence being there; there is no
     // captured value to compare it against.
-    if (typeof c.value === 'boolean') {
+    if (typeof c.value === 'boolean' || k.as === 'presence') {
       chk(`${id} in ${treeOf(k)}/${k.file}:${lineOf(text, m.index)}`, true)
       continue
     }

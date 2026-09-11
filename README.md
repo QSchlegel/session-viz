@@ -80,9 +80,18 @@ reachable. Not silently, and not on the first run — the first `/qpact` on a ma
 whole disclosure, records that it printed it, and sends nothing. Every run after that ships, and
 every send prints its destination.
 
-Stop it with `node push.mjs --off`, or one session at a time with `node push.mjs --skip <id>`. A
-disclosure printed where no terminal was attached does not count as having been read, so an
-unattended run does not start shipping on its own.
+What goes with it is two tiers: an index tier and a trace tier. The index tier is 48 bounded
+fields — counts, bands, the repository and branch, model-written intent titles — visible to your
+whole workspace, because a roll-up with holes in it is not a roll-up. The trace tier is tool
+inputs and results in full, and defaults to you and your workspace admins, because a bash command
+line exposes at least as much as the prompts above it. A trace is only ever sent when the
+extractor was asked to keep one with `--with-trace`.
+
+Stop all of it with `node push.mjs --off`, or one session at a time with `node push.mjs --skip
+<id>`. `node push.mjs --withhold-document` is the middle option: it stops sending the page —
+every prompt, verbatim — and keeps sending the bounded facts, so you stay in your team's numbers
+without your prompts going with them. A disclosure printed where no terminal was attached does
+not count as having been read, so an unattended run does not start shipping on its own.
 
 `/qbl` also stays on this machine by default, writing only its per-project backlog; it reaches the
 team queue only when you explicitly add `--shared`. Five of the twelve can deliberately put something

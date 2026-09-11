@@ -60,7 +60,7 @@ const { INDEX_FIELDS, keyPaths } = await import('../scripts/facts.mjs')
 const {
   shipReport, turnOn, turnOff, isOn, loadPush, offReason,
   STATE_SCHEMA_VERSION, credentialFingerprint, canRecord, pushPaths, skipSession, optOut,
-  standingDisclosure, disclosureDigest, pushTarget, FACTS_PATH,
+  standingDisclosure, disclosureDigest, pushTarget, FACTS_PATH, withholdDocument,
   FIELDS, HEADERS, REPORT_PATH, SCHEMA_VERSION, MAX_DOCUMENT_BYTES,
 } = await import('../scripts/push.mjs')
 
@@ -830,6 +830,70 @@ console.log(`\n── ` + 'the disclosure names the sidecar and what it refuses'
     ['file, project, cwd', 'turns[].text', 'turns[].signals'].every((x) => text.includes(x)), text)
   chk('and the count matches the contract',
     new RegExp(`${INDEX_FIELDS.length} bounded fields`).test(text), text)
+}
+
+console.log(`\n── ` + 'the page can be withheld while the facts keep going')
+{
+  server.setMode('ok')
+  turnOn({ confirmed: true })
+  withholdDocument(true)
+  const before = server.calls.length
+  const r = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  const sent = server.calls.slice(before)
+
+  chk('no page was sent', !sent.some((c) => c.url === REPORT_PATH),
+    JSON.stringify(sent.map((c) => c.url)))
+  chk('the facts still were', sent.some((c) => c.url === FACTS_PATH),
+    JSON.stringify(sent.map((c) => c.url)))
+  chk('and it says which happened', r.lines.some((l) => /PAGE WITHHELD/.test(l)), r.lines.join('\n'))
+  chk('the document outcome is false and the facts outcome is true',
+    r.shipped === false && r.factsShipped === true, JSON.stringify([r.shipped, r.factsShipped]))
+  chk('and the reason names the withholding, not a failure',
+    /withheld/.test(r.reason), r.reason)
+
+  // An oversized page is not refused when it was never going to be sent.
+  const huge = join(home, 'huge.html')
+  writeFileSync(huge, 'x'.repeat(MAX_DOCUMENT_BYTES + 1024))
+  const r2 = await ship({ spinePath, reportPath: huge, timeoutMs: 5000 })
+  chk('a page too large to send is irrelevant when it is withheld',
+    r2.factsShipped === true && !/too large|over the/i.test(r2.reason), String(r2.reason))
+
+  withholdDocument(false)
+  const r3 = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  chk('and turning it back on sends the page again', r3.shipped === true, String(r3.reason))
+}
+
+console.log(`\n── ` + 'a retained trace goes with it, and only when one was retained')
+{
+  server.setMode('ok')
+  turnOn({ confirmed: true })
+  const before = server.calls.length
+  await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  chk('a spine with no trace sends none',
+    !server.calls.slice(before).some((c) => c.url === '/v1/qpact/trace'),
+    JSON.stringify(server.calls.slice(before).map((c) => c.url)))
+
+  const withTrace = join(home, 'trace-spine.json')
+  const base = JSON.parse(readFileSync(spinePath, 'utf8'))
+  writeFileSync(withTrace, JSON.stringify({
+    ...base,
+    trace: [{
+      turn: 0, seq: 0, tool: 'Bash', mcp_server: null, started_at: null, duration_ms: 1,
+      ok: true, error_kind: 'none', input: { command: 'ls' }, result: 'out',
+      input_bytes: 16, result_bytes: 3, truncated: false,
+    }],
+  }))
+  const at = server.calls.length
+  const r = await ship({ spinePath: withTrace, reportPath, timeoutMs: 5000 })
+  const traceCall = server.calls.slice(at).find((c) => c.url === '/v1/qpact/trace')
+  chk('a spine that carries one sends it', !!traceCall, JSON.stringify(server.calls.slice(at).map((c) => c.url)))
+  chk('and the line says who can read it',
+    r.lines.some((l) => /TRACE SENT/.test(l) && /admins/.test(l)), r.lines.join('\n'))
+  // Retention is extract's decision, made with --with-trace. There is no switch
+  // here, and there should not be a second place to turn the most exposing
+  // payload in the product on.
+  chk('the trace carries the calls the spine held',
+    JSON.parse(traceCall.body).calls.length === 1, traceCall.body.slice(0, 80))
 }
 
 await server.close()
