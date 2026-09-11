@@ -208,12 +208,47 @@ export function indexFacts(s, meta = {}) {
  *  whole file, and the original length travels in result_bytes so a reader can
  *  see exactly what was cut rather than reading a truncation as the whole thing. */
 export const MAX_RESULT_CHARS = 64 * 1024;
+/**
+ * A NUL cannot travel, so it is removed here rather than at the far end.
+ *
+ * Postgres `jsonb` cannot hold \u0000 in a string at all — the insert fails with
+ * "unsupported Unicode escape sequence", which is a true sentence about a
+ * database and a useless one to somebody whose trace did not arrive. A tool
+ * result is arbitrary bytes read off a terminal, so a NUL in one is ordinary
+ * rather than exotic: this project's own sessions contain them, because
+ * session-viz-cloud's blog generator uses \u0000 as a placeholder and every
+ * command that discussed it carried the escape.
+ *
+ * Removed, not refused. What is lost is a byte with no meaning to any reader of
+ * a transcript, and refusing the whole trace over one would be spending a
+ * session's evidence to preserve something nobody wants.
+ *
+ * Written \u0000 as an ESCAPE and never as a literal, for the reason
+ * session-viz-cloud/services/web/src/blog.ts records in full: git calls a file
+ * with one in its first 8000 bytes binary, so it has no diff and cannot be
+ * merged, and grep skips it silently.
+ */
+const noNul = (v, depth = 0) => {
+    if (depth > 12)
+        return v;
+    if (typeof v === 'string')
+        return v.replace(/\u0000/g, '');
+    if (Array.isArray(v))
+        return v.map((x) => noNul(x, depth + 1));
+    if (v && typeof v === 'object') {
+        const out = {};
+        for (const [k, val] of Object.entries(v))
+            out[k.replace(/\u0000/g, '')] = noNul(val, depth + 1);
+        return out;
+    }
+    return v;
+};
 export function traceFacts(calls) {
     return (calls || []).map((c) => {
-        const result = c.result == null ? null : String(c.result);
+        const result = c.result == null ? null : String(c.result).replace(/\u0000/g, '');
         const full = c.resultBytes ?? (result === null ? 0 : result.length);
         const truncated = full > MAX_RESULT_CHARS;
-        const input = c.input === undefined ? null : c.input;
+        const input = c.input === undefined ? null : noNul(c.input);
         return {
             turn: Number(c.turn || 0),
             seq: Number(c.seq || 0),
