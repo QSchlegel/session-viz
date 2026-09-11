@@ -57,6 +57,29 @@ jobs:
       - name: Findings
         run: node plugins/session-viz/test/finding.mjs
 
+      # The claims contract. A number that appears in six places was kept correct
+      # in six places by hand, and the comments said so: report.ts in the sibling
+      # repository carries "If one of the two ever moves, both move" about a
+      # ceiling this repository also defines. An inventory of both trees found 825
+      # claim statements, 71 distinct claims and 35 pairs that already disagreed —
+      # four simultaneous answers for how many commands there are, and a headline
+      # privacy sentence generous by two. This is the check that makes those
+      # arithmetic rather than remembered. It also reads the sibling repository
+      # when it is checked out beside this one, and prints what it skipped when it
+      # is not.
+      - name: Claims
+        run: node plugins/session-viz/test/claims.mjs
+
+      # A derive nobody has watched fail is documentation. This copies the tree to
+      # a temp directory, breaks each claim on purpose — adds a thirteenth skill,
+      # removes a frontmatter flag, wires the credential into a command that does
+      # not touch it — and asserts the derive notices. The failure it guards
+      # against is the one that cannot be seen from a green build: a derive that
+      # greps for a string which has since moved returns the old answer and passes
+      # while the registry is wrong.
+      - name: Derives prove themselves
+        run: node contract/derive.mjs --prove
+
       # `wrote_ok` is a tool-result observation. The separate artifact probe
       # must keep path-format drift and local absence visible without silently
       # promoting either into a delivery verdict.

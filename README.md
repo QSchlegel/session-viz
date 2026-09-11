@@ -70,19 +70,29 @@ benchmarks. The report prints what it cannot conclude as carefully as what it ca
 
 ## Local first, explicit when anything leaves
 
-Six analysis commands send nothing anywhere: they read local transcripts, compute locally and open
-an HTML report. `/qbl` also stays on this machine by default, writing only its per-project backlog;
-it reaches the team queue only when you explicitly add `--shared`. The other five need a workspace,
-and two can deliberately put something about your work on a wire. They are not the same kind of send:
+Four analysis commands send nothing anywhere: `/qtrends`, `/qruns`, `/qship` and `/qdoctor` read
+local transcripts, compute locally, and open no socket at all. Two more are local in what they
+analyse and not in what they touch, which is worth saying rather than rounding off. `/qcost`'s
+first step fetches an unauthenticated rate card from the vendor host — no credential leaves, but a
+request does. `/qpact` posts the entire rendered report, which carries the verbatim text of every
+prompt in the session, to your workspace console whenever report shipping is switched on; shipping
+is off until you turn it on, and every send prints its destination.
+
+`/qbl` also stays on this machine by default, writing only its per-project backlog; it reaches the
+team queue only when you explicitly add `--shared`. Five of the twelve can deliberately put something
+about your work on a wire, and they are not the same kind of send:
 
 - `/qcontrib` feeds the cross-tenant reference in nine bounded columns — no prompts, paths, repo
   names or timestamps finer than an ISO week. Person-blind by construction.
 - `/qshare` publishes one project, session or run to **your own workspace** for colleagues to read.
   That payload can carry verbatim prompt text on purpose, and it names you.
+- `/qfeed` files task titles and briefs into your workspace queue, after you have read them.
+- `/qbl --shared` pushes one project's backlog to that same queue. Without the flag it never leaves.
+- `/qpact` ships the rendered report itself. It is by far the largest payload here and the only one
+  that carries prompt text unrewritten, which is why its switch is a separate, disclosed act.
 
-`/qsetup` moves a credential and nothing else; `/qfeed` files task titles and briefs you have read
-first; `/qteam` connects the shared workspace. The hosted side is optional, and all six local
-analyses work with no account, token or network.
+`/qsetup` moves a credential and nothing else; `/qteam` connects the shared workspace. The hosted
+side is optional, and the four silent analyses work with no account, token or network.
 
 ```mermaid
 flowchart LR

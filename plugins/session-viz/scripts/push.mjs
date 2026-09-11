@@ -99,7 +99,14 @@ export const REPORT_PATH = '/v1/qpact/report';
  *  most like success. */
 export const DEFAULT_TIMEOUT_MS = 20_000;
 /** Refused here rather than at the server, so the message names the file and
- *  the number instead of arriving as an HTTP 413. */
+ *  the number instead of arriving as an HTTP 413.
+ *
+ *  The number itself is the contract's, not this file's. services/api/src/report.ts
+ *  holds the same ceiling and carried a comment asking a future reader to move
+ *  both whenever one moved; contract/claims.json now holds it once and writes it
+ *  into both. Two ceilings that disagree mean a user is told "too large" about a
+ *  file the other side would have taken. */
+// <contract:limits.document_bytes> generated from contract/claims.json — do not edit
 export const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
 export const FIELDS = [
     {

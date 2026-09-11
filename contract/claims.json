@@ -1,0 +1,237 @@
+{
+  "contract_version": 1,
+  "why": [
+    "A claim is anything this product tells a person who cannot check it themselves: a count, an",
+    "enumeration, a ceiling, a promise about what leaves their machine. Until this file existed each",
+    "one was kept true by hand in every place it appeared, and the comments say so out loud —",
+    "services/api/src/report.ts carries 'If one of the two ever moves, both move' about a number this",
+    "repository also defines. That is a promise, not a mechanism, and an inventory of both trees found",
+    "825 claim statements, 71 distinct claims and 35 places where two of them already disagreed.",
+    "",
+    "This file is the single value. The generator writes it into the constants and the tables; the",
+    "drift suite refuses to let any surface say something else; the derives prove the value is still",
+    "true of the code rather than merely agreed upon.",
+    "",
+    "It lives OUTSIDE plugins/session-viz/ on purpose. A plugin install is a copy of that directory,",
+    "so anything inside it ships to every user; this is build-time and CI tooling and has no business",
+    "in an installed tree. It is JSON with no comments, so every claim carries a mandatory 'why' — the",
+    "comment becomes data rather than being lost."
+  ],
+  "claims": {
+    "limits.document_bytes": {
+      "statement": "The largest /qpact report document that may be shipped.",
+      "value": 8388608,
+      "unit": "bytes",
+      "render": {
+        "expr": "8 * 1024 * 1024",
+        "mib": "8 MiB",
+        "plain": "8 MB"
+      },
+      "kind": "number",
+      "risk": "accuracy",
+      "why": "Two ceilings that disagree mean a user is told 'too large' about a file the plugin already said was fine, or a document the plugin approved arrives as an HTTP 413 it has no sentence for. services/api/src/report.ts:41 has carried that reasoning as a hand-maintained comment since the endpoint shipped, asking a future reader to remember. This entry is that comment made executable.",
+      "discipline": "server-first",
+      "consent_material": false,
+      "enforced_by": {
+        "plugin": "plugins/session-viz/src/push.mts#MAX_DOCUMENT_BYTES",
+        "server": "services/api/src/report.ts#MAX_DOCUMENT_BYTES"
+      },
+      "skew": {
+        "plugin_older": "ACCEPT. An older plugin refuses at 8 MiB against a server that would have taken more. Under-use, never an error, and never a surprise to the user.",
+        "plugin_newer": "REFUSE. The plugin may not raise this before the server has. A raise lands as a new claim id; this id keeps its value forever, because an install is a frozen copy in a version-keyed cache that nothing can reach to update."
+      },
+      "generated": [
+        {
+          "file": "plugins/session-viz/src/push.mts",
+          "region": "limits.document_bytes",
+          "emit": "expr",
+          "template": "export const MAX_DOCUMENT_BYTES = {}"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs"
+      ]
+    },
+    "commands.count": {
+      "statement": "The number of commands the plugin ships, counted as skill directories.",
+      "value": 12,
+      "render": {
+        "plain": "12",
+        "word": "twelve"
+      },
+      "kind": "number",
+      "risk": "commercial",
+      "why": "This number had four simultaneous answers when the inventory ran: twelve in the README and both manifests, eleven in doctor.mts and qsetup.mts, ten in install.mts's help text, and an off-by-one 'eight that are not model-invocable' where nine carry the flag. Nobody noticed because nothing counted; every surface was typed by a person who was right on the day they typed it.",
+      "discipline": "frozen",
+      "consent_material": false,
+      "derive": "commands.count",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "all (twelve|eleven|ten|nine|\\d+) commands",
+          "as": "count-word"
+        }
+      ],
+      "tells": [
+        "\\b(eleven|ten) commands\\b"
+      ],
+      "guarded_by": []
+    },
+    "commands.model_invocable": {
+      "statement": "Which commands the model may start on its own, because they carry no disable-model-invocation flag.",
+      "value": [
+        "qcost",
+        "qdoctor",
+        "qruns"
+      ],
+      "render": {
+        "plain": "/qcost, /qdoctor and /qruns",
+        "count": "3"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "why": "The README tells a reader these commands run only when asked. Three skills deliberately omit the flag so the model can start them unprompted, which is a defensible design and an undisclosed one. Whether a tool can run without being asked is a consent fact, not a convenience fact, so it is derived from the frontmatter rather than remembered.",
+      "discipline": "frozen",
+      "consent_material": false,
+      "derive": "commands.model_invocable",
+      "generated": [],
+      "checked": [],
+      "tells": [
+        "\\beight commands that are not\\b"
+      ],
+      "guarded_by": []
+    },
+    "commands.outbound": {
+      "statement": "The commands that can deliberately put something about the user's work on a wire.",
+      "value": [
+        "qbl",
+        "qcontrib",
+        "qfeed",
+        "qpact",
+        "qshare"
+      ],
+      "render": {
+        "plain": "/qcontrib, /qshare, /qfeed, /qbl --shared and /qpact",
+        "count": "5",
+        "word": "five"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "why": "README.md:74 said 'two can deliberately put something about your work on a wire' for nine releases. /qfeed, /qbl --shared and /qpact --ship each joined without that sentence being reread, and /qpact's payload is the entire rendered report including the verbatim text of every prompt in the session. This is the highest-risk claim in either repository and the one most likely to be made false by a feature nobody thought of as outbound.",
+      "discipline": "frozen",
+      "consent_material": true,
+      "derive": "commands.outbound",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "(Five|Four|Three|Two|\\d+) of the twelve can deliberately put something about your work on a wire",
+          "as": "count-word"
+        }
+      ],
+      "tells": [
+        "\\b[Ee]xactly two commands\\b",
+        "\\btwo can deliberately put\\b"
+      ],
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs"
+      ]
+    },
+    "commands.silent": {
+      "statement": "The commands that open no socket at all — no credential, no request, nothing.",
+      "value": [
+        "qdoctor",
+        "qruns",
+        "qship",
+        "qtrends"
+      ],
+      "render": {
+        "plain": "/qtrends, /qruns, /qship and /qdoctor",
+        "count": "4",
+        "word": "four"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "why": "The product's headline privacy sentence was 'Six analysis commands send nothing anywhere', restated in the cloud README, in PRICING.md, in two skills and in two source comments. It is false twice over: /qpact POSTs the whole rendered report when shipping is on, and /qcost's skill curls an unauthenticated rate card as its first step. Four is the number that survives derivation. A privacy claim that is generous by two is not a rounding error.",
+      "discipline": "frozen",
+      "consent_material": true,
+      "derive": "commands.silent",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "(Four|Five|Six|Seven|\\d+) analysis commands send nothing anywhere",
+          "as": "count-word"
+        }
+      ],
+      "tells": [
+        "\\b[Ss]ix analysis commands send nothing\\b",
+        "\\ball six local analyses\\b",
+        "\\bsix read-only commands\\s+never open a socket\\b",
+        "\\bsix read only the machine they run on and never open a socket\\b"
+      ],
+      "guarded_by": []
+    },
+    "receipt.fetch_call_sites": {
+      "statement": "The number of plugin source files containing a fetch( call, offered to the reader as a checkable receipt.",
+      "value": 6,
+      "render": {
+        "plain": "6",
+        "word": "six"
+      },
+      "kind": "number",
+      "risk": "safety",
+      "why": "session-viz-cloud/README.md invites the reader to run a grep and check for themselves. The grep returned six while the sentence said four. A receipt that does not reconcile is worse than no receipt: it spends the credibility of an audit on a number nobody re-ran.",
+      "discipline": "frozen",
+      "consent_material": false,
+      "derive": "receipt.fetch_call_sites",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "`fetch\\(` appears in (six|five|four|three|\\d+) files",
+          "as": "count-word",
+          "tree": "session-viz-cloud"
+        }
+      ],
+      "tells": [
+        "\\bappears in four files\\b"
+      ],
+      "guarded_by": []
+    },
+    "report.retention.days": {
+      "statement": "How long a shipped /qpact report is kept before it is deleted.",
+      "value": 90,
+      "unit": "days",
+      "render": {
+        "expr": "90",
+        "plain": "90 days"
+      },
+      "kind": "number",
+      "risk": "consent",
+      "why": "The server owns this number and can change it by deploying. The plugin must therefore quote it rather than hardcode it: a retention figure rendered into the consent disclosure would either bind a user's agreement to a number that later becomes false, or move the disclosure digest when an operator edits a setting and switch every user's shipping off for a reason that has nothing to do with what leaves their machine.",
+      "discipline": "negotiated",
+      "consent_material": false,
+      "enforced_by": {
+        "server": "services/api/src/report.ts#RETENTION_DAYS"
+      },
+      "generated": [
+        {
+          "tree": "session-viz-cloud",
+          "file": "services/api/src/report.ts",
+          "region": "report.retention.days",
+          "emit": "expr",
+          "template": "export const RETENTION_DAYS = {}"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "services/api/test/report.mjs"
+      ]
+    }
+  }
+}

@@ -193,7 +193,7 @@ if (isMain) {
   node install.mjs --dry-run          say what would be written, write nothing
 
 Claude Code is not a target: 'claude plugin install session-viz@session-viz'
-does it better, and two copies of ten skills would compete for ten commands.`);
+does it better, and two copies of twelve skills would compete for twelve commands.`);
         process.exit(0);
     }
     const chosen = wanted.length ? all.filter((t) => wanted.includes(t.id)) : all.filter((t) => t.present);

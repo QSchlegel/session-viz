@@ -16,8 +16,12 @@
 // ── Why it is a separate command and not a flag on /qruns ───────────────────
 // runs.mjs is spawned as a library by /qfeed and /qshare. Putting a bearer
 // token and a fetch inside it would invert that, and it would break the one
-// invariant a nervous reader can hold in their head: the six read-only commands
+// invariant a nervous reader can hold in their head: the four silent commands
 // never open a socket. /qcontrib opens one; that is what its name is for.
+//
+// Four, not six. /qcost fetches an unauthenticated rate card and /qpact ships the
+// rendered report when shipping is on, so neither belongs in a sentence about
+// sockets that are never opened. contract/claims.json derives the four.
 //
 // ── The consent ladder, which is /qshare's ──────────────────────────────────
 // Run it bare and nothing leaves. --review prints the exact bytes --send would

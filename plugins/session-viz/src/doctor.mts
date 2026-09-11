@@ -234,7 +234,7 @@ export function audit(target: string, fleet: Fingerprint[]): AuditResult {
 // ---------------------------------------------------------------- routing
 
 /**
- * Which of the eleven commands to run next, grouped by what each one touches.
+ * Which of the twelve commands to run next, grouped by what each one touches.
  *
  * This is here because "there are a lot of commands and I do not know which one
  * to use" is a real report, and the answer was not written down anywhere a
