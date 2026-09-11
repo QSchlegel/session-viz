@@ -323,6 +323,20 @@ export interface Session {
    * knowledge about the reading, not knowledge that the reading recorded nothing.
    */
   recordedPaths: boolean
+  /**
+   * Whether this reading retained tool-call inputs and results.
+   *
+   * The third field of its kind, for the third time for the same reason: a
+   * consumer cannot observe how the extractor was invoked, and the comfortable
+   * guess is the wrong one. An empty `trace` means either "this session made no
+   * tool calls" or "nobody asked for them", and those are different facts.
+   *
+   * Read `undefined` as UNKNOWN, never as false — a spine written before this
+   * field existed knows nothing about its own trace.
+   */
+  retainedTrace: boolean
+  /** Every retained tool call, in document order. Empty unless retainTrace. */
+  trace: RetainedCall[]
 }
 
 export interface ExtractOptions {
@@ -334,6 +348,16 @@ export interface ExtractOptions {
   recordPaths?: boolean
   /** Overrides the harness inferred from the path. */
   harness?: string
+  /**
+   * Retain every tool call's input and result, in full.
+   *
+   * Default FALSE, and the default is the point. Everything else this extractor
+   * keeps is bounded or is prompt text the user typed; a trace is the commands
+   * that ran, the files that were written and the arguments passed to every MCP
+   * server, which is the rest of the session. `--with-trace` turns it on and the
+   * spine says which happened.
+   */
+  retainTrace?: boolean
 }
 
 /** One transcript file on disk, as returned by listSessions(). */
@@ -373,8 +397,51 @@ export interface ToolInput {
  *  these: any other block is skipped by the `type` check before `name` is used. */
 export interface ToolUseBlock {
   type?: string
+  /** Pairs a call with the `tool_result` that answers it, which arrives in a
+   *  later record. Absent on a harness that does not emit one, in which case the
+   *  call is retained with no result rather than dropped. */
+  id?: string
   name: string
   input?: ToolInput
+}
+
+/** A `tool_result` block inside a user message — the answer to one tool_use. */
+export interface ToolResultBlock {
+  type?: string
+  tool_use_id?: string
+  content?: unknown
+  is_error?: boolean
+}
+
+/**
+ * One tool call, retained in full. Only present when extract was asked for it.
+ *
+ * This is the most exposing thing this extractor can produce. A `Bash` input is
+ * a command line; a `Write` input is the contents of a file; an MCP input is
+ * whatever arguments were passed. The spine already carries prompt text, and a
+ * trace beside it is the rest of the session — which is why it is off unless
+ * asked for, why `retainedTrace` records which happened, and why the result is
+ * truncated per call with its original length kept.
+ *
+ * Structurally assignable to facts.mts's TraceSource, deliberately: the
+ * projection there is what decides the wire shape, and this is its input.
+ */
+export interface RetainedCall {
+  /** The turn this call belongs to, or -1 for a call made before the first
+   *  human turn — which belongs to no turn and is not attributed to one. */
+  turn: number
+  seq: number
+  tool: string
+  startedAt: string
+  durationMs: number | null
+  ok: boolean
+  errorKind: 'none' | 'tool_error'
+  input: unknown
+  result: string | null
+  /** The result's length BEFORE truncation. Kept so a reader can see what was
+   *  cut rather than reading a truncation as the whole answer. */
+  resultBytes: number
+  truncated: boolean
 }
 
 export interface ContentBlock {
@@ -566,6 +633,68 @@ const SECRETS: [RegExp, string][] = [
 
 function redact(s: string): string {
   return SECRETS.reduce((acc, [re, to]) => acc.replace(re, to), s)
+}
+
+/**
+ * Redact every string inside a value, leaf by leaf.
+ *
+ * Leaf by leaf and NOT by stringifying, redacting and re-parsing, which is the
+ * obvious shortcut and is unsafe: several patterns here end in `\S+`, which over
+ * a JSON document happily swallows the closing quote and whatever follows it,
+ * so the replacement lands across a string boundary and the result no longer
+ * parses. A tool input is arbitrary JSON from the harness and is exactly the
+ * place that would happen.
+ *
+ * Depth-limited because a transcript is untrusted input and a cyclic or
+ * pathologically nested object should not become a stack overflow inside an
+ * extractor.
+ */
+function redactDeep(v: unknown, depth = 0): unknown {
+  if (depth > 12) return v
+  if (typeof v === 'string') return redact(v)
+  if (Array.isArray(v)) return v.map((x) => redactDeep(x, depth + 1))
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = redactDeep(val, depth + 1)
+    return out
+  }
+  return v
+}
+
+/**
+ * Result text kept per call.
+ *
+ * A ceiling here is not the contract's ceiling. Trace volume is metered and
+ * billed rather than capped where it is stored; this is about the intermediate
+ * on disk — a single `Read` of a large file would otherwise put megabytes into a
+ * spine whose whole purpose is that a 42 MB transcript collapses into a few
+ * hundred kilobytes. The original length travels in `resultBytes`, so nothing
+ * is silently shortened.
+ */
+export const MAX_TRACE_RESULT_CHARS = 64 * 1024
+
+/** The result text of a tool_result record, whichever way the harness wrote it. */
+function resultOf(rec: TranscriptRecord): { id: string | null; text: string; isError: boolean } | null {
+  const blocks = (rec.message?.content || []) as ToolResultBlock[]
+  const block = Array.isArray(blocks) ? blocks.find((b) => b?.type === 'tool_result') : undefined
+  if (block) {
+    const c = block.content
+    const text = typeof c === 'string'
+      ? c
+      : Array.isArray(c)
+        ? c.map((x) => (x && typeof x === 'object' && 'text' in x ? String((x as { text?: unknown }).text ?? '') : '')).join('')
+        : c == null ? '' : JSON.stringify(c)
+    return { id: block.tool_use_id ?? null, text, isError: block.is_error === true }
+  }
+  // Claude Code also writes the answer to `toolUseResult` on the record itself,
+  // with no id on it. Retained with a null id and paired positionally by the
+  // caller, because a result with no pairing is still the answer to the call
+  // that is open.
+  if (rec.toolUseResult !== undefined) {
+    const r = rec.toolUseResult
+    return { id: null, text: typeof r === 'string' ? r : JSON.stringify(r), isError: false }
+  }
+  return null
 }
 
 // ---------------------------------------------------------------- signals
@@ -1071,7 +1200,7 @@ function rootOf(file: string): TranscriptRoot | null {
 
 export async function extract(
   file: string,
-  { redactText = true, maxPromptChars = 4000, recordPaths = true, harness: harnessOpt }: ExtractOptions = {}
+  { redactText = true, maxPromptChars = 4000, recordPaths = true, retainTrace = false, harness: harnessOpt }: ExtractOptions = {}
 ): Promise<Session> {
   const root = rootOf(file)
   // Cursor is sniffed ahead of the root lookup, not after it. Its sessions are
@@ -1098,6 +1227,8 @@ export async function extract(
     gitBranch: null,
     version: null,
     redactedPrompts: redactText,
+    retainedTrace: retainTrace,
+    trace: [],
     recordedPaths: recordPaths,
     title: null,
     startedAt: null,
@@ -1120,6 +1251,11 @@ export async function extract(
     turns: [],
   }
 
+  // Calls awaiting their result. Keyed by tool_use id where the harness emits
+  // one; `open` is the fallback for a harness that does not, paired in order,
+  // which is correct for a serial tool loop and is stated rather than assumed.
+  const pending = new Map<string, RetainedCall>()
+  const open: RetainedCall[] = []
   let current: TurnDraft | null = null
 
   const newTurn = ({ index, uuid, ts, text, promptId = null, hasImage = false, typed = true, steering = false, origin = null, effort = null }: NewTurnArgs): TurnDraft => ({
@@ -1258,6 +1394,28 @@ export async function extract(
         for (const block of (rec.message?.content || []) as ToolUseBlock[]) {
           if (block.type !== 'tool_use') continue
           session.totals.toolCalls++
+          if (retainTrace) {
+            // Inputs are redacted here and not at the far end, for the reason the
+            // prompt text is: this is the only place that knows whether redaction
+            // was asked for, and a payload redacted by whoever happens to send it
+            // is a payload nobody can make a claim about.
+            const call: RetainedCall = {
+              turn: current ? current.index : -1,
+              seq: session.trace.length,
+              tool: block.name,
+              startedAt: ts,
+              durationMs: null,
+              ok: true,
+              errorKind: 'none',
+              input: redactText ? redactDeep(block.input ?? null) : (block.input ?? null),
+              result: null,
+              resultBytes: 0,
+              truncated: false,
+            }
+            session.trace.push(call)
+            if (block.id) pending.set(block.id, call)
+            else open.push(call)
+          }
           // A tool call before the first human turn belongs to no turn, so its
           // path has nowhere to be attributed and is not recorded. It is still
           // counted in `fileTouches`, which is why that count can exceed the
@@ -1276,6 +1434,22 @@ export async function extract(
 
       case 'user': {
         const c = classifyUser(rec)
+        if (retainTrace && c.kind === 'tool_result') {
+          const r = resultOf(rec)
+          // A result whose call was never seen is dropped rather than invented:
+          // it belongs to a tool_use in a record this reading did not reach.
+          const call = r && (r.id ? pending.get(r.id) : open.shift())
+          if (r && call) {
+            if (r.id) pending.delete(r.id)
+            const text = redactText ? redact(r.text) : r.text
+            call.resultBytes = text.length
+            call.truncated = text.length > MAX_TRACE_RESULT_CHARS
+            call.result = call.truncated ? text.slice(0, MAX_TRACE_RESULT_CHARS) : text
+            call.ok = !r.isError
+            call.errorKind = r.isError ? 'tool_error' : 'none'
+            call.durationMs = Date.parse(ts) - Date.parse(call.startedAt) || 0
+          }
+        }
         if (c.kind === 'interrupt') {
           session.totals.interruptions++
           if (current) current.interruptions++
@@ -1566,6 +1740,10 @@ if (isMain) {
   const result = await extract(target, {
     redactText: !flag('--no-redact'),
     recordPaths: !flag('--no-paths'),
+    // Opt IN, unlike the two above. Those describe what is kept by default and
+    // can be turned off; this is off until asked for, because a trace is every
+    // command that ran and every file that was written.
+    retainTrace: flag('--with-trace'),
   })
   console.log(flag('--json') ? JSON.stringify(result, null, 2) : summarize(result))
 }

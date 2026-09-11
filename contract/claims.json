@@ -526,6 +526,28 @@
         "plugins/session-viz/test/facts.mjs",
         "services/api/test/facts.mjs"
       ]
+    },
+    "extract.trace.default_off": {
+      "statement": "Tool-call inputs and results are retained only when asked for; the extractor keeps none by default.",
+      "value": "off",
+      "render": {
+        "plain": "off unless --with-trace"
+      },
+      "kind": "behaviour",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "A retained trace is the most exposing thing this extractor can produce: a Bash input is a command line, a Write input is a file's contents, an MCP input is whatever went to a third party. The spine already carries prompt text and a trace beside it is the rest of the session. Every other dangerous thing in this plugin is opt-in and this is no different — which is a property that can be lost by a one-word change to a default parameter, so it is derived by running the extractor rather than trusted.",
+      "derive": "extract.trace.default_off",
+      "generated": [],
+      "checked": [],
+      "tells": [
+        "\\btraces? are retained by default\\b",
+        "\\bretains every tool call by default\\b"
+      ],
+      "guarded_by": [
+        "plugins/session-viz/test/trace.mjs"
+      ]
     }
   }
 }

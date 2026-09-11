@@ -82,6 +82,16 @@ jobs:
       - name: Facts projection
         run: node plugins/session-viz/test/facts.mjs
 
+      # Tool-call retention. The most exposing thing this extractor can produce,
+      # and therefore the one whose default matters most: off unless asked for,
+      # recorded in the spine so a consumer can tell which happened, and redacted
+      # in the INPUT and the RESULT rather than only in the prompt. One assertion
+      # here chooses the implementation rather than describing it — a secret whose
+      # value runs to the end of its JSON string, which stringify-redact-reparse
+      # loses entirely and a leaf-by-leaf walk does not.
+      - name: Retained traces
+        run: node plugins/session-viz/test/trace.mjs
+
       # A derive nobody has watched fail is documentation. This copies the tree to
       # a temp directory, breaks each claim on purpose — adds a thirteenth skill,
       # removes a frontmatter flag, wires the credential into a command that does

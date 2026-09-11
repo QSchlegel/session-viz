@@ -152,6 +152,17 @@ export interface TraceSource {
   errorKind?: TraceCall['error_kind']
   input?: unknown
   result?: string | null
+  /**
+   * The result's length before the SOURCE truncated it.
+   *
+   * extract.mts already cuts a result at its own ceiling to keep the spine from
+   * becoming the transcript again. Without this the projection would measure the
+   * string it was handed and report a 40 MB answer as 64 KB — a truncation
+   * reported as the whole thing, which is the one failure result_bytes exists to
+   * prevent. Absent for a caller that did no truncating, where the string's own
+   * length is the honest answer.
+   */
+  resultBytes?: number
 }
 
 // ---------------------------------------------------------------- helpers
@@ -313,7 +324,7 @@ export const MAX_RESULT_CHARS = 64 * 1024
 export function traceFacts(calls: TraceSource[]): TraceCall[] {
   return (calls || []).map((c) => {
     const result = c.result == null ? null : String(c.result)
-    const full = result === null ? 0 : result.length
+    const full = c.resultBytes ?? (result === null ? 0 : result.length)
     const truncated = full > MAX_RESULT_CHARS
     const input = c.input === undefined ? null : c.input
     return {

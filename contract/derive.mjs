@@ -158,6 +158,27 @@ const emittedFields = async (root, tier) => {
 }
 
 export const DERIVES = {
+  /** Run the extractor with no options over a two-record transcript and look at
+   *  what came back. Not a grep for the flag name: a flag can be renamed, wired
+   *  to the wrong option, or defaulted the other way in the function signature,
+   *  and only running it can tell the difference. */
+  'extract.trace.default_off': async (root) => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const dir = mkdtempSync(join(tmpdir(), 'sv-derive-'))
+    try {
+      const f = join(dir, 's.jsonl')
+      const recs = [
+        { type: 'assistant', uuid: 'a', timestamp: '2026-01-01T00:00:00Z', sessionId: 's', cwd: '/w/r', message: { model: 'm', content: [{ type: 'tool_use', id: 't', name: 'Bash', input: { command: 'ls' } }] } },
+        { type: 'user', uuid: 'b', timestamp: '2026-01-01T00:00:01Z', sessionId: 's', cwd: '/w/r', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'out' }] } },
+      ]
+      writeFileSync(f, recs.map((r) => JSON.stringify(r)).join('\n') + '\n')
+      const mod = await import(`${join(root, 'plugins', 'session-viz', 'scripts', 'extract.mjs')}?t=${importSeq++}`)
+      const out = await mod.extract(f)
+      if (out.totals.toolCalls < 1) return 'inconclusive — the fixture produced no tool call'
+      return (out.trace || []).length === 0 && out.retainedTrace === false ? 'off' : 'on'
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  },
   'facts.index.fields': (root) => emittedFields(root, 'index'),
   'facts.trace.call_fields': (root) => emittedFields(root, 'trace'),
 
@@ -187,6 +208,11 @@ export const DERIVES = {
 /** One deliberate break per derive, each chosen to be the change a real feature
  *  would make: a new command, a flag removed, a network call added. */
 const PERTURBATIONS = {
+  'extract.trace.default_off': (root) => {
+    const p = join(root, 'plugins', 'session-viz', 'scripts', 'extract.mjs')
+    writeFileSync(p, read(p).replace('retainTrace = false', 'retainTrace = true'))
+    return 'flipped the default to retaining every tool call'
+  },
   // These break the PROJECTION, not the schema. Removing a field from
   // contract/facts.json leaves the code emitting it and the walk reporting it
   // as an undeclared path, so the derive's answer is unchanged and the

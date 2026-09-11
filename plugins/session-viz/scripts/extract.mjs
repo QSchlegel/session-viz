@@ -156,6 +156,69 @@ const SECRETS = [
 function redact(s) {
     return SECRETS.reduce((acc, [re, to]) => acc.replace(re, to), s);
 }
+/**
+ * Redact every string inside a value, leaf by leaf.
+ *
+ * Leaf by leaf and NOT by stringifying, redacting and re-parsing, which is the
+ * obvious shortcut and is unsafe: several patterns here end in `\S+`, which over
+ * a JSON document happily swallows the closing quote and whatever follows it,
+ * so the replacement lands across a string boundary and the result no longer
+ * parses. A tool input is arbitrary JSON from the harness and is exactly the
+ * place that would happen.
+ *
+ * Depth-limited because a transcript is untrusted input and a cyclic or
+ * pathologically nested object should not become a stack overflow inside an
+ * extractor.
+ */
+function redactDeep(v, depth = 0) {
+    if (depth > 12)
+        return v;
+    if (typeof v === 'string')
+        return redact(v);
+    if (Array.isArray(v))
+        return v.map((x) => redactDeep(x, depth + 1));
+    if (v && typeof v === 'object') {
+        const out = {};
+        for (const [k, val] of Object.entries(v))
+            out[k] = redactDeep(val, depth + 1);
+        return out;
+    }
+    return v;
+}
+/**
+ * Result text kept per call.
+ *
+ * A ceiling here is not the contract's ceiling. Trace volume is metered and
+ * billed rather than capped where it is stored; this is about the intermediate
+ * on disk — a single `Read` of a large file would otherwise put megabytes into a
+ * spine whose whole purpose is that a 42 MB transcript collapses into a few
+ * hundred kilobytes. The original length travels in `resultBytes`, so nothing
+ * is silently shortened.
+ */
+export const MAX_TRACE_RESULT_CHARS = 64 * 1024;
+/** The result text of a tool_result record, whichever way the harness wrote it. */
+function resultOf(rec) {
+    const blocks = (rec.message?.content || []);
+    const block = Array.isArray(blocks) ? blocks.find((b) => b?.type === 'tool_result') : undefined;
+    if (block) {
+        const c = block.content;
+        const text = typeof c === 'string'
+            ? c
+            : Array.isArray(c)
+                ? c.map((x) => (x && typeof x === 'object' && 'text' in x ? String(x.text ?? '') : '')).join('')
+                : c == null ? '' : JSON.stringify(c);
+        return { id: block.tool_use_id ?? null, text, isError: block.is_error === true };
+    }
+    // Claude Code also writes the answer to `toolUseResult` on the record itself,
+    // with no id on it. Retained with a null id and paired positionally by the
+    // caller, because a result with no pairing is still the answer to the call
+    // that is open.
+    if (rec.toolUseResult !== undefined) {
+        const r = rec.toolUseResult;
+        return { id: null, text: typeof r === 'string' ? r : JSON.stringify(r), isError: false };
+    }
+    return null;
+}
 // ---------------------------------------------------------------- signals
 const FILE_REF = /\b[\w./-]+\.(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|rb|php|md|json|ya?ml|toml|css|scss|html|sql|sh|vue|svelte)\b/i;
 const CORRECTION = /^\s*(no+\b|nope\b|actually\b|wait\b|hold on\b|that'?s not\b|thats not\b|i meant\b|instead\b|nein\b|doch\b|falsch\b)/i;
@@ -636,7 +699,7 @@ function rootOf(file) {
     return ROOTS.find((r) => file.startsWith(r.dir.endsWith('/') ? r.dir : r.dir + '/')) || null;
 }
 // ---------------------------------------------------------------- extraction
-export async function extract(file, { redactText = true, maxPromptChars = 4000, recordPaths = true, harness: harnessOpt } = {}) {
+export async function extract(file, { redactText = true, maxPromptChars = 4000, recordPaths = true, retainTrace = false, harness: harnessOpt } = {}) {
     const root = rootOf(file);
     // Cursor is sniffed ahead of the root lookup, not after it. Its sessions are
     // addressed `<db>#<composerId>`, a string that begins with the globalStorage
@@ -662,6 +725,8 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
         gitBranch: null,
         version: null,
         redactedPrompts: redactText,
+        retainedTrace: retainTrace,
+        trace: [],
         recordedPaths: recordPaths,
         title: null,
         startedAt: null,
@@ -683,6 +748,11 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
         },
         turns: [],
     };
+    // Calls awaiting their result. Keyed by tool_use id where the harness emits
+    // one; `open` is the fallback for a harness that does not, paired in order,
+    // which is correct for a serial tool loop and is stated rather than assumed.
+    const pending = new Map();
+    const open = [];
     let current = null;
     const newTurn = ({ index, uuid, ts, text, promptId = null, hasImage = false, typed = true, steering = false, origin = null, effort = null }) => ({
         index,
@@ -827,6 +897,30 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
                     if (block.type !== 'tool_use')
                         continue;
                     session.totals.toolCalls++;
+                    if (retainTrace) {
+                        // Inputs are redacted here and not at the far end, for the reason the
+                        // prompt text is: this is the only place that knows whether redaction
+                        // was asked for, and a payload redacted by whoever happens to send it
+                        // is a payload nobody can make a claim about.
+                        const call = {
+                            turn: current ? current.index : -1,
+                            seq: session.trace.length,
+                            tool: block.name,
+                            startedAt: ts,
+                            durationMs: null,
+                            ok: true,
+                            errorKind: 'none',
+                            input: redactText ? redactDeep(block.input ?? null) : (block.input ?? null),
+                            result: null,
+                            resultBytes: 0,
+                            truncated: false,
+                        };
+                        session.trace.push(call);
+                        if (block.id)
+                            pending.set(block.id, call);
+                        else
+                            open.push(call);
+                    }
                     // A tool call before the first human turn belongs to no turn, so its
                     // path has nowhere to be attributed and is not recorded. It is still
                     // counted in `fileTouches`, which is why that count can exceed the
@@ -846,6 +940,23 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
             }
             case 'user': {
                 const c = classifyUser(rec);
+                if (retainTrace && c.kind === 'tool_result') {
+                    const r = resultOf(rec);
+                    // A result whose call was never seen is dropped rather than invented:
+                    // it belongs to a tool_use in a record this reading did not reach.
+                    const call = r && (r.id ? pending.get(r.id) : open.shift());
+                    if (r && call) {
+                        if (r.id)
+                            pending.delete(r.id);
+                        const text = redactText ? redact(r.text) : r.text;
+                        call.resultBytes = text.length;
+                        call.truncated = text.length > MAX_TRACE_RESULT_CHARS;
+                        call.result = call.truncated ? text.slice(0, MAX_TRACE_RESULT_CHARS) : text;
+                        call.ok = !r.isError;
+                        call.errorKind = r.isError ? 'tool_error' : 'none';
+                        call.durationMs = Date.parse(ts) - Date.parse(call.startedAt) || 0;
+                    }
+                }
                 if (c.kind === 'interrupt') {
                     session.totals.interruptions++;
                     if (current)
@@ -1121,6 +1232,10 @@ if (isMain) {
     const result = await extract(target, {
         redactText: !flag('--no-redact'),
         recordPaths: !flag('--no-paths'),
+        // Opt IN, unlike the two above. Those describe what is kept by default and
+        // can be turned off; this is off until asked for, because a trace is every
+        // command that ran and every file that was written.
+        retainTrace: flag('--with-trace'),
     });
     console.log(flag('--json') ? JSON.stringify(result, null, 2) : summarize(result));
 }

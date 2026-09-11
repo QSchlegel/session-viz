@@ -211,7 +211,7 @@ export const MAX_RESULT_CHARS = 64 * 1024;
 export function traceFacts(calls) {
     return (calls || []).map((c) => {
         const result = c.result == null ? null : String(c.result);
-        const full = result === null ? 0 : result.length;
+        const full = c.resultBytes ?? (result === null ? 0 : result.length);
         const truncated = full > MAX_RESULT_CHARS;
         const input = c.input === undefined ? null : c.input;
         return {

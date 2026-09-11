@@ -263,7 +263,7 @@
     "trace": {
       "tier": "trace",
       "type": "trace_calls",
-      "note": "Per call: turn, seq, tool, mcp_server, started_at, duration_ms, ok, error_kind, input, result, input_bytes, result_bytes, truncated. Inputs and results in full — bash command lines, file contents, MCP arguments."
+      "note": "Per call: turn, seq, tool, mcp_server, started_at, duration_ms, ok, error_kind, input, result, input_bytes, result_bytes, truncated. Inputs and results in full — bash command lines, file contents, MCP arguments. Sourced from extract's --with-trace, which is off by default and records in the spine which happened; a result is cut at the extractor's ceiling with its original length carried in result_bytes, so a truncation is never reported as the whole answer."
     },
     "paths_recorded": {
       "tier": "index",
