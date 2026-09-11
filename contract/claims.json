@@ -383,7 +383,7 @@
       "risk": "commercial",
       "status": "planned",
       "why": "A full trace with results is transcript-scale, and the corpus this was built against has 42 MB transcripts. Capping it would silently drop the evidence the tier exists to hold, so storage becomes a customer-visible cost instead of an engineering ceiling. The document keeps its own 8 MiB ceiling, which is a different number for a different reason.",
-      "plan": "Per-tenant metering of stored trace bytes and a billed dimension in PRICING.md. PRICING.md's own P1 says not to gate routes on entitlement until the paid baseline validates the buyer, so metering lands before enforcement.",
+      "plan": "Metering exists: collab_session_trace.bytes records what each trace costs to hold. Billing does not, and PRICING.md P1 says not to gate routes on entitlement until the paid baseline validates the buyer and the recurring outcome. Implementing a bill now would contradict the product’s own documented sequencing, so this stays planned deliberately rather than being made true thinly. What it needs: per-tenant trace-byte reporting to an operator, then a billed dimension in PRICING.md, then enforcement.",
       "discipline": "server-first",
       "consent_material": false,
       "generated": [],
