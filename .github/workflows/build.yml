@@ -57,6 +57,51 @@ jobs:
       - name: Findings
         run: node plugins/session-viz/test/finding.mjs
 
+      # The claims contract. A number that appears in six places was kept correct
+      # in six places by hand, and the comments said so: report.ts in the sibling
+      # repository carries "If one of the two ever moves, both move" about a
+      # ceiling this repository also defines. An inventory of both trees found 825
+      # claim statements, 71 distinct claims and 35 pairs that already disagreed —
+      # four simultaneous answers for how many commands there are, and a headline
+      # privacy sentence generous by two. This is the check that makes those
+      # arithmetic rather than remembered. It also reads the sibling repository
+      # when it is checked out beside this one, and prints what it skipped when it
+      # is not.
+      - name: Claims
+        run: node plugins/session-viz/test/claims.mjs
+
+      # The facts projection: the second payload a report ships, and the first
+      # one a colleague can query. It is built from a spine carrying the absolute
+      # transcript path, the dash-encoded project key, the working directory and
+      # the verbatim prompt — four things that each contain either a username or
+      # what somebody typed. This runs the projection against a spine where every
+      # refused field holds a unique sentinel and asserts none of them survive.
+      # A shape check passes on a projection that spreads the whole session in
+      # under a key nobody looked at; five of these assertions go red on exactly
+      # that one-line mistake.
+      - name: Facts projection
+        run: node plugins/session-viz/test/facts.mjs
+
+      # Tool-call retention. The most exposing thing this extractor can produce,
+      # and therefore the one whose default matters most: off unless asked for,
+      # recorded in the spine so a consumer can tell which happened, and redacted
+      # in the INPUT and the RESULT rather than only in the prompt. One assertion
+      # here chooses the implementation rather than describing it — a secret whose
+      # value runs to the end of its JSON string, which stringify-redact-reparse
+      # loses entirely and a leaf-by-leaf walk does not.
+      - name: Retained traces
+        run: node plugins/session-viz/test/trace.mjs
+
+      # A derive nobody has watched fail is documentation. This copies the tree to
+      # a temp directory, breaks each claim on purpose — adds a thirteenth skill,
+      # removes a frontmatter flag, wires the credential into a command that does
+      # not touch it — and asserts the derive notices. The failure it guards
+      # against is the one that cannot be seen from a green build: a derive that
+      # greps for a string which has since moved returns the old answer and passes
+      # while the registry is wrong.
+      - name: Derives prove themselves
+        run: node contract/derive.mjs --prove
+
       # `wrote_ok` is a tool-result observation. The separate artifact probe
       # must keep path-format drift and local absence visible without silently
       # promoting either into a delivery verdict.

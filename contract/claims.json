@@ -1,0 +1,552 @@
+{
+  "contract_version": 1,
+  "why": [
+    "A claim is anything this product tells a person who cannot check it themselves: a count, an",
+    "enumeration, a ceiling, a promise about what leaves their machine. Until this file existed each",
+    "one was kept true by hand in every place it appeared, and the comments say so out loud —",
+    "services/api/src/report.ts carries 'If one of the two ever moves, both move' about a number this",
+    "repository also defines. That is a promise, not a mechanism, and an inventory of both trees found",
+    "825 claim statements, 71 distinct claims and 35 places where two of them already disagreed.",
+    "",
+    "This file is the single value. The generator writes it into the constants and the tables; the",
+    "drift suite refuses to let any surface say something else; the derives prove the value is still",
+    "true of the code rather than merely agreed upon.",
+    "",
+    "It lives OUTSIDE plugins/session-viz/ on purpose. A plugin install is a copy of that directory,",
+    "so anything inside it ships to every user; this is build-time and CI tooling and has no business",
+    "in an installed tree. It is JSON with no comments, so every claim carries a mandatory 'why' — the",
+    "comment becomes data rather than being lost."
+  ],
+  "claims": {
+    "limits.document_bytes": {
+      "statement": "The largest /qpact report document that may be shipped.",
+      "value": 8388608,
+      "unit": "bytes",
+      "render": {
+        "expr": "8 * 1024 * 1024",
+        "mib": "8 MiB",
+        "plain": "8 MB"
+      },
+      "kind": "number",
+      "risk": "accuracy",
+      "why": "Two ceilings that disagree mean a user is told 'too large' about a file the plugin already said was fine, or a document the plugin approved arrives as an HTTP 413 it has no sentence for. services/api/src/report.ts:41 has carried that reasoning as a hand-maintained comment since the endpoint shipped, asking a future reader to remember. This entry is that comment made executable.",
+      "discipline": "server-first",
+      "consent_material": false,
+      "enforced_by": {
+        "plugin": "plugins/session-viz/src/push.mts#MAX_DOCUMENT_BYTES",
+        "server": "services/api/src/report.ts#MAX_DOCUMENT_BYTES"
+      },
+      "skew": {
+        "plugin_older": "ACCEPT. An older plugin refuses at 8 MiB against a server that would have taken more. Under-use, never an error, and never a surprise to the user.",
+        "plugin_newer": "REFUSE. The plugin may not raise this before the server has. A raise lands as a new claim id; this id keeps its value forever, because an install is a frozen copy in a version-keyed cache that nothing can reach to update."
+      },
+      "generated": [
+        {
+          "file": "plugins/session-viz/src/push.mts",
+          "region": "limits.document_bytes",
+          "emit": "expr",
+          "template": "export const MAX_DOCUMENT_BYTES = {}"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs"
+      ]
+    },
+    "commands.count": {
+      "statement": "The number of commands the plugin ships, counted as skill directories.",
+      "value": 12,
+      "render": {
+        "plain": "12",
+        "word": "twelve"
+      },
+      "kind": "number",
+      "risk": "commercial",
+      "why": "This number had four simultaneous answers when the inventory ran: twelve in the README and both manifests, eleven in doctor.mts and qsetup.mts, ten in install.mts's help text, and an off-by-one 'eight that are not model-invocable' where nine carry the flag. Nobody noticed because nothing counted; every surface was typed by a person who was right on the day they typed it.",
+      "discipline": "frozen",
+      "consent_material": false,
+      "derive": "commands.count",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "all (twelve|eleven|ten|nine|\\d+) commands",
+          "as": "count-word"
+        }
+      ],
+      "tells": [
+        "\\b(eleven|ten) commands\\b"
+      ],
+      "guarded_by": []
+    },
+    "commands.model_invocable": {
+      "statement": "Which commands the model may start on its own, because they carry no disable-model-invocation flag.",
+      "value": [
+        "qcost",
+        "qdoctor",
+        "qruns"
+      ],
+      "render": {
+        "plain": "/qcost, /qdoctor and /qruns",
+        "count": "3"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "why": "The README tells a reader these commands run only when asked. Three skills deliberately omit the flag so the model can start them unprompted, which is a defensible design and an undisclosed one. Whether a tool can run without being asked is a consent fact, not a convenience fact, so it is derived from the frontmatter rather than remembered.",
+      "discipline": "frozen",
+      "consent_material": false,
+      "derive": "commands.model_invocable",
+      "generated": [],
+      "checked": [],
+      "tells": [
+        "\\beight commands that are not\\b"
+      ],
+      "guarded_by": []
+    },
+    "commands.outbound": {
+      "statement": "The commands that can deliberately put something about the user's work on a wire.",
+      "value": [
+        "qbl",
+        "qcontrib",
+        "qfeed",
+        "qpact",
+        "qshare"
+      ],
+      "render": {
+        "plain": "/qcontrib, /qshare, /qfeed, /qbl --shared and /qpact",
+        "count": "5",
+        "word": "five"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "why": "README.md:74 said 'two can deliberately put something about your work on a wire' for nine releases. /qfeed, /qbl --shared and /qpact --ship each joined without that sentence being reread, and /qpact's payload is the entire rendered report including the verbatim text of every prompt in the session. This is the highest-risk claim in either repository and the one most likely to be made false by a feature nobody thought of as outbound.",
+      "discipline": "frozen",
+      "consent_material": true,
+      "derive": "commands.outbound",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "(Five|Four|Three|Two|\\d+) of the twelve can deliberately put something about your work on a wire",
+          "as": "count-word"
+        }
+      ],
+      "tells": [
+        "\\b[Ee]xactly two commands\\b",
+        "\\btwo can deliberately put\\b"
+      ],
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs"
+      ]
+    },
+    "commands.silent": {
+      "statement": "The commands that open no socket at all — no credential, no request, nothing.",
+      "value": [
+        "qdoctor",
+        "qruns",
+        "qship",
+        "qtrends"
+      ],
+      "render": {
+        "plain": "/qtrends, /qruns, /qship and /qdoctor",
+        "count": "4",
+        "word": "four"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "why": "The product's headline privacy sentence was 'Six analysis commands send nothing anywhere', restated in the cloud README, in PRICING.md, in two skills and in two source comments. It is false twice over: /qpact POSTs the whole rendered report when shipping is on, and /qcost's skill curls an unauthenticated rate card as its first step. Four is the number that survives derivation. A privacy claim that is generous by two is not a rounding error.",
+      "discipline": "frozen",
+      "consent_material": true,
+      "derive": "commands.silent",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "(Four|Five|Six|Seven|\\d+) analysis commands send nothing anywhere",
+          "as": "count-word"
+        }
+      ],
+      "tells": [
+        "\\b[Ss]ix analysis commands send nothing\\b",
+        "\\ball six local analyses\\b",
+        "\\bsix read-only commands\\s+never open a socket\\b",
+        "\\bsix read only the machine they run on and never open a socket\\b"
+      ],
+      "guarded_by": []
+    },
+    "receipt.fetch_call_sites": {
+      "statement": "The number of plugin source files containing a fetch( call, offered to the reader as a checkable receipt.",
+      "value": 6,
+      "render": {
+        "plain": "6",
+        "word": "six"
+      },
+      "kind": "number",
+      "risk": "safety",
+      "why": "session-viz-cloud/README.md invites the reader to run a grep and check for themselves. The grep returned six while the sentence said four. A receipt that does not reconcile is worse than no receipt: it spends the credibility of an audit on a number nobody re-ran.",
+      "discipline": "frozen",
+      "consent_material": false,
+      "derive": "receipt.fetch_call_sites",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "`fetch\\(` appears in (six|five|four|three|\\d+) files",
+          "as": "count-word",
+          "tree": "session-viz-cloud"
+        }
+      ],
+      "tells": [
+        "\\bappears in four files\\b"
+      ],
+      "guarded_by": []
+    },
+    "report.retention.days": {
+      "statement": "How long a shipped /qpact report is kept before it is deleted.",
+      "value": 90,
+      "unit": "days",
+      "render": {
+        "expr": "90",
+        "plain": "90 days"
+      },
+      "kind": "number",
+      "risk": "consent",
+      "why": "The server owns this number and can change it by deploying. The plugin must therefore quote it rather than hardcode it: a retention figure rendered into the consent disclosure would either bind a user's agreement to a number that later becomes false, or move the disclosure digest when an operator edits a setting and switch every user's shipping off for a reason that has nothing to do with what leaves their machine.",
+      "discipline": "negotiated",
+      "consent_material": false,
+      "enforced_by": {
+        "server": "services/api/src/report.ts#RETENTION_DAYS"
+      },
+      "generated": [
+        {
+          "tree": "session-viz-cloud",
+          "file": "services/api/src/report.ts",
+          "region": "report.retention.days",
+          "emit": "expr",
+          "template": "export const RETENTION_DAYS = {}"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "services/api/test/report.mjs"
+      ]
+    },
+    "qpact.ship.default_on": {
+      "statement": "A /qpact report ships to the workspace whenever one is reachable, rather than waiting for a local switch.",
+      "value": true,
+      "render": {
+        "plain": "ships whenever a workspace is reachable"
+      },
+      "kind": "behaviour",
+      "risk": "consent",
+      "status": "planned",
+      "why": "This reverses the guarantee push.mts is built around — three mechanisms currently make it arithmetically impossible for a report to leave without the user having read a disclosure their consent is digest-bound to. Reversing it is a decision that was made deliberately; recording it here is what makes every sentence still describing the old model findable when the behaviour changes.",
+      "plan": "push.mts probes for a configured workspace and ships when it can reach one, with the local --on gate removed. Until that lands the plugin is opt-in and every sentence saying so is TRUE, which is why nothing is forbidden here yet.",
+      "discipline": "frozen",
+      "consent_material": true,
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "reports ship to your workspace whenever one is reachable",
+          "as": "exact"
+        }
+      ],
+      "tells": [],
+      "guarded_by": []
+    },
+    "facts.tiers": {
+      "statement": "The indexable layer shipped beside a report has two tiers with different default visibility.",
+      "value": [
+        "index",
+        "trace"
+      ],
+      "render": {
+        "plain": "index and trace",
+        "count": "2"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "status": "planned",
+      "why": "The index tier — metrics, intent titles, the decision graph, files touched, trace shape — is workspace-visible so every roll-up is complete. The trace tier carries full tool inputs and results, which is bash command lines and file contents, and defaults to author-plus-admins: the same rung as the verbatim document, because it exposes as much.",
+      "plan": "A versioned sidecar schema, validated server-side before storage, with assertPlaneSeparation extended so no path, trace or repo name can reach the finding table. Neither tier exists yet.",
+      "discipline": "frozen",
+      "consent_material": true,
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "two tiers: (index and trace|an index tier and a trace tier)",
+          "as": "exact"
+        }
+      ],
+      "tells": [],
+      "guarded_by": []
+    },
+    "report.hold_days": {
+      "statement": "A withdrawn report is hidden and kept this long before it is purged.",
+      "value": 14,
+      "unit": "days",
+      "render": {
+        "expr": "14",
+        "plain": "14 days"
+      },
+      "kind": "number",
+      "risk": "consent",
+      "why": "Withdrawal is a hold rather than a delete so a session that was part of an abuse can still be investigated. Admins see existence and metadata only; reading the content needs an audited operator action that is recorded and shown to the author. The number is the server's, which is why it is negotiated and never rendered into the digested disclosure. The number is now enforced: withdrawSession sets purge_at to it and sweepFacts deletes past it.",
+      "discipline": "negotiated",
+      "consent_material": false,
+      "enforced_by": {
+        "server": "services/api/src/report.ts#HOLD_DAYS"
+      },
+      "generated": [],
+      "checked": [
+        {
+          "file": "docs/OPERATING.md",
+          "tree": "session-viz-cloud",
+          "match": "withdrawn reports? (?:are|is) kept for (\\d+) days",
+          "as": "number"
+        }
+      ],
+      "tells": [],
+      "guarded_by": []
+    },
+    "permission.scope.rungs": {
+      "statement": "The per-session permission ladder, applied independently to the document and to the trace tier.",
+      "value": [
+        "private",
+        "admins",
+        "workspace"
+      ],
+      "render": {
+        "plain": "private, admins, workspace",
+        "count": "3"
+      },
+      "kind": "enum",
+      "risk": "consent",
+      "why": "Scope is settable per session both on the local page and in the console, so the two sides must enumerate the same rungs in the same order or a scope set in one place means something else in the other. An enumeration restated by hand on two sides of a wire is the shape of drift this registry was built for. Both halves now exist as columns with the same three rungs, so the enumeration is enforced rather than restated.",
+      "discipline": "server-first",
+      "consent_material": false,
+      "generated": [],
+      "checked": [
+        {
+          "file": "docs/OPERATING.md",
+          "tree": "session-viz-cloud",
+          "match": "scope is one of (private, admins, workspace)",
+          "as": "set"
+        }
+      ],
+      "tells": [],
+      "guarded_by": [],
+      "enforced_by": {
+        "server": "services/api/src/facts-store.ts#SCOPES"
+      }
+    },
+    "reads.role_gated": {
+      "statement": "Reading another member's report requires a role, and every read is recorded and shown to the author.",
+      "value": true,
+      "render": {
+        "plain": "role-gated, and the author sees who read it"
+      },
+      "kind": "behaviour",
+      "risk": "consent",
+      "status": "planned",
+      "why": "Today the tenant is the whole boundary: any member of a workspace can open any member's report and read their prompts verbatim, and nothing tells the author it happened. Role-gating without a read trail makes the product a management tool quietly; the trail is what makes it survivable for the people being read.",
+      "plan": "A role check on the report routes and an audited read, surfaced on the author's own report page. Neither exists — getReport filters on tenant alone.",
+      "discipline": "server-first",
+      "consent_material": false,
+      "enforced_by": {
+        "server": "services/api/src/report.ts#getReport"
+      },
+      "generated": [],
+      "checked": [
+        {
+          "file": "docs/OPERATING.md",
+          "tree": "session-viz-cloud",
+          "match": "every read of a report is recorded and shown to its author",
+          "as": "exact"
+        }
+      ],
+      "tells": [],
+      "guarded_by": []
+    },
+    "trace.pricing": {
+      "statement": "Trace volume is metered and billed rather than capped.",
+      "value": true,
+      "render": {
+        "plain": "priced, not capped"
+      },
+      "kind": "behaviour",
+      "risk": "commercial",
+      "status": "planned",
+      "why": "A full trace with results is transcript-scale, and the corpus this was built against has 42 MB transcripts. Capping it would silently drop the evidence the tier exists to hold, so storage becomes a customer-visible cost instead of an engineering ceiling. The document keeps its own 8 MiB ceiling, which is a different number for a different reason.",
+      "plan": "Per-tenant metering of stored trace bytes and a billed dimension in PRICING.md. PRICING.md's own P1 says not to gate routes on entitlement until the paid baseline validates the buyer, so metering lands before enforcement.",
+      "discipline": "server-first",
+      "consent_material": false,
+      "generated": [],
+      "checked": [
+        {
+          "file": "PRICING.md",
+          "tree": "session-viz-cloud",
+          "match": "trace (?:volume|storage) is (metered|billed|priced)",
+          "as": "exact"
+        }
+      ],
+      "tells": [],
+      "guarded_by": []
+    },
+    "facts.index.fields": {
+      "statement": "Every field the workspace-visible index tier may carry.",
+      "value": [
+        "branch",
+        "cli_version",
+        "duration_ms",
+        "ended_at",
+        "files_dropped",
+        "files_touched",
+        "friction_kinds",
+        "graph",
+        "harness",
+        "intents",
+        "mcp_servers",
+        "models",
+        "paths_recorded",
+        "plugin_version",
+        "repo",
+        "schema_version",
+        "score.band",
+        "score.confidence",
+        "score.costliest_turn",
+        "score.craft_rate",
+        "score.friction_rate",
+        "score.turns_scored",
+        "score.value",
+        "score.wasted_tokens",
+        "secrets_redacted",
+        "session_id",
+        "slash_commands",
+        "started_at",
+        "title",
+        "tokens.cache_create",
+        "tokens.cache_read",
+        "tokens.input",
+        "tokens.output",
+        "tools",
+        "totals.assistant_messages",
+        "totals.compactions",
+        "totals.corrections",
+        "totals.friction_turns",
+        "totals.human_turns",
+        "totals.interruptions",
+        "totals.records",
+        "totals.repeats",
+        "totals.sidechain_records",
+        "totals.steering_turns",
+        "totals.tool_calls",
+        "trace_shape",
+        "turns",
+        "worktree"
+      ],
+      "render": {
+        "expr": "export const INDEX_FIELDS = [\n  'branch', 'cli_version', 'duration_ms', 'ended_at', 'files_dropped', 'files_touched',\n  'friction_kinds', 'graph', 'harness', 'intents', 'mcp_servers', 'models', 'paths_recorded',\n  'plugin_version', 'repo', 'schema_version', 'score.band', 'score.confidence',\n  'score.costliest_turn', 'score.craft_rate', 'score.friction_rate', 'score.turns_scored',\n  'score.value', 'score.wasted_tokens', 'secrets_redacted', 'session_id', 'slash_commands',\n  'started_at', 'title', 'tokens.cache_create', 'tokens.cache_read', 'tokens.input',\n  'tokens.output', 'tools', 'totals.assistant_messages', 'totals.compactions',\n  'totals.corrections', 'totals.friction_turns', 'totals.human_turns', 'totals.interruptions',\n  'totals.records', 'totals.repeats', 'totals.sidechain_records', 'totals.steering_turns',\n  'totals.tool_calls', 'trace_shape', 'turns', 'worktree'\n] as const",
+        "count": "48"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "This is the second payload a report ships, and the first one a colleague can query. The spine it is built from carries the absolute transcript path, the dash-encoded project key and the verbatim prompt — each of which contains the home directory or the text of what somebody typed — so the field list is written down and the projection is walked against it rather than trusted. finding.mts states the rule for nine person-blind columns; this applies it to forty-eight.",
+      "derive": "facts.index.fields",
+      "generated": [
+        {
+          "file": "plugins/session-viz/src/facts.mts",
+          "region": "facts.index.fields",
+          "emit": "expr"
+        },
+        {
+          "tree": "session-viz-cloud",
+          "file": "services/api/src/facts.ts",
+          "region": "facts.index.fields",
+          "emit": "expr"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/facts.mjs",
+        "services/api/test/facts.mjs"
+      ]
+    },
+    "facts.trace.call_fields": {
+      "statement": "Every field one recorded tool call may carry in the trace tier.",
+      "value": [
+        "duration_ms",
+        "error_kind",
+        "input",
+        "input_bytes",
+        "mcp_server",
+        "ok",
+        "result",
+        "result_bytes",
+        "seq",
+        "started_at",
+        "tool",
+        "truncated",
+        "turn"
+      ],
+      "render": {
+        "expr": "export const TRACE_CALL_FIELDS = [\n  'duration_ms', 'error_kind', 'input', 'input_bytes', 'mcp_server', 'ok', 'result',\n  'result_bytes', 'seq', 'started_at', 'tool', 'truncated', 'turn'\n] as const",
+        "count": "13"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "A trace call carries the tool input and the result in full: bash command lines, file contents, MCP arguments. It is the most exposing thing in this product after the rendered page itself, which is why it defaults to the same rung and why its fields are enumerated rather than passed through.",
+      "derive": "facts.trace.call_fields",
+      "generated": [
+        {
+          "file": "plugins/session-viz/src/facts.mts",
+          "region": "facts.trace.call_fields",
+          "emit": "expr"
+        },
+        {
+          "tree": "session-viz-cloud",
+          "file": "services/api/src/facts.ts",
+          "region": "facts.trace.call_fields",
+          "emit": "expr"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/facts.mjs",
+        "services/api/test/facts.mjs"
+      ]
+    },
+    "extract.trace.default_off": {
+      "statement": "Tool-call inputs and results are retained only when asked for; the extractor keeps none by default.",
+      "value": "off",
+      "render": {
+        "plain": "off unless --with-trace"
+      },
+      "kind": "behaviour",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "A retained trace is the most exposing thing this extractor can produce: a Bash input is a command line, a Write input is a file's contents, an MCP input is whatever went to a third party. The spine already carries prompt text and a trace beside it is the rest of the session. Every other dangerous thing in this plugin is opt-in and this is no different — which is a property that can be lost by a one-word change to a default parameter, so it is derived by running the extractor rather than trusted.",
+      "derive": "extract.trace.default_off",
+      "generated": [],
+      "checked": [],
+      "tells": [
+        "\\btraces? are retained by default\\b",
+        "\\bretains every tool call by default\\b"
+      ],
+      "guarded_by": [
+        "plugins/session-viz/test/trace.mjs"
+      ]
+    }
+  }
+}

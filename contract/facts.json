@@ -1,0 +1,349 @@
+{
+  "schema_version": "1",
+  "why": [
+    "The indexable layer shipped beside a /qpact report. The report itself is opaque markup the",
+    "console cannot query; this is the structure that makes a merged view across a team possible",
+    "at all — and it is therefore a second payload, with its own exposure, which is why every",
+    "field is written down here rather than inferred from whatever the spine happens to carry.",
+    "",
+    "Two tiers, because they expose differently and must not default the same way.",
+    "",
+    "  index   bounded values and derived prose. Workspace-visible by default, so every roll-up",
+    "          is complete. Nothing in it can quote a prompt.",
+    "  trace   tool inputs and results in full. Author-plus-admins by default, the same rung as",
+    "          the verbatim document, because a trace carries bash command lines and file",
+    "          contents and exposes at least as much as the prompts above it.",
+    "",
+    "WHAT THE SPINE HOLDS AND THIS REFUSES. The spine carries `file` (the absolute transcript",
+    "path, which contains the home directory and the username), `project` (the dash-encoded",
+    "project key, which contains it again), `cwd`, and `turns[].text`, which is the verbatim",
+    "prompt. None of them has a field here. The projection is written out key by key rather than",
+    "spread, so adding one is a visible edit and not an accident — the rule finding.mts states",
+    "for the nine person-blind columns, applied to a payload fifty times larger.",
+    "",
+    "`repo` is the LAST SEGMENT of the working directory and never the path. `files_touched` is",
+    "repo-relative and a path that will not relativise is dropped and counted, because an",
+    "absolute path outside the repository is somebody's machine layout and not their work."
+  ],
+  "fields": {
+    "schema_version": {
+      "tier": "index",
+      "type": "string",
+      "note": "This file's schema_version. A reader that does not know it refuses rather than guessing which fields mean what."
+    },
+    "session_id": {
+      "tier": "index",
+      "type": "string",
+      "note": "The harness's id. The key the console merges on, same as the report row."
+    },
+    "harness": {
+      "tier": "index",
+      "type": "enum",
+      "values": [
+        "claude-code",
+        "codex",
+        "cursor"
+      ]
+    },
+    "repo": {
+      "tier": "index",
+      "type": "string",
+      "nullable": true,
+      "note": "From repo.mts's repoName, which folds a worktree onto the repository it belongs to. NOT the last segment of cwd: Claude Code, Codex and Cursor each lay worktrees out differently and two of the three would yield the worktree, fragmenting a team roll-up into one repository per checkout."
+    },
+    "branch": {
+      "tier": "index",
+      "type": "string",
+      "note": "Carries whatever a person put in a branch name, which is sometimes their own."
+    },
+    "plugin_version": {
+      "tier": "index",
+      "type": "string"
+    },
+    "cli_version": {
+      "tier": "index",
+      "type": "string"
+    },
+    "title": {
+      "tier": "index",
+      "type": "string",
+      "note": "The harness's own session title. Model-written, and it can paraphrase a prompt."
+    },
+    "started_at": {
+      "tier": "index",
+      "type": "timestamp"
+    },
+    "ended_at": {
+      "tier": "index",
+      "type": "timestamp"
+    },
+    "duration_ms": {
+      "tier": "index",
+      "type": "int"
+    },
+    "score.value": {
+      "tier": "index",
+      "type": "int",
+      "bound": [
+        0,
+        100
+      ],
+      "nullable": true,
+      "note": "null for a session with no scored turns. SessionScore says so; a reader that coerces null to 0 reports a perfect-worst session that was never measured."
+    },
+    "score.band": {
+      "tier": "index",
+      "type": "enum",
+      "nullable": true,
+      "values": [
+        "clean",
+        "solid",
+        "mixed",
+        "costly",
+        "poor"
+      ],
+      "note": "Five bands, not three. Taken from ScoreBand in extract.mts rather than from memory."
+    },
+    "score.confidence": {
+      "tier": "index",
+      "type": "enum",
+      "values": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "score.turns_scored": {
+      "tier": "index",
+      "type": "int"
+    },
+    "score.friction_rate": {
+      "tier": "index",
+      "type": "float",
+      "bound": [
+        0,
+        1
+      ],
+      "nullable": true,
+      "note": "Optional on SessionScore — absent for a session with no turns, so it is emitted as null rather than 0."
+    },
+    "score.craft_rate": {
+      "tier": "index",
+      "type": "float",
+      "bound": [
+        0,
+        1
+      ],
+      "nullable": true,
+      "note": "Optional on SessionScore — absent for a session with no turns, so it is emitted as null rather than 0."
+    },
+    "score.wasted_tokens": {
+      "tier": "index",
+      "type": "int",
+      "nullable": true,
+      "note": "Optional on SessionScore — absent for a session with no turns, so it is emitted as null rather than 0."
+    },
+    "score.costliest_turn": {
+      "tier": "index",
+      "type": "int",
+      "nullable": true,
+      "note": "Optional on SessionScore — absent for a session with no turns, so it is emitted as null rather than 0."
+    },
+    "totals.records": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.human_turns": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.assistant_messages": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.tool_calls": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.sidechain_records": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.interruptions": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.compactions": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.steering_turns": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.repeats": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.corrections": {
+      "tier": "index",
+      "type": "int"
+    },
+    "totals.friction_turns": {
+      "tier": "index",
+      "type": "int"
+    },
+    "tokens.input": {
+      "tier": "index",
+      "type": "int"
+    },
+    "tokens.output": {
+      "tier": "index",
+      "type": "int"
+    },
+    "tokens.cache_read": {
+      "tier": "index",
+      "type": "int"
+    },
+    "tokens.cache_create": {
+      "tier": "index",
+      "type": "int"
+    },
+    "models": {
+      "tier": "index",
+      "type": "counts",
+      "note": "model id -> messages."
+    },
+    "tools": {
+      "tier": "index",
+      "type": "counts",
+      "note": "tool NAME -> calls. Never an input."
+    },
+    "mcp_servers": {
+      "tier": "index",
+      "type": "counts"
+    },
+    "slash_commands": {
+      "tier": "index",
+      "type": "strings"
+    },
+    "friction_kinds": {
+      "tier": "index",
+      "type": "counts"
+    },
+    "files_touched": {
+      "tier": "index",
+      "type": "strings",
+      "note": "TurnFileTouch.path is ALREADY relative to the session's working directory, with '../' when the file sits outside it. So the rule here is not relativisation, it is escape: a path beginning '../' names something outside the repository — machine layout, not work — and is dropped and counted in files_dropped."
+    },
+    "files_dropped": {
+      "tier": "index",
+      "type": "int"
+    },
+    "turns": {
+      "tier": "index",
+      "type": "turn_shapes",
+      "note": "Per turn: index, duration_ms, tool_calls, tokens_output, friction, score. Shape only — no text, no files, no tool inputs. turns[].files is refused here even though it is relative, because per-turn paths reconstruct a working session in a way the aggregate list does not."
+    },
+    "trace_shape": {
+      "tier": "index",
+      "type": "counts",
+      "note": "tool name -> calls in the trace tier, so a roll-up can describe a trace nobody reading it is allowed to open."
+    },
+    "intents": {
+      "tier": "index",
+      "type": "intents",
+      "note": "Model-written. Title, status and cited turns — no summary body, because a summary paraphrases prompts and this tier is workspace-visible."
+    },
+    "graph": {
+      "tier": "index",
+      "type": "graph",
+      "note": "Model-written concepts and relations. Labels and notes are prose and can paraphrase a prompt; this is the one index field where that is true, and it is why intents drop their summaries."
+    },
+    "trace": {
+      "tier": "trace",
+      "type": "trace_calls",
+      "note": "Per call: turn, seq, tool, mcp_server, started_at, duration_ms, ok, error_kind, input, result, input_bytes, result_bytes, truncated. Inputs and results in full — bash command lines, file contents, MCP arguments. Sourced from extract's --with-trace, which is off by default and records in the spine which happened; a result is cut at the extractor's ceiling with its original length carried in result_bytes, so a truncation is never reported as the whole answer."
+    },
+    "paths_recorded": {
+      "tier": "index",
+      "type": "enum",
+      "values": [
+        "yes",
+        "no",
+        "unknown"
+      ],
+      "note": "Extract's recordedPaths is TRI-STATE and its header is explicit that absence must never be read as false. Without this field an empty files_touched is indistinguishable from a session that touched nothing, and the comfortable reading is the wrong one. A merged view that counted 'files touched' across a team would silently under-report every machine that ran with --no-paths."
+    },
+    "secrets_redacted": {
+      "tier": "index",
+      "type": "bool",
+      "note": "Whether the spine went through the secret patterns. Recorded because --no-redact exists and nothing downstream can observe it by looking — the evidence package once asserted a redaction that had not happened, over the top of the unredacted key. It sits in the INDEX tier deliberately, even though it describes the trace: a reader deciding whether to open a trace needs it before they open it."
+    },
+    "worktree": {
+      "tier": "index",
+      "type": "string",
+      "nullable": true,
+      "note": "The second axis. Kept rather than folded away, because two checkouts of one repository are otherwise indistinguishable."
+    }
+  },
+  "trace_call_fields": {
+    "turn": {
+      "type": "int"
+    },
+    "seq": {
+      "type": "int"
+    },
+    "tool": {
+      "type": "string"
+    },
+    "mcp_server": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": "timestamp"
+    },
+    "duration_ms": {
+      "type": "int"
+    },
+    "ok": {
+      "type": "bool"
+    },
+    "error_kind": {
+      "type": "enum",
+      "values": [
+        "none",
+        "permission",
+        "auth",
+        "tool_error",
+        "other"
+      ]
+    },
+    "input": {
+      "type": "json",
+      "note": "Secret-redacted by extract, which is pattern matching and not the same as safe."
+    },
+    "result": {
+      "type": "string",
+      "note": "Truncated per call; the original length is kept in result_bytes so a reader can see what was cut."
+    },
+    "input_bytes": {
+      "type": "int"
+    },
+    "result_bytes": {
+      "type": "int"
+    },
+    "truncated": {
+      "type": "bool"
+    }
+  },
+  "refuses": {
+    "file": "the absolute transcript path — contains the home directory and the username",
+    "project": "the dash-encoded project key — contains the home directory and the username again",
+    "cwd": "the absolute working directory",
+    "turns[].text": "the verbatim prompt",
+    "turns[].files": "per-turn file paths, unrelativised",
+    "turns[].toolCalls": "raw tool calls; the trace tier carries these deliberately and separately",
+    "turns[].signals": "prompt shape — chars, words, isQuestion, isCorrection. Derived from the prompt text, and a fingerprint of it"
+  }
+}
