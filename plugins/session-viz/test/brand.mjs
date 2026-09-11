@@ -376,9 +376,34 @@ function brandChecks(page, html, { plain = false } = {}) {
   const markup = chrome(html).replace(/&#\d+;/g, '')
   chk(`${page}: no literal colour in the brand markup`,
     !HEX.test(markup) && !FUNC.test(markup), markup.slice(0, 200))
-  chk(`${page}: no URL in the brand chrome`,
-    !/https?:|\/\//.test(chrome(html)) && !/https?:/.test(region),
-    'the mark is inline SVG and the wordmark is text; neither should reference anything')
+  // The chrome REFERENCES nothing: the mark is inline SVG and the wordmark is
+  // text, so nothing in here is fetched, and a page that renders offline in a
+  // sandboxed frame keeps its mark. That is what this has always been
+  // defending, and it is stated as that now rather than as "no //" -- which
+  // also banned a plain navigation link, which fetches nothing.
+  const fetched = chrome(html).replace(/\shref="[^"]*"/g, '')
+  chk(`${page}: the brand chrome fetches nothing`,
+    !/https?:|\/\//.test(fetched) && !/https?:/.test(region),
+    'something in the brand chrome would go and get a resource')
+  // And the one link it may carry goes to the product's front door and nowhere
+  // else. An unpinned href here is a logo that could be made to point anywhere
+  // by a later edit, on a document that travels to people who did not run it.
+  const hrefs = [...chrome(html).matchAll(/<a[^>]+href="([^"]*)"/g)].map((m) => m[1])
+  const allowed = plain ? [] : ['https://session-viz.com']
+  chk(`${page}: the chrome links only where the kit says`,
+    hrefs.length === allowed.length && hrefs.every((h, i) => h === allowed[i]),
+    `links: ${JSON.stringify(hrefs)}, allowed: ${JSON.stringify(allowed)}`)
+  if (!plain) {
+    chk(`${page}: and it is the lockup that carries it`,
+      /<a class="sv-lockup" href="https:\/\/session-viz\.com"/.test(html),
+      'the link is somewhere other than the mark')
+    chk(`${page}: with a focus ring, since it is now a tab stop`,
+      /a\.sv-lockup:focus-visible\{[^}]*outline:/.test(region),
+      'a new focus stop with no visible ring')
+    chk(`${page}: and it does not take the host page's link colour`,
+      /a\.sv-lockup\{[^}]*color:inherit/.test(region),
+      'the wordmark would render in whatever colour the host paints links')
+  }
 }
 
 /** Nothing on this page goes and gets something while it renders. */

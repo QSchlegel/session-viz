@@ -136,9 +136,27 @@ export function brandWordmark(): string {
   return `<span class="sv-word">SESSION<span class="sv-sep">·</span>VIZ</span>`
 }
 
-/** Mark and wordmark together. The only unit any page should place. */
-export function brandLockup(size?: number): string {
-  return `<span class="sv-lockup">${brandMark(size)}${brandWordmark()}</span>`
+/** Where a lockup points when it is a link. */
+export const HOME = 'https://session-viz.com'
+
+/**
+ * Mark and wordmark together. The only unit any page should place.
+ *
+ * `href` makes it a link home. Every generated report takes it: these pages
+ * travel — a colleague opens one out of a chat, a reader opens one from the
+ * console — and the mark is the thing they look at first when they want to
+ * know what made this. An unlinked mark asks them to retype a domain.
+ *
+ * It is deliberately NOT the default. brandHeader's plain mode exists for
+ * qsetup, a local page that asks for a bearer token, and its whole argument is
+ * that nothing there should read as a seal of office. A link out to the product
+ * is exactly that, and it is also the shape a phishing page copies first.
+ */
+export function brandLockup(size?: number, href?: string | null): string {
+  const inner = `${brandMark(size)}${brandWordmark()}`
+  return href
+    ? `<a class="sv-lockup" href="${esc(href)}" rel="noopener noreferrer" title="session-viz.com">${inner}</a>`
+    : `<span class="sv-lockup">${inner}</span>`
 }
 
 // ---------------------------------------------------------------- header
@@ -164,7 +182,7 @@ export function brandHeader(o: HeaderOptions = {}): string {
   const cls = o.plain ? 'sv-brand sv-plain' : 'sv-brand'
   const chip = o.command && !o.plain ? `<span class="sv-cmd">${esc(o.command)}</span>` : ''
   const acts = o.actions ? `<span class="sv-acts">${o.actions}</span>` : ''
-  return `<header class="${cls}">${brandLockup()}${chip}${acts}</header>`
+  return `<header class="${cls}">${brandLockup(undefined, o.plain ? null : HOME)}${chip}${acts}</header>`
 }
 
 // ---------------------------------------------------------------- footer
@@ -291,6 +309,21 @@ export function brandCss(): string {
 .sv-brand.sv-plain{border-bottom:0;padding-bottom:0;margin-bottom:16px}
 .sv-brand .sv-acts{margin-left:auto;display:inline-flex;gap:8px;align-items:center}
 .sv-lockup{display:inline-flex;align-items:center;gap:9px}
+/* The lockup is an <a> on every page that is not the plain header, and the kit
+   declares no link colour of its own -- so without these three lines it
+   inherits the HOST page's, and the wordmark that is specified as --sv-ink
+   renders in the host's link colour with an underline under it on hover. Two
+   of the four surfaces this kit ships on style links; neither of them is
+   allowed to restyle the mark.
+   There is no hover restyle, and that is the kit's rule rather than an
+   omission: the wordmark is specified once, in .sv-word, and a placement that
+   underlines it on hover is a second specification of the logo. The pointer
+   cursor and the title carry the affordance.
+   The focus ring is not optional dressing: making the lockup a link put a new
+   stop in every report's tab order, and a focus stop with no visible ring is
+   the one a keyboard reader loses their place on. */
+a.sv-lockup{color:inherit;text-decoration:none}
+a.sv-lockup:focus-visible{outline:2px solid var(--sv-accent);outline-offset:3px;border-radius:3px}
 .sv-mark{display:block;flex:none}
 /* The settled cells are the kit's --cell-struct green, not a grey. This module
    restates the family palette rather than reading the host page's tokens, and
