@@ -2376,6 +2376,163 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
     timer=setInterval(function(){ if(upto>=d.maxTurn){stop();return;} setUpto(upto+1); },ms);
   });
 
+  // ---- the swell
+  //
+  // The canvas drifts, the way a raft of floats drifts on moving water. It is
+  // ornament and it is deliberately the KIND of ornament that cannot be read as
+  // data, which on a page whose whole claim is "these positions were measured"
+  // is the only kind allowed here.
+  //
+  // Two rules keep it honest, and both are properties of the field rather than
+  // promises about it:
+  //
+  //   COHERENT, NOT PER-NODE. The offset is a function of a node's own position,
+  //   so neighbours move together and the whole picture sways as one surface. A
+  //   field of independently jittering dots reads as "these values are
+  //   updating"; a swell reads as "the surface is moving", which is what it is.
+  //
+  //   SMALLER THAN THE STRUCTURE. The amplitude is a few units against a
+  //   1000x620 canvas and against a layout whose nearest pair sits far further
+  //   apart than that, so no node ever visibly changes who it sits beside. A
+  //   drift that could reorder the picture would be making a claim.
+  //
+  // Amplitude divides by the zoom, so the motion is constant in SCREEN pixels.
+  // Without that, a reader who zoomed to 9x to read one label would be watching
+  // it thrash across a third of the viewport.
+  //
+  // Heavier nodes move less: a node's weight is its degree, so the hubs the
+  // layout worked hardest to place are the steadiest things on the canvas and
+  // the loose ends bob most. That is also what keeps the isolated grid legible
+  // while it moves -- its members are all degree 0 and all move in step.
+  var swimming=false, swimRaf=null, swimLast=0, onScreen=true;
+  var reduce=window.matchMedia?window.matchMedia('(prefers-reduced-motion: reduce)'):null;
+  // Every edge's endpoints, read ONCE and before anything writes them. Read
+  // lazily per frame they would be the previous frame's drifted values, and the
+  // graph would walk off the canvas in about four seconds.
+  var eBase=eEls.map(function(l){
+    var i=+(l.getAttribute('data-i')||-1);
+    var e=d.edges[i]||{};
+    return {el:l, s:e.s, t:e.t,
+      x1:l.x1.baseVal.value, y1:l.y1.baseVal.value,
+      x2:l.x2.baseVal.value, y2:l.y2.baseVal.value};
+  });
+  // data-i, not the array index. line() emits nothing for an edge whose endpoint
+  // the gates removed, so the nth <line> is not always the nth edge -- and an
+  // off-by-one here does not throw, it silently ties a line to the wrong node
+  // and shears the graph.
+  var swimNodes=gEls.map(function(g){
+    var n=nodes[g.getAttribute('data-id')]||{};
+    // A stable per-node phase so two nodes at the same point do not lock
+    // together. Derived from the id, so it is the same on every render of the
+    // same session -- this page is a snapshot and two openings of it should not
+    // be two different pictures.
+    var h=0, id=String(n.id||'');
+    for(var c=0;c<id.length;c++){ h=(h*31+id.charCodeAt(c))>>>0; }
+    return {el:g, id:n.id, seed:(h%1000)/1000*6.283,
+      weight:1/(1+Math.min(6,(n.degree||0))*0.22), x:0, y:0};
+  });
+  // Where each node sits, read off its label rather than its shape: a circle
+  // carries cx, a diamond carries a points list and a square carries a corner,
+  // while the <text> carries a plain x and y on all three. The label's y sits a
+  // few units below the node it belongs to, which is immaterial -- this feeds a
+  // phase, not a position, and a phase shifted by a tenth of a wavelength is
+  // the same field.
+  swimNodes.forEach(function(s){
+    var t=s.el.querySelector('text');
+    s.x=t?t.x.baseVal.getItem(0).value:0;
+    s.y=t?t.y.baseVal.getItem(0).value:0;
+  });
+  var off={};
+  function swimFrame(ms){
+    swimRaf=null;
+    if(!swimming)return;
+    // ~30fps. The eye cannot tell this from 60 on motion this slow, and it
+    // halves the attribute writes on a canvas that can carry 200 elements.
+    if(ms-swimLast>=32){
+      swimLast=ms;
+      var t=ms*0.001;
+      // Amplitude in screen pixels, converted back to viewBox units by the live
+      // zoom. 3.4 is the largest value at which a 20-minute look at this page
+      // still reads as calm.
+      var A=3.4/Math.max(0.45,k);
+      for(var i=0;i<swimNodes.length;i++){
+        var s=swimNodes[i];
+        // Three incommensurate periods per axis -- roughly 17, 10 and 28
+        // seconds -- so the field never returns to a pose anybody can catch it
+        // repeating. The x and y terms of the spatial phase differ, which is
+        // what tilts the wave across the canvas instead of running it straight
+        // down one axis.
+        var ph=s.x*0.0113+s.y*0.0171;
+        var a=A*s.weight;
+        off[s.id]=[
+          a*(Math.sin(t*0.37+ph)+0.55*Math.sin(t*0.61-s.y*0.0231+s.seed)),
+          a*(Math.cos(t*0.29+ph*1.31)+0.55*Math.cos(t*0.53+s.x*0.0194+s.seed))
+        ];
+      }
+      for(var j=0;j<swimNodes.length;j++){
+        var sn=swimNodes[j], o=off[sn.id];
+        sn.el.setAttribute('transform','translate('+o[0].toFixed(2)+' '+o[1].toFixed(2)+')');
+      }
+      for(var m=0;m<eBase.length;m++){
+        var b=eBase[m], a1=off[b.s], b1=off[b.t];
+        if(!a1||!b1)continue;
+        b.el.setAttribute('x1',(b.x1+a1[0]).toFixed(2));
+        b.el.setAttribute('y1',(b.y1+a1[1]).toFixed(2));
+        b.el.setAttribute('x2',(b.x2+b1[0]).toFixed(2));
+        b.el.setAttribute('y2',(b.y2+b1[1]).toFixed(2));
+      }
+    }
+    swimRaf=requestAnimationFrame(swimFrame);
+  }
+  // Put everything back exactly where it was laid out. Stopping without this
+  // freezes the whole canvas at whatever offsets the last frame happened to
+  // hold, which is a layout nobody computed -- and under prefers-reduced-motion
+  // it would be the ONLY layout that reader ever sees.
+  function swimRest(){
+    swimNodes.forEach(function(s){ s.el.removeAttribute('transform'); });
+    eBase.forEach(function(b){
+      b.el.setAttribute('x1',b.x1); b.el.setAttribute('y1',b.y1);
+      b.el.setAttribute('x2',b.x2); b.el.setAttribute('y2',b.y2);
+    });
+  }
+  function swimStop(){
+    if(!swimming)return;
+    swimming=false;
+    if(swimRaf){cancelAnimationFrame(swimRaf);swimRaf=null;}
+    swimRest();
+  }
+  function swimStart(){
+    if(swimming)return;
+    if(reduce&&reduce.matches)return;
+    if(document.hidden)return;
+    if(!onScreen)return;
+    swimming=true; swimLast=0;
+    swimRaf=requestAnimationFrame(swimFrame);
+  }
+  // Off the screen is off. A report is a long page and this graph sits a long
+  // way down it; animating it while somebody reads the tables above burns a
+  // core for a picture nobody is looking at.
+  if(window.IntersectionObserver){
+    onScreen=false;
+    new IntersectionObserver(function(es){
+      onScreen=es.some(function(e){return e.isIntersecting;});
+      if(onScreen)swimStart(); else swimStop();
+    },{rootMargin:'120px'}).observe(canvas);
+  }
+  document.addEventListener('visibilitychange',function(){
+    if(document.hidden)swimStop(); else swimStart();
+  });
+  // Reduced motion is honoured when it CHANGES, not only at load: somebody who
+  // turns it on in the system settings while this page is open is asking for
+  // the motion to stop now, and a page that only read the value once tells them
+  // the setting does not work.
+  if(reduce){
+    var onReduce=function(){ if(reduce.matches)swimStop(); else swimStart(); };
+    if(reduce.addEventListener)reduce.addEventListener('change',onReduce);
+    else if(reduce.addListener)reduce.addListener(onReduce);
+  }
+  swimStart();
+
   apply(); paint(null);
 })();
 </script>
