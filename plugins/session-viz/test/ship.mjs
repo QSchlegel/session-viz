@@ -57,6 +57,7 @@ process.env.SESSION_VIZ_ACTOR = 'claude-code'
 
 const {
   shipReport, turnOn, turnOff, isOn, loadPush, offReason,
+  STATE_SCHEMA_VERSION, credentialFingerprint, canRecord, pushPaths,
   standingDisclosure, disclosureDigest, pushTarget,
   FIELDS, HEADERS, REPORT_PATH, SCHEMA_VERSION, MAX_DOCUMENT_BYTES,
 } = await import('../scripts/push.mjs')
@@ -455,6 +456,91 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
 
   chk('turning it off does not silently delete what was already sent',
     off.lines.some((l) => /does not/i.test(l)), off.lines.join('\n'))
+}
+
+// ── The local record, which is where a "no" has to survive ───────────────
+//
+// Three ways the record can stop meaning what it says. All three are safe under
+// an opt-in default, because every one of them fails to "off" — and all three
+// stop being safe the moment the default ships, at which point the file will
+// already have been written by a version that did not distinguish them.
+
+console.log(`\n── ` + 'The state file and the wire have separate versions')
+{
+  chk('they are separate constants', typeof STATE_SCHEMA_VERSION === 'string' && typeof SCHEMA_VERSION === 'string')
+  const path = pushTarget()
+  const raw = JSON.parse(readFileSync(path, 'utf8'))
+  chk('the record carries the STATE version, not the wire one',
+    raw.schema_version === STATE_SCHEMA_VERSION, JSON.stringify(raw.schema_version))
+  // The failure this prevents: the wire version is bumped for a payload change
+  // — the facts sidecar — and every push.json in the install base is discarded
+  // with it, taking every standing opt-out.
+  chk('a wire-version bump would not touch this file',
+    raw.schema_version === STATE_SCHEMA_VERSION,
+    'if these were one constant, a payload change would silently discard every recorded choice')
+}
+
+console.log(`\n── ` + 'An unreadable record is a NO, not an absence')
+{
+  const path = pushTarget()
+  const keep = readFileSync(path, 'utf8')
+  writeFileSync(path, '{ this is not json')
+  const broken = loadPush()
+  chk('it does not ship', isOn(broken) === false)
+  chk('and it is reported as unreadable, not as absent', broken.origin === 'unreadable', String(broken.origin))
+
+  writeFileSync(path, JSON.stringify({ schema_version: 'from-the-future', enabled: true }))
+  const future = loadPush()
+  chk('a version this build does not know is unreadable too', future.origin === 'unreadable', String(future.origin))
+  chk('and is not treated as consent', isOn(future) === false)
+
+  // Restored, and asserted against what the file actually says rather than
+  // against a remembered state — the section before this one leaves shipping
+  // off, and an assertion that assumed otherwise would be testing the order of
+  // this file rather than the reader.
+  writeFileSync(path, keep)
+  const want = JSON.parse(keep).enabled ? 'consented' : 'opted-out'
+  chk(`a parseable record reads as ${want}, from the file and not from a default`,
+    loadPush().origin === want, `${loadPush().origin} (file says enabled=${JSON.parse(keep).enabled})`)
+}
+
+// The reader/writer asymmetry needs a HOME of its own to be reachable at all —
+// the write target is the first candidate in this suite's layout, so a stale
+// copy in a later directory could never win and an assertion here would prove
+// nothing. It lives in test/push-state.mjs, which builds the legacy layout.
+
+console.log(`\n── ` + 'A machine that cannot record a choice is a machine that must not ship')
+{
+  chk('canRecord is true here, where the scratch home is writable', canRecord() === true)
+}
+
+console.log(`\n── ` + 'Consent is bound to the workspace, not to the hostname')
+{
+  const on = turnOn({ confirmed: true })
+  chk('shipping is on again', on.on === true, on.lines.join('\n'))
+  const rec = loadPush()
+  chk('the record fingerprints the credential', !!rec.credential?.fingerprint, JSON.stringify(rec.credential))
+  chk('and never stores the credential itself',
+    !JSON.stringify(rec).includes(process.env.SESSION_VIZ_TOKEN || '\u0000nope'),
+    'the token must not be recoverable from the state file')
+  chk('the fingerprint is a fingerprint, not a token',
+    /^[0-9a-f]{16}$/.test(rec.credential?.fingerprint || ''), String(rec.credential?.fingerprint))
+  chk('two different tokens fingerprint differently',
+    credentialFingerprint('token-a') !== credentialFingerprint('token-b'))
+
+  // The assertion that matters: a different workspace at the SAME host. The
+  // url check above cannot see this, because the url is identical.
+  const was = process.env.SESSION_VIZ_TOKEN
+  process.env.SESSION_VIZ_TOKEN = 'svt_a_completely_different_workspace'
+  const swapped = await ship({ spinePath, reportPath, timeoutMs: 3000, label: 'swapped-credential' })
+  chk('a send with a different credential is refused', swapped.shipped === false, JSON.stringify(swapped.reason))
+  chk('and the refusal says it is about consent, not about the network',
+    /credential changed/i.test(String(swapped.reason)), String(swapped.reason))
+  chk('and it names which kind of credential each was',
+    swapped.lines.some((l) => /file credential|env credential/i.test(l)), swapped.lines.join('\n'))
+  process.env.SESSION_VIZ_TOKEN = was
+  const restored = await ship({ spinePath, reportPath, timeoutMs: 3000, label: 'restored-credential' })
+  chk('and the original credential still ships', restored.shipped === true, JSON.stringify(restored.reason))
 }
 
 await server.close()

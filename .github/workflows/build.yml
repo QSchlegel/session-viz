@@ -193,6 +193,17 @@ jobs:
       - name: Consent before anything is sent
         run: node plugins/session-viz/test/ship.mjs
 
+      # Where a "no" is written and where it is read back from. push.json has
+      # several candidate locations; savePush starts beside the config in use
+      # and loadPush used to take the first that merely existed. Those differ on
+      # an ordinary layout — a legacy config in ~/.claude/session-viz with a
+      # leftover push.json in ~/.config/session-viz — and the asymmetry loses an
+      # opt-out exactly as easily as a consent. One fails closed and is
+      # invisible; the other fails open. Needs its own HOME, which is why it is
+      # not folded into the suite above.
+      - name: Where an opt-out is read from
+        run: node plugins/session-viz/test/push-state.mjs
+
       - name: Committed output matches source
         run: |
           # --porcelain, not `git diff`: a build that emits a NEW module leaves it

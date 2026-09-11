@@ -79,7 +79,7 @@
 // destination on every single send. The anti-forgetting guarantee here is that
 // line, not a clock.
 
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, realpathSync, statSync, accessSync, constants } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, dirname, basename } from 'node:path'
 import { homedir } from 'node:os'
@@ -92,6 +92,31 @@ import { version } from './version.mjs'
 import type { Config } from './cloud.mjs'
 
 export const SCHEMA_VERSION = '1'
+
+/**
+ * The LOCAL STATE file's shape, which is not the wire's.
+ *
+ * One constant used to serve both, and that is safe in exactly one direction.
+ * `loadPush()` discards a state file whose version it does not recognise, so
+ * bumping the wire version — for the facts sidecar, say — would discard every
+ * push.json in the install base. Today that reads as OFF and nothing ships,
+ * which is survivable. Under a default that ships, a state file nobody can read
+ * is not "off", it is "no record", and the difference between those two is
+ * every standing opt-out in the install base.
+ *
+ * So they are separate, and this one moves only when the shape below does.
+ */
+export const STATE_SCHEMA_VERSION = '1'
+
+/**
+ * How the local record was read, which is not the same question as what it says.
+ *
+ * `absent` and `unreadable` both mean "no usable record" and must never be
+ * collapsed: one is a machine that has never been asked, the other is a machine
+ * whose answer cannot be read, and only the first of those may ever be treated
+ * as an invitation to ask again. An unreadable record is read as a NO.
+ */
+export type PushOrigin = 'absent' | 'opted-out' | 'consented' | 'unreadable'
 
 /** Bumped when the disclosure text changes for a reason a reader should see.
  *  It is a label for humans; the digest is what actually gates shipping. */
@@ -460,7 +485,29 @@ export interface PushState {
   /** The host consent was given for. Consent was to a destination, not to the
    *  idea of one. */
   url?: string
+  /**
+   * A fingerprint of the credential consent was given with, and where it came
+   * from — never the credential itself.
+   *
+   * The URL alone is not the workspace. Two different tokens for two different
+   * workspaces resolve to the same host, so a consent recorded against
+   * cloud.session-viz.com would carry over to a colleague's workspace, or to a
+   * second workspace of the same person's, with nothing to notice. This is what
+   * makes the recorded consent about a WORKSPACE rather than about a hostname.
+   *
+   * A rotated token therefore stops shipping until the disclosure is accepted
+   * again. That is the fail-closed direction and the refusal says so.
+   */
+  credential?: { source: 'file' | 'env'; fingerprint: string }
+  /** Set by loadPush, never written to disk. */
+  origin?: PushOrigin
 }
+
+/** A credential, reduced to something comparable and useless to anyone reading
+ *  the file. Sixteen hex characters of a sha256 — enough that two distinct
+ *  tokens do not collide in practice, and not enough to be a token. */
+export const credentialFingerprint = (token: string): string =>
+  createHash('sha256').update(String(token || ''), 'utf8').digest('hex').slice(0, 16)
 
 const STATE_FILE = 'push.json'
 
@@ -470,7 +517,7 @@ export const pushPaths = (): string[] => configDirs().map((d) => join(d, STATE_F
  *  live.json follow, so one workspace has one answer to "is this on". */
 export const pushTarget = (): string => join(dirname(configTarget()), STATE_FILE)
 
-const OFF: PushState = { schema_version: SCHEMA_VERSION, enabled: false }
+const OFF: PushState = { schema_version: STATE_SCHEMA_VERSION, enabled: false }
 
 /**
  * Read the switch, failing closed on anything unexpected.
@@ -480,15 +527,52 @@ const OFF: PushState = { schema_version: SCHEMA_VERSION, enabled: false }
  * skipping — because there the cost of being wrong is a duplicate row. Here the
  * cost of being wrong is an upload nobody authorised, so it goes the other way.
  */
+/** Can this machine record a choice at all? A machine that cannot write its
+ *  answer down must not be a machine that acts on the absence of one. */
+export function canRecord(): boolean {
+  return [pushTarget(), ...pushPaths()].some((path) => {
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+      accessSync(dirname(path), constants.W_OK)
+      return true
+    } catch { return false }
+  })
+}
+
+const mtimeOf = (p: string): number => { try { return statSync(p).mtimeMs } catch { return 0 } }
+const isWritable = (p: string): boolean => { try { accessSync(p, constants.W_OK); return true } catch { return false } }
+
 export function loadPush(): PushState {
-  const p = pushPaths().find((q) => existsSync(q))
-  if (!p) return { ...OFF }
+  // Read the file savePush would next WRITE, not the first that merely exists.
+  //
+  // They are not the same path. savePush starts at pushTarget() and falls
+  // through on EPERM, so when the preferred directory turns read-only the record
+  // moves to a later candidate — and a reader taking the first that EXISTS goes
+  // on opening the stale copy left behind. home.mts's loadState already carries
+  // this reasoning for contrib.json; push.json did not, because under an opt-in
+  // default the asymmetry could only ever lose a CONSENT, and losing a consent
+  // fails closed. It loses an opt-out just as easily, and that fails open.
+  //
+  // Writability first, mtime only to break ties among the fallbacks: these
+  // candidates belong to different config directories, so "newest" can mean
+  // another workspace's answer.
+  const here = pushTarget()
+  const found = pushPaths().filter((q) => existsSync(q))
+  const p = (found.includes(here) && isWritable(here))
+    ? here
+    : found.sort((a, b) => mtimeOf(b) - mtimeOf(a))[0]
+  if (!p) return { ...OFF, origin: 'absent' }
   try {
     const s = JSON.parse(readFileSync(p, 'utf8')) as PushState
-    if (!s || s.schema_version !== SCHEMA_VERSION || typeof s.enabled !== 'boolean') return { ...OFF }
-    return s
+    // An unrecognised shape is read as a NO, not as an absence. The two are the
+    // same today, because OFF does not ship either way — they stop being the
+    // same the moment a default ships, and by then this file will have been
+    // written by a version that did not make the distinction.
+    if (!s || s.schema_version !== STATE_SCHEMA_VERSION || typeof s.enabled !== 'boolean')
+      return { ...OFF, origin: 'unreadable' }
+    return { ...s, origin: s.enabled ? 'consented' : 'opted-out' }
   } catch {
-    return { ...OFF }
+    return { ...OFF, origin: 'unreadable' }
   }
 }
 
@@ -603,11 +687,17 @@ export function turnOn(args: { confirmed: boolean; now?: number }): TurnOnResult
 
   const now = args.now ?? Date.now()
   const state: PushState = {
-    schema_version: SCHEMA_VERSION,
+    schema_version: STATE_SCHEMA_VERSION,
     enabled: true,
     since: new Date(now).toISOString(),
     disclosure: { version: DISCLOSURE_VERSION, sha256: disclosureDigest(standing) },
     url: cfg.url,
+    // The workspace, not just the host. Recorded here because this is the call
+    // the human answered, and compared in shipReport on every send.
+    credential: {
+      source: process.env.SESSION_VIZ_TOKEN ? 'env' : 'file',
+      fingerprint: credentialFingerprint(cfg.token),
+    },
   }
   const path = savePush(state)
   lines.push(`Cloud shipping is ON for ${cfg.url}, recorded in ${path}.`)
@@ -618,7 +708,7 @@ export function turnOn(args: { confirmed: boolean; now?: number }): TurnOnResult
 
 /** Off, and off from the next read — nothing caches this. */
 export function turnOff(): { path: string; lines: string[] } {
-  const path = savePush({ schema_version: SCHEMA_VERSION, enabled: false })
+  const path = savePush({ schema_version: STATE_SCHEMA_VERSION, enabled: false })
   return {
     path,
     lines: [
@@ -715,6 +805,26 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
     return fail(
       `you turned shipping on for ${state.url}, but this run resolves to ${cfg.url}`,
       ['  Nothing was sent. Turn it on again if the new destination is the one you want.'])
+
+  // The host is not the workspace, and this is the check that says so.
+  //
+  // Two tokens for two different workspaces resolve to the same URL, so the
+  // comparison above passes while the report lands somewhere the person never
+  // agreed to — a colleague's workspace, or a second one of their own. It also
+  // catches the shape cloud.mts warns about from the other end: a bare
+  // SESSION_VIZ_TOKEN resolves to the PUBLIC default, which is exactly what
+  // home.mts advises a confined harness to set, and without this a consent
+  // recorded for a self-hosted install would carry straight over to it.
+  //
+  // A rotated token stops shipping until the disclosure is accepted again. That
+  // is the fail-closed direction, and the sentence says which of the two it is
+  // so nobody debugs a network problem that is a consent problem.
+  const cred = { source: process.env.SESSION_VIZ_TOKEN ? 'env' : 'file', fingerprint: credentialFingerprint(cfg.token) } as const
+  if (state.credential && state.credential.fingerprint !== cred.fingerprint)
+    return fail(
+      'the credential changed since you turned shipping on, so this run would send to a workspace you have not agreed to',
+      [`  Consent was recorded for a ${state.credential.source} credential; this run uses a ${cred.source} one.`,
+       '  Nothing was sent. Run push.mjs --on again if the new workspace is the one you want.'])
 
   let payload: ReportPayload
   try {
