@@ -89,7 +89,7 @@ import { fileURLToPath } from 'node:url'
 
 import { configDirs, configTarget } from './home.mjs'
 import { config } from './cloud.mjs'
-import { indexFacts, undisclosedFacts, INDEX_FIELDS } from './facts.mjs'
+import { indexFacts, traceFacts, undisclosedFacts, undisclosedTrace, INDEX_FIELDS } from './facts.mjs'
 import type { Session } from './extract.mjs'
 import { redactionLimit } from './bundle.mjs'
 import { version } from './version.mjs'
@@ -1503,7 +1503,17 @@ async function sendSidecars(
     }
   }
 
-  const fr = await post(`${dest.url}${FACTS_PATH}`, dest, { schema_version: SCHEMA_VERSION, facts }, args.timeoutMs)
+  // The bare facts object, not an envelope around it.
+  //
+  // This shipped as `{ schema_version, facts }` and the server validated the
+  // ENVELOPE, so every send came back "facts carries 1 field the contract does
+  // not name: facts". Both sides were tested and both passed: the plugin
+  // asserted the payload against its own walk, the server asserted its own
+  // shape, and nothing asserted the two agree. The disclosure was right all
+  // along — it says "48 bounded fields and no others", which is this object.
+  //
+  // `schema_version` is not lost: it is one of the 48, inside the facts.
+  const fr = await post(`${dest.url}${FACTS_PATH}`, dest, facts, args.timeoutMs)
   const factsLine = fr.ok
     ? '  FACTS SENT — the session is in the workspace roll-up'
     : `  FACTS NOT SENT — ${fr.why}.${out.shipped ? ' The report above went and is unaffected.' : ''}`
@@ -1514,9 +1524,30 @@ async function sendSidecars(
   // decision, made with --with-trace, and a spine without one has nothing to
   // send. A switch in this file would be a second place to turn the most
   // exposing payload in the product on.
-  const calls = Array.isArray((spine as { trace?: unknown[] }).trace) ? (spine as { trace: unknown[] }).trace : []
+  // Through the projection, not raw.
+  //
+  // extract's RetainedCall is the SOURCE shape — startedAt, durationMs,
+  // errorKind, resultBytes — and traceFacts is what turns it into the wire
+  // shape the contract names. Posting spine.trace directly sent the source
+  // shape and the server refused every call by name. facts.mts had the
+  // projection the whole time and this line did not call it.
+  const raw = (spine as { trace?: unknown[] }).trace
+  const calls = Array.isArray(raw) ? traceFacts(raw as Parameters<typeof traceFacts>[0]) : []
   let traceLine: string | null = null
   if (calls.length) {
+    // The same fail-closed walk the facts get. A trace call carrying a field the
+    // contract does not name never reaches a socket — and finding that out here
+    // names the field instead of spending a round trip to be told.
+    const bad = calls.map((c) => undisclosedTrace(c)).find((u) => u.extra.length || u.missing.length)
+    if (bad) {
+      return {
+        ...out, reason: '', factsShipped: fr.ok,
+        lines: [...lines, out.head, factsLine,
+          `  TRACE NOT SENT — a call carries ${bad.extra.length} field(s) the contract does not name` +
+          `${bad.missing.length ? ` and is missing ${bad.missing.length}` : ''}: ${[...bad.extra, ...bad.missing].join(', ')}`,
+          '    This is a defect in this build, not something you can fix.'],
+      }
+    }
     const tr = await post(`${dest.url}${TRACE_PATH}`, dest,
       { sessionId: spine.sessionId, calls }, args.timeoutMs)
     traceLine = tr.ok

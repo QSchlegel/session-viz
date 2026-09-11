@@ -42,7 +42,8 @@ import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, statSync, mkdirSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // Point config resolution at a scratch directory BEFORE importing anything that
 // reads it. SESSION_VIZ_HOME is cleared because it outranks everything in
@@ -795,15 +796,78 @@ console.log(`\n── ` + 'the sidecar goes too, and is reported apart from the 
   chk('and the result carries the sidecar\u2019s own outcome', r.factsShipped === true)
 
   // The payload itself, over the wire — not the projection re-run.
+  // The BARE facts object, with no envelope around it — the disclosure says
+  // "48 bounded fields and no others", and an envelope makes that false by one.
   const body = JSON.parse(factsCall.body)
-  chk('it carries the facts under a named key', !!body.facts, Object.keys(body).join(', '))
+  chk('it posts the facts themselves, not an envelope around them',
+    !('facts' in body) && typeof body.session_id === 'string', Object.keys(body).slice(0, 6).join(', '))
   chk(`and all ${INDEX_FIELDS.length} declared fields`,
-    keyPaths(body.facts, INDEX_FIELDS).length === INDEX_FIELDS.length,
-    String(keyPaths(body.facts, INDEX_FIELDS).length))
+    keyPaths(body, INDEX_FIELDS).length === INDEX_FIELDS.length,
+    String(keyPaths(body, INDEX_FIELDS).length))
   const wire = JSON.stringify(body)
   for (const refused of ['"cwd"', '"file"', '"project"', 'turns[].text'])
     chk(`and nothing named ${refused}`, !wire.includes(refused), refused)
   chk('and no home path anywhere in it', !/\/Users\/|-Users-/.test(wire), wire.slice(0, 160))
+}
+
+console.log(`\n── ` + 'what is posted is what the server will accept')
+{
+  // The assertion that was missing, and it cost two live defects to notice.
+  //
+  // The sidecar shipped as `{ schema_version, facts }` while the server
+  // validated the envelope, and the trace shipped in extract's SOURCE shape
+  // while the server expected the projected one. Both sides had tests. Both
+  // passed. The plugin asserted its payload against its own walk and the server
+  // asserted its own shape, and NOTHING asserted the two agree — so the first
+  // time the two met was a real send, which refused every call by name.
+  //
+  // This runs the server's own validators over the bytes this plugin actually
+  // posts. It needs the sibling repository built and says so when it is not,
+  // rather than passing quietly: a cross-repo check that silently does nothing
+  // is the same shape as the gap it exists to close.
+  // From THIS file, not from the scratch home: `home` is a temp directory and
+  // walking up from it lands nowhere, which made this skip while reading as if
+  // it had looked.
+  const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+  const CLOUD = process.env.SESSION_VIZ_CLOUD || join(REPO, '..', 'session-viz-cloud')
+  const validators = join(CLOUD, 'services', 'api', 'dist', 'facts.js')
+  if (!existsSync(validators)) {
+    console.log(`skip  the server's validators are not built at ${validators}`)
+    console.log('      set SESSION_VIZ_CLOUD, or run npm run build there')
+  } else {
+    const { validateFacts, validateTraceCall } = await import(validators)
+    server.setMode('ok')
+    turnOn({ confirmed: true })
+
+    const traced = join(home, 'traced-spine.json')
+    const base = JSON.parse(readFileSync(spinePath, 'utf8'))
+    writeFileSync(traced, JSON.stringify({
+      ...base,
+      // extract's SOURCE shape, deliberately — camelCase, and not what the wire
+      // takes. If the projection is skipped this is what arrives.
+      trace: [{
+        turn: 0, seq: 0, tool: 'Bash', startedAt: '2026-01-01T00:00:00Z', durationMs: 3,
+        ok: true, errorKind: 'none', input: { command: 'ls' }, result: 'out', resultBytes: 3,
+        truncated: false,
+      }],
+    }))
+
+    const at = server.calls.length
+    await ship({ spinePath: traced, reportPath, timeoutMs: 5000 })
+    const sent = server.calls.slice(at)
+
+    const factsBody = JSON.parse(sent.find((c) => c.url === FACTS_PATH).body)
+    chk('the facts this plugin posts are what the server accepts',
+      validateFacts(factsBody) === null, String(validateFacts(factsBody)))
+
+    const traceBody = JSON.parse(sent.find((c) => c.url === '/v1/qpact/trace').body)
+    chk('and so is every call in the trace it posts',
+      traceBody.calls.every((c) => validateTraceCall(c) === null),
+      String(traceBody.calls.map((c) => validateTraceCall(c)).find(Boolean)))
+    chk('which means the source shape was projected, not posted raw',
+      traceBody.calls.every((c) => 'started_at' in c && !('startedAt' in c)),
+      JSON.stringify(Object.keys(traceBody.calls[0] || {})))
+  }
 }
 
 console.log(`\n── ` + 'a sidecar that fails does not unmake a report that went')
