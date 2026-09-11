@@ -146,7 +146,13 @@ export function wellFormed(reg) {
         // sentence appeared yet — and has nothing to extract, because the value
         // it would compare against is not true of anything yet.
         const groups = countGroups(re)
-        if (statusOf(c) === 'asserted' && groups !== 1)
+        // A claim whose value is a boolean has nothing to extract: its surface
+        // is a presence test — does the tree say this at all — exactly like a
+        // planned claim's. Requiring a capture group there forces a group around
+        // the whole sentence whose only purpose is to satisfy this rule, which
+        // is a pattern that asserts less, not more.
+        const presenceOnly = typeof c.value === 'boolean' || statusOf(c) !== 'asserted'
+        if (!presenceOnly && groups !== 1)
           say(id, `an asserted checked match must have exactly one capture group: ${k.match}`)
         if (groups > 1) say(id, `checked match has ${groups} capture groups; at most one is read: ${k.match}`)
       } catch { say(id, `checked match does not compile: ${k.match}`) }

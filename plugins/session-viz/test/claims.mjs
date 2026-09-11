@@ -134,6 +134,12 @@ for (const [id, c] of Object.entries(reg.claims)) {
         `nothing matched /${k.match}/ — either the sentence was removed, or it was rewritten past the pattern`)
       continue
     }
+    // A boolean claim is satisfied by the sentence being there; there is no
+    // captured value to compare it against.
+    if (typeof c.value === 'boolean') {
+      chk(`${id} in ${treeOf(k)}/${k.file}:${lineOf(text, m.index)}`, true)
+      continue
+    }
     chk(`${id} in ${treeOf(k)}/${k.file}:${lineOf(text, m.index)}`, matches(k.as, m[1], c),
       `it says ${JSON.stringify(m[1])}; the registry says ${JSON.stringify(c.value)}`)
   }

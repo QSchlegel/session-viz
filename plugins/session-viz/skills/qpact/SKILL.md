@@ -219,43 +219,60 @@ Say this accurately or not at all.
   the store cannot see that. If you mention carried-forward material in chat, say
   how old it is and say that it has not been re-checked.
 
-### 7. Offer it to the console — only if the user already switched that on
+### 7. Ship it to the console
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --ship \
   --spine /tmp/qpact-spine.json --report <the path step 6 printed>
 ```
 
-Run this every time, after step 6 and never before it. It is a no-op when cloud
-shipping is off, and it prints one line either way — where the report went, or
-that the report stayed on this machine. Pass through what it printed; do not
-summarise it away.
+Run this every time, after step 6 and never before it. It prints one line either
+way — where the report went, or why it stayed on this machine. **Pass through
+what it printed; do not summarise it away.**
+
+**Reports ship by default when a workspace is reachable.** There is no switch to
+turn on. What there is instead is one run: the first `/qpact` on a machine prints
+the whole disclosure, records that it printed it, and sends nothing. Every run
+after that ships.
+
+So on a first run this step will say NOT SHIPPED and print the disclosure. That
+output is the point of the run — relay it in full. The user is being shown, once,
+what every later run will send, and a summary of a disclosure is not a
+disclosure.
 
 It never fails the command. A dead network, a missing token, a server refusal and
 a tenant over quota all come back as a printed reason and exit 0, because the
-local report is already written and open by the time this runs. If it says
-NOT SHIPPED, say so in your close-out in plain words. **A report the user
-believes is in the cloud and is not is worse than one that was never sent.**
+local report is already written and open by the time this runs. If it says NOT
+SHIPPED, say so in your close-out in plain words. **A report the user believes is
+in the cloud and is not is worse than one that was never sent.**
 
-**Turning it on is the user's action, not yours.** Shipping sends the rendered
-page — which carries the full text of every prompt in this session — to their
-workspace console. If they ask for it, or if the line above says it is off and
-they want it on, run:
+#### What you must not do on their behalf
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --on
+node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --on      # records "I have read this"
 ```
 
-That prints the whole disclosure — every field, every header, and what is and is
-not redacted — and exits non-zero having turned nothing on. Show them that output
-and wait. **Only if they then say yes, in this conversation, may you run
-`--on --yes`.** Do not run `--on --yes` because a previous session did, because
-the user asked for "cloud reports" in general, or because it seems implied. Their
-consent is bound to the disclosure they were shown, and you supplying `--yes` on
-their behalf is the exact failure this design exists to prevent.
+`--on` is the user saying they have read the disclosure. It is not a setup step
+and it is not yours to run. Running it silently converts a machine that would
+have shown somebody the disclosure into one that ships without ever having done
+so — which is the single thing this design exists to prevent, and it is easier to
+do by accident now that there is no switch to notice.
 
-`--off` turns it back off, effective on the next run. `push.mjs` with no arguments
-says which it currently is and does nothing else.
+The same goes for `SESSION_VIZ_SHIP_ACK`. A disclosure printed where no terminal
+was attached does not count as having been read, and that variable is how a
+person says they read it anyway. Do not set it, do not suggest setting it as a
+way to make an unattended run work, and do not treat a disclosure **you**
+summarised as one the user read.
+
+Turning it OFF is different, and you may do it when asked:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --off              # stop shipping from this machine
+node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --skip <session>   # this session only
+```
+
+`push.mjs` with no arguments says what the next run would do and why, and changes
+nothing.
 
 ### 8. Close out
 

@@ -75,8 +75,14 @@ local transcripts, compute locally, and open no socket at all. Two more are loca
 analyse and not in what they touch, which is worth saying rather than rounding off. `/qcost`'s
 first step fetches an unauthenticated rate card from the vendor host — no credential leaves, but a
 request does. `/qpact` posts the entire rendered report, which carries the verbatim text of every
-prompt in the session, to your workspace console whenever report shipping is switched on; shipping
-is off until you turn it on, and every send prints its destination.
+prompt in the session, to your workspace console: reports ship to your workspace whenever one is
+reachable. Not silently, and not on the first run — the first `/qpact` on a machine prints the
+whole disclosure, records that it printed it, and sends nothing. Every run after that ships, and
+every send prints its destination.
+
+Stop it with `node push.mjs --off`, or one session at a time with `node push.mjs --skip <id>`. A
+disclosure printed where no terminal was attached does not count as having been read, so an
+unattended run does not start shipping on its own.
 
 `/qbl` also stays on this machine by default, writing only its per-project backlog; it reaches the
 team queue only when you explicitly add `--shared`. Five of the twelve can deliberately put something

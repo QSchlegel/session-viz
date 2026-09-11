@@ -60,20 +60,26 @@ const real = target
 
 console.log('\n── an opt-out is read back, not a stale copy from another directory')
 mkdirSync(dirname(stale), { recursive: true })
+// Written in the CURRENT shape: `optedOut` is the answer, and `enabled` is a
+// version-1 field that only loadPush's legacy branch still reads.
 writeFileSync(stale, JSON.stringify({
-  schema_version: STATE_SCHEMA_VERSION, enabled: true, url: 'https://stale.invalid',
+  schema_version: STATE_SCHEMA_VERSION, optedOut: false, url: 'https://stale.invalid',
+  shown: {
+    at: '2026-01-01T00:00:00Z', disclosure: { version: '1', sha256: 'x' },
+    url: 'https://stale.invalid', credential: { source: 'file', fingerprint: '0'.repeat(16) }, tty: true,
+  },
 }, null, 2))
 writeFileSync(real, JSON.stringify({
-  schema_version: STATE_SCHEMA_VERSION, enabled: false, url: 'https://self.hosted.invalid',
+  schema_version: STATE_SCHEMA_VERSION, optedOut: true, url: 'https://self.hosted.invalid',
 }, null, 2))
 
 const got = loadPush()
 chk('the record that comes back is the one the writer would write',
   got.url === 'https://self.hosted.invalid', JSON.stringify(got))
-chk('the opt-out is honoured', got.enabled === false, JSON.stringify(got))
+chk('the opt-out is honoured', got.optedOut === true, JSON.stringify(got))
 chk('and it is reported as an opt-out rather than an absence', got.origin === 'opted-out', String(got.origin))
 chk('the stale copy is still on disk, so this is about which was READ',
-  JSON.parse(readFileSync(stale, 'utf8')).enabled === true)
+  JSON.parse(readFileSync(stale, 'utf8')).optedOut === false)
 
 console.log('\n── and a machine that cannot record a choice knows it')
 chk('canRecord is true where a directory is writable', canRecord() === true)

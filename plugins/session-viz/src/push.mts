@@ -106,7 +106,7 @@ export const SCHEMA_VERSION = '1'
  *
  * So they are separate, and this one moves only when the shape below does.
  */
-export const STATE_SCHEMA_VERSION = '1'
+export const STATE_SCHEMA_VERSION = '2'
 
 /**
  * How the local record was read, which is not the same question as what it says.
@@ -116,7 +116,36 @@ export const STATE_SCHEMA_VERSION = '1'
  * whose answer cannot be read, and only the first of those may ever be treated
  * as an invitation to ask again. An unreadable record is read as a NO.
  */
-export type PushOrigin = 'absent' | 'opted-out' | 'consented' | 'unreadable'
+export type PushOrigin =
+  | 'absent'
+  /** An explicit no, from this build or an older one. */
+  | 'opted-out'
+  /** A current record of the disclosure having been shown. */
+  | 'consented'
+  /** A version-1 record that said yes. The person accepted A disclosure, not
+   *  this one — so it is not consent to what leaves now, and it is not an
+   *  absence either. It earns one deferred run, not a send. */
+  | 'legacy-consented'
+  /** Will not parse. Read as a no, and STICKY: the alternative is that a
+   *  corrupt file promotes somebody who had opted out back into shipping. */
+  | 'unreadable'
+
+/** What the gate decided, and why — one value so the reason cannot drift from
+ *  the outcome. Only `ship` sends. */
+export type ShipAct =
+  | 'ship'
+  | 'no-workspace'
+  | 'cannot-record'
+  | 'opted-out'
+  | 'needs-disclosure'
+
+export interface ShipDecision {
+  act: ShipAct
+  /** One sentence, printed verbatim. */
+  why: string
+  /** What the user can do about it, if anything. */
+  remedy?: string[]
+}
 
 /** Bumped when the disclosure text changes for a reason a reader should see.
  *  It is a label for humans; the digest is what actually gates shipping. */
@@ -342,7 +371,9 @@ export const REDACTION_POSTURE: readonly string[] = [
     'was invoked. Every send reports which of the three cases it is, in bundle.mjs\'s own ' +
     'words, before it goes.',
   'Anyone who can read your workspace console can read the whole page, including every ' +
-    'prompt in it. A row can be deleted. What somebody already read cannot be recalled.',
+    'prompt in it. You can withdraw a report: it stops being readable at once, and is purged ' +
+    'after a hold the console states. It is not an instant delete, and this sentence used to ' +
+    'say it was. What somebody already read cannot be recalled by either.',
 ]
 
 /**
@@ -476,7 +507,11 @@ export function documentCounts(html: string): { homePaths: number; emails: numbe
 
 export interface PushState {
   schema_version: string
-  enabled: boolean
+  /** Version 1 only. The switch that used to mean "on"; under a default that
+   *  ships there is nothing for it to turn on, and `optedOut` carries the
+   *  answer instead. Still read, so an old record is honoured rather than
+   *  discarded — see loadPush. Never written. */
+  enabled?: boolean
   /** When consent was given. Printed, never trusted for anything. */
   since?: string
   /** The disclosure the user was actually shown. Shipping stops when the
@@ -499,9 +534,36 @@ export interface PushState {
    * again. That is the fail-closed direction and the refusal says so.
    */
   credential?: { source: 'file' | 'env'; fingerprint: string }
+  /** An explicit no. Under a default that ships, this is the whole of the
+   *  opt-out, and it outranks everything below it. */
+  optedOut?: boolean
+  /** Sessions the person skipped one at a time. Bounded — see SKIP_LIMIT. */
+  skipped?: string[]
+  /**
+   * What was shown, to whom, and where the print went.
+   *
+   * Keyed on four things and not on the digest alone. The digest says the TEXT
+   * has not changed; it says nothing about which workspace this run resolves to,
+   * and two tokens for two workspaces share a hostname. `tty` records whether
+   * the print went to a terminal at all: a disclosure written into a scheduled
+   * task's log is a disclosure nobody read, and "shown" is a claim about a file
+   * descriptor unless something checks.
+   */
+  shown?: {
+    at: string
+    disclosure: { version: string; sha256: string }
+    url: string
+    credential: { source: 'file' | 'env'; fingerprint: string }
+    tty: boolean
+  }
   /** Set by loadPush, never written to disk. */
   origin?: PushOrigin
 }
+
+/** How many per-session skips are kept. A skip is a small fact about one
+ *  session and the list is not a database; past this the oldest fall off, and
+ *  the standing opt-out is the answer for somebody who wants all of them. */
+export const SKIP_LIMIT = 200
 
 /** A credential, reduced to something comparable and useless to anyone reading
  *  the file. Sixteen hex characters of a sha256 — enough that two distinct
@@ -568,9 +630,23 @@ export function loadPush(): PushState {
     // same today, because OFF does not ship either way — they stop being the
     // same the moment a default ships, and by then this file will have been
     // written by a version that did not make the distinction.
-    if (!s || s.schema_version !== STATE_SCHEMA_VERSION || typeof s.enabled !== 'boolean')
-      return { ...OFF, origin: 'unreadable' }
-    return { ...s, origin: s.enabled ? 'consented' : 'opted-out' }
+    if (!s || typeof s !== 'object') return { ...OFF, origin: 'unreadable' }
+
+    // A version-1 record is READ rather than discarded, and the two answers it
+    // can hold are not the same.
+    //
+    // A discarded record is an absence, and an absence is an invitation to ask
+    // again — which for somebody who had opted out means being promoted back
+    // into shipping by a version bump. So `enabled: false` is carried across as
+    // the no it was. `enabled: true` is carried across as something weaker than
+    // consent: they accepted A disclosure, not this one, so it earns one
+    // deferred run and not a send.
+    if (s.schema_version === '1' && typeof s.enabled === 'boolean')
+      return { ...s, optedOut: !s.enabled, origin: s.enabled ? 'legacy-consented' : 'opted-out' }
+
+    if (s.schema_version !== STATE_SCHEMA_VERSION) return { ...OFF, origin: 'unreadable' }
+    if (s.optedOut === true) return { ...s, origin: 'opted-out' }
+    return { ...s, origin: s.shown ? 'consented' : 'absent' }
   } catch {
     return { ...OFF, origin: 'unreadable' }
   }
@@ -617,19 +693,227 @@ function savePush(state: PushState): string {
  * no path to `true` that does not go through a disclosure the current build
  * would print verbatim.
  */
+/**
+ * Would this machine ship, right now?
+ *
+ * Expressed in terms of the gate rather than beside it. There used to be a
+ * switch to read; two functions each deciding for themselves what "on" means
+ * would be two answers to one question, which is how a status line and a send
+ * end up disagreeing about the same machine.
+ */
 export function isOn(state: PushState = loadPush()): boolean {
-  if (!state.enabled) return false
-  if (!state.disclosure?.sha256) return false
-  return state.disclosure.sha256 === disclosureDigest()
+  return decide(state).act === 'ship'
 }
 
-/** Why a state that looks on is not on. Empty when isOn() agrees. */
+/** Why a machine that could ship is not going to. Empty when it would. */
 export function offReason(state: PushState = loadPush()): string {
-  if (!state.enabled) return 'cloud shipping is off'
-  if (!state.disclosure?.sha256) return 'the stored consent has no record of what you were shown — turn it on again'
-  if (state.disclosure.sha256 !== disclosureDigest())
-    return 'what /qpact sends has changed since you agreed to it — shipping is off until you read the new disclosure and turn it on again'
-  return ''
+  const d = decide(state)
+  return d.act === 'ship' ? '' : d.why
+}
+
+/** Resolve the workspace and ask the gate. Shared by both, so they cannot drift
+ *  from each other or from shipReport. */
+function decide(state: PushState): ShipDecision {
+  let cfg: Config | null = null
+  let configError: string | null = null
+  try { cfg = config() } catch (e) { configError = (e as Error).message }
+  return shipDecision({ state, cfg, configError })
+}
+
+/**
+ * The gate. One function, five answers, and only one of them sends.
+ *
+ * ── What changed, and what did not ────────────────────────────────────────
+ * The default is now to ship: a workspace that is configured is a workspace
+ * this machine will send to. What has NOT changed is that nothing leaves before
+ * the person has been shown, in full, what leaves — that is `needs-disclosure`,
+ * which prints and deliberately sends nothing on that run.
+ *
+ * One deferred run per disclosure version is the whole cost, and it buys the
+ * thing the reversal would otherwise destroy. An existing install already holds
+ * a token minted by /qsetup for /qcontrib or /qshare; without the deferral the
+ * first /qpact after an upgrade posts that person's entire prompt history with
+ * no act on their part and nothing on screen beforehand. An opt-out nobody was
+ * told about is not an opt-out.
+ *
+ * ── Why it is keyed on four things ────────────────────────────────────────
+ * The digest says the TEXT has not changed. It says nothing about WHERE this
+ * run resolves to, and two tokens for two workspaces share a hostname — so the
+ * record binds the disclosure, the destination, and the credential that names
+ * the workspace. Any of them moving earns the disclosure again rather than a
+ * send.
+ *
+ * ── Order, which is itself a decision ─────────────────────────────────────
+ * `cannot-record` comes first. A machine that cannot write down an answer must
+ * not act on the absence of one, and every outcome below it assumes the record
+ * it reads is a record somebody could have changed.
+ *
+ * Then the standing no, before the workspace is even looked at: asking about
+ * credentials ahead of a refusal is how "no token" gets reported to somebody who
+ * simply said no.
+ */
+export function shipDecision(args: {
+  state: PushState
+  cfg: Config | null
+  /** The message config() threw, if it did. Carried rather than flattened: it
+   *  has three distinct forms — no token at all, a URL set without a token, and
+   *  a file with no usable token — and telling somebody who deliberately set
+   *  SESSION_VIZ_URL that there is "no workspace" would be answering a question
+   *  they did not ask. */
+  configError?: string | null
+  sessionId?: string | null
+  isTty?: boolean
+}): ShipDecision {
+  const { state, cfg, configError, sessionId } = args
+
+  if (!canRecord())
+    return {
+      act: 'cannot-record',
+      why: 'this machine cannot write down whether you want reports shipped, so it does not ship them',
+      remedy: ['  Set SESSION_VIZ_HOME to a directory this harness can write, then run /qpact again.'],
+    }
+
+  if (state.origin === 'unreadable')
+    return {
+      act: 'opted-out',
+      why: 'the local record of your choice will not parse, and an unreadable answer is read as a no',
+      remedy: [
+        `  Nothing was sent. Delete ${pushTarget()} to be asked again, or run push.mjs --on to accept now.`,
+      ],
+    }
+
+  if (state.optedOut === true)
+    return { act: 'opted-out', why: 'you turned report shipping off on this machine' }
+
+  if (sessionId && (state.skipped || []).includes(sessionId))
+    return { act: 'opted-out', why: 'this session was skipped' }
+
+  if (!cfg)
+    return {
+      act: 'no-workspace',
+      why: configError || 'there is no workspace configured on this machine',
+      remedy: ['  Nothing was sent, and nothing is waiting to be. Run /qsetup to connect one.'],
+    }
+
+  const cred = credentialNow(cfg)
+  const digest = disclosureDigest()
+  const shown = state.shown
+
+  if (!shown)
+    return {
+      act: 'needs-disclosure',
+      why: state.origin === 'legacy-consented'
+        ? 'what /qpact sends has changed since you last agreed to it'
+        : 'this machine has not been shown what /qpact sends',
+    }
+  if (shown.disclosure.sha256 !== digest)
+    return { act: 'needs-disclosure', why: 'what /qpact sends has changed since you were shown it' }
+  if (shown.url !== cfg.url)
+    return { act: 'needs-disclosure', why: `you were shown this for ${shown.url}, and this run resolves to ${cfg.url}` }
+  if (shown.credential.fingerprint !== cred.fingerprint)
+    return {
+      act: 'needs-disclosure',
+      why: 'the credential changed, so this run would send to a workspace you have not been shown this for',
+      // Which kind each was, because "the credential changed" is the same
+      // sentence for a rotated token and for an environment variable pointing
+      // somewhere else entirely, and only one of those is somebody's mistake.
+      remedy: [`  You were shown this for a ${shown.credential.source} credential; this run uses a ${cred.source} one.`],
+    }
+
+  // A print that went nowhere a person could read is not a showing.
+  //
+  // The escape is deliberate and is still a human act: somebody reads the
+  // disclosure once and sets the variable to its digest. What it refuses is the
+  // shape where an unattended run prints into a log nobody opens and treats its
+  // own output as consent.
+  if (!shown.tty && process.env.SESSION_VIZ_SHIP_ACK !== digest)
+    return {
+      act: 'needs-disclosure',
+      why: 'the disclosure was printed where no terminal was attached, so nothing here knows it was read',
+      remedy: [
+        '  Run /qpact once interactively, or set SESSION_VIZ_SHIP_ACK to the digest printed below.',
+      ],
+    }
+
+  return { act: 'ship', why: `shipping to ${cfg.url}` }
+}
+
+/** The credential this run would use, as the record stores it. */
+export function credentialNow(cfg: Config): { source: 'file' | 'env'; fingerprint: string } {
+  return {
+    source: process.env.SESSION_VIZ_TOKEN ? 'env' : 'file',
+    fingerprint: credentialFingerprint(cfg.token),
+  }
+}
+
+/**
+ * Print the disclosure and record that it was printed — one call, for the
+ * reason turnOn is one call: two functions is an arrangement where the printing
+ * one can be skipped, and "they were shown this" then rests on whoever wired it
+ * up. The write is downstream of the print in the same call stack.
+ *
+ * It records what it did, including whether anything was attached to read it,
+ * and it returns the lines so a caller can pass them through rather than
+ * summarising them.
+ */
+export function noteShown(args: { cfg: Config; now?: number; isTty?: boolean }): { path: string; lines: string[] } {
+  const standing = standingDisclosure()
+  const lines = [...standing]
+  const digest = disclosureDigest(standing)
+  const tty = args.isTty ?? Boolean(process.stdout.isTTY)
+
+  lines.push('')
+  lines.push(`  Destination   ${args.cfg.url}`)
+  lines.push(`  Disclosure    ${digest}`)
+  lines.push('')
+  lines.push('  Reports from this machine will be sent there from the NEXT /qpact on.')
+  lines.push('  Nothing has been sent yet, including this run.')
+  lines.push('')
+  lines.push('  To stop that:   node push.mjs --off')
+  lines.push('  For one session: node push.mjs --skip <session-id>')
+  if (!tty) {
+    lines.push('')
+    lines.push('  Nothing was attached to read this, so it does not count as having been read.')
+    lines.push(`  Run it where you can see it, or set SESSION_VIZ_SHIP_ACK=${digest}`)
+  }
+
+  const prev = loadPush()
+  const path = savePush({
+    schema_version: STATE_SCHEMA_VERSION,
+    optedOut: false,
+    skipped: prev.skipped || [],
+    shown: {
+      at: new Date(args.now ?? Date.now()).toISOString(),
+      disclosure: { version: DISCLOSURE_VERSION, sha256: digest },
+      url: args.cfg.url,
+      credential: credentialNow(args.cfg),
+      tty,
+    },
+  })
+  return { path, lines }
+}
+
+/** The standing no. */
+export function optOut(): { path: string; lines: string[] } {
+  const prev = loadPush()
+  const path = savePush({ ...prev, origin: undefined, schema_version: STATE_SCHEMA_VERSION, optedOut: true })
+  return {
+    path,
+    lines: [
+      `Report shipping is OFF for this machine, recorded in ${path}.`,
+      'The next /qpact sends nothing.',
+      'This does not delete what was already sent: reports already in the console stay',
+      'there until you withdraw them from the report page, or they are purged.',
+    ],
+  }
+}
+
+/** One session, skipped. Bounded, oldest first. */
+export function skipSession(sessionId: string): { path: string; lines: string[] } {
+  const prev = loadPush()
+  const skipped = [...(prev.skipped || []).filter((s) => s !== sessionId), sessionId].slice(-SKIP_LIMIT)
+  const path = savePush({ ...prev, origin: undefined, schema_version: STATE_SCHEMA_VERSION, skipped })
+  return { path, lines: [`Session ${sessionId} will not be shipped. Recorded in ${path}.`] }
 }
 
 export interface TurnOnResult {
@@ -652,71 +936,42 @@ export interface TurnOnResult {
  * `confirmed` is the human's answer, and the caller must not supply it on the
  * human's behalf — see the skill, which says so where an agent will read it.
  */
-export function turnOn(args: { confirmed: boolean; now?: number }): TurnOnResult {
-  // Held separately from `lines` because the digest is taken over the STANDING
-  // text alone. Fold the destination into it and the recorded consent stops
-  // matching the moment anyone points SESSION_VIZ_URL somewhere else — which
-  // reads to the user as "the disclosure changed" when it did not. The
-  // destination is bound by its own check in shipReport(), where the message
-  // can name both hosts.
-  const standing = standingDisclosure()
-  const lines = [...standing]
-
-  // Resolved BEFORE anything is written: consent is bound to a destination, and
-  // there is nothing to bind it to until /qsetup has run. Refusing here also
-  // means the recorded url is a real one rather than a default that a later
-  // SESSION_VIZ_URL silently replaces.
+export function turnOn(args: { confirmed: boolean; now?: number; isTty?: boolean }): TurnOnResult {
+  // The explicit accept. Under an opt-in default this was the switch; under a
+  // default that ships there is no switch, and what a person is doing when they
+  // run --on is saying they have read the disclosure. So it delegates to the one
+  // function that prints and records together, rather than being a second way
+  // to write the same record.
+  //
+  // `confirmed` still gates it and a caller still must not supply it on the
+  // human's behalf — the skill says so where an agent will read it. Without it
+  // the disclosure is printed and nothing is written, which is the same shape as
+  // before and still exits non-zero at the CLI.
   let cfg: Config
   try {
     cfg = config()
   } catch (e) {
-    lines.push(`Cannot turn this on yet: ${(e as Error).message}.`)
-    lines.push('There is no destination to consent to until a token exists. Run /qsetup.')
-    return { on: false, lines }
+    return { on: false, lines: [(e as Error).message, 'Run /qsetup to connect a workspace first.'] }
   }
-
-  lines.push(`  Destination   ${cfg.url}${REPORT_PATH}`)
-  lines.push(`  Workspace     ${cfg.scope ? `token scoped to ${cfg.scope}` : 'scope not recorded by /qsetup'}`)
-  lines.push('')
 
   if (!args.confirmed) {
-    lines.push('Nothing has been turned on and nothing has been sent.')
-    lines.push('If you want /qpact reports in the console, re-run with --yes.')
-    return { on: false, destination: cfg.url, lines }
+    const preview = [...standingDisclosure(), '', `  Destination   ${cfg.url}`, '']
+    preview.push('Nothing has been recorded and nothing has been sent.')
+    preview.push('Re-run with --yes to record that you have read this.')
+    return { on: false, destination: cfg.url, lines: preview }
   }
 
-  const now = args.now ?? Date.now()
-  const state: PushState = {
-    schema_version: STATE_SCHEMA_VERSION,
-    enabled: true,
-    since: new Date(now).toISOString(),
-    disclosure: { version: DISCLOSURE_VERSION, sha256: disclosureDigest(standing) },
-    url: cfg.url,
-    // The workspace, not just the host. Recorded here because this is the call
-    // the human answered, and compared in shipReport on every send.
-    credential: {
-      source: process.env.SESSION_VIZ_TOKEN ? 'env' : 'file',
-      fingerprint: credentialFingerprint(cfg.token),
-    },
-  }
-  const path = savePush(state)
-  lines.push(`Cloud shipping is ON for ${cfg.url}, recorded in ${path}.`)
-  lines.push('Every /qpact from now on prints where its report went.')
-  lines.push('Turn it off at any time with:  node push.mjs --off')
-  return { on: true, path, destination: cfg.url, lines }
+  // tty defaults TRUE here and only here: somebody typed this command. That is
+  // the difference between a person accepting a disclosure and a scheduled task
+  // printing one into a log.
+  const note = noteShown({ cfg, now: args.now, isTty: args.isTty ?? true })
+  return { on: true, path: note.path, destination: cfg.url, lines: note.lines }
 }
 
-/** Off, and off from the next read — nothing caches this. */
 export function turnOff(): { path: string; lines: string[] } {
-  const path = savePush({ schema_version: STATE_SCHEMA_VERSION, enabled: false })
-  return {
-    path,
-    lines: [
-      'Cloud shipping is OFF. The next /qpact sends nothing.',
-      'Reports already in the console are still there — this stops new ones, it does not',
-      'delete old ones.',
-    ],
-  }
+  // One name for one act. optOut is the record; this stays because the CLI and
+  // the skill have said --off for as long as the feature has existed.
+  return optOut()
 }
 
 // ---------------------------------------------------------------- shipping
@@ -733,6 +988,9 @@ export interface ShipResult {
 }
 
 export interface ShipArgs {
+  /** Whether a terminal is attached, for the one check that cares. Injected so
+   *  a test can exercise both, and defaulted from process.stdout when absent. */
+  isTty?: boolean
   spinePath: string
   reportPath: string
   timeoutMs?: number
@@ -755,21 +1013,13 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
     shipped: false, reason, lines: [...lines, `  NOT SHIPPED — ${reason}`, ...extra],
   })
 
-  // The switch first, before a token is looked for. Asking about credentials
-  // ahead of consent is how "no token" gets reported for a feature the user
-  // never turned on, and how a token appearing later reads as permission.
-  const state = loadPush()
-  if (!isOn(state)) {
-    const why = offReason(state)
-    return {
-      shipped: false, reason: why,
-      lines: [
-        `  not sent to the cloud — ${why}.`,
-        '  The report above is local only. Turn shipping on with:  node push.mjs --on',
-      ],
-    }
-  }
-
+  // The spine is read first now, which is a reversal of the old order and worth
+  // saying why. It used to ask the switch before it looked for a token, so that
+  // "no token" could never be reported to somebody who had simply not turned the
+  // feature on. Under a default that ships there is no switch to ask first, and
+  // the gate needs the session id to honour a per-session skip. Reading a local
+  // file decides nothing and sends nothing; the gate still runs before any
+  // credential is used for anything.
   let spine: Spine
   try {
     spine = JSON.parse(readFileSync(args.spinePath, 'utf8')) as Spine
@@ -777,6 +1027,13 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
     return fail(`could not read the spine at ${args.spinePath}: ${(e as Error).message}`)
   }
 
+  // The size refusal comes BEFORE the gate, and stays there.
+  //
+  // It is a local fact: this file is too large to send anywhere, to any
+  // workspace, under any consent. Deciding it first means somebody with a 9 MB
+  // report is told that, rather than being told their destination changed —
+  // both of which can be true at once, and only one of which they can act on.
+  // Nothing here opens a socket, so nothing is leaked by checking it early.
   let html: string
   try {
     html = readFileSync(args.reportPath, 'utf8')
@@ -790,20 +1047,55 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
       `${args.reportPath} is ${(bytes / 1048576).toFixed(1)} MB, over the ${MAX_DOCUMENT_BYTES / 1048576} MB limit`,
       ['  The local report is unaffected. Nothing was sent.'])
 
-  let cfg: Config
-  try {
-    cfg = config()
-  } catch (e) {
-    return fail((e as Error).message, ['  Shipping is ON but there is no usable token. Run /qsetup.'])
+  const state = loadPush()
+  let cfg: Config | null = null
+  let configError: string | null = null
+  try { cfg = config() } catch (e) { configError = (e as Error).message }
+
+  const decision = shipDecision({
+    state, cfg, configError, sessionId: spine.sessionId ?? null, isTty: args.isTty,
+  })
+
+  if (decision.act === 'needs-disclosure') {
+    // Printed and recorded here, and NOTHING is sent on this run. The deferral
+    // is the feature: it is the one run that stands between an upgrade and a
+    // machine posting somebody's prompt history before they have read a word.
+    const note = noteShown({ cfg: cfg!, now: args.now, isTty: args.isTty })
+    return {
+      shipped: false,
+      reason: decision.why,
+      lines: [
+        `  NOT SHIPPED — ${decision.why}.`,
+        '',
+        ...note.lines,
+        '',
+        `  Recorded in ${note.path}.`,
+        ...(decision.remedy || []),
+      ],
+    }
   }
+
+  if (decision.act !== 'ship') {
+    return {
+      shipped: false,
+      reason: decision.why,
+      lines: [`  not sent to the cloud — ${decision.why}.`, ...(decision.remedy || [])],
+    }
+  }
+
+
+
+  // `cfg` is non-null here: shipDecision returns 'no-workspace' when it is not,
+  // and only 'ship' reaches this line.
+  const dest = cfg as Config
 
   // Consent was given for a host. This is the check that stops an environment
   // variable redirecting an existing consent somewhere else — cloud.mts already
   // refuses to pair a file token with an env URL, but a token and URL supplied
   // together resolve cleanly and would otherwise inherit this switch.
-  if (state.url && state.url !== cfg.url)
+  if (state.url && state.url !== dest.url)
     return fail(
-      `you turned shipping on for ${state.url}, but this run resolves to ${cfg.url}`,
+      `you turned shipping on for ${state.url}, but this run resolves to ${dest.url}`,
       ['  Nothing was sent. Turn it on again if the new destination is the one you want.'])
 
   // The host is not the workspace, and this is the check that says so.
@@ -819,7 +1111,7 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
   // A rotated token stops shipping until the disclosure is accepted again. That
   // is the fail-closed direction, and the sentence says which of the two it is
   // so nobody debugs a network problem that is a consent problem.
-  const cred = { source: process.env.SESSION_VIZ_TOKEN ? 'env' : 'file', fingerprint: credentialFingerprint(cfg.token) } as const
+  const cred = { source: process.env.SESSION_VIZ_TOKEN ? 'env' : 'file', fingerprint: credentialFingerprint(dest.token) } as const
   if (state.credential && state.credential.fingerprint !== cred.fingerprint)
     return fail(
       'the credential changed since you turned shipping on, so this run would send to a workspace you have not agreed to',
@@ -843,14 +1135,14 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
       (drift.missing.length ? ` — disclosed but absent: ${drift.missing.join(', ')}` : ''),
       ['  This is a bug in the plugin, not in your setup. Nothing was sent.'])
 
-  lines.push(...reportDisclosure({ payload, destination: cfg.url, reportPath: args.reportPath, spine }))
+  lines.push(...reportDisclosure({ payload, destination: dest.url, reportPath: args.reportPath, spine }))
   lines.push('')
 
   const headers: Record<string, string> = {
-    authorization: `Bearer ${cfg.token}`,
+    authorization: `Bearer ${dest.token}`,
     'content-type': 'application/json',
   }
-  if (cfg.actor) headers['x-actor'] = cfg.actor
+  if (dest.actor) headers['x-actor'] = dest.actor
 
   // Written here rather than through cloud.mts's api() for two reasons that are
   // both load-bearing: api() has no timeout, so a black-holed socket would hold
@@ -859,7 +1151,7 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
   // quota" needs to be a different sentence from "refused". The credential
   // resolution, which is the part that must not be duplicated, still comes from
   // cloud.mts.
-  const url = cfg.url.replace(/\/$/, '') + REPORT_PATH
+  const url = dest.url.replace(/\/$/, '') + REPORT_PATH
   let res: Response
   try {
     res = await fetch(url, {
@@ -873,8 +1165,8 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
     const timedOut = err.name === 'TimeoutError' || err.name === 'AbortError'
     return fail(
       timedOut
-        ? `${cfg.url} did not answer within ${(args.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000}s`
-        : `could not reach ${cfg.url}: ${err.message}`,
+        ? `${dest.url} did not answer within ${(args.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000}s`
+        : `could not reach ${dest.url}: ${err.message}`,
       ['  The report above is on your machine and unaffected.'])
   }
 
@@ -885,18 +1177,18 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
     // and sends somebody to /qsetup for an hour.
     const server = body.error || `HTTP ${res.status}`
     const reason =
-      res.status === 402 || res.status === 429 ? `${cfg.url} is over quota: ${server}`
-        : res.status === 413 ? `${cfg.url} refused the report as too large: ${server}`
-          : res.status === 401 || res.status === 403 ? `${cfg.url} refused this token: ${server} — run /qsetup`
-            : `${cfg.url} refused the report: ${server}`
+      res.status === 402 || res.status === 429 ? `${dest.url} is over quota: ${server}`
+        : res.status === 413 ? `${dest.url} refused the report as too large: ${server}`
+          : res.status === 401 || res.status === 403 ? `${dest.url} refused this token: ${server} — run /qsetup`
+            : `${dest.url} refused the report: ${server}`
     return fail(reason, ['  The report above is on your machine and unaffected.'])
   }
 
-  if (!body.id) return fail(`${cfg.url} accepted the report but named no id for it`)
+  if (!body.id) return fail(`${dest.url} accepted the report but named no id for it`)
   // Constructed only when the server did not say. A server that moves its
   // console to another host will say so here; guessing would print a link that
   // 404s and read as a failed upload.
-  const link = body.url || `${cfg.url.replace(/\/$/, '')}/r/${body.id}`
+  const link = body.url || `${dest.url.replace(/\/$/, '')}/r/${body.id}`
   return {
     shipped: true, id: body.id, url: link, bytes, reason: '',
     lines: [...lines, `  SHIPPED to ${link}`, `  Turn this off at any time with:  node push.mjs --off`],
@@ -916,17 +1208,35 @@ if (isMain) {
 
   try {
     if (argv.includes('--off')) {
-      const r = turnOff()
+      const r = optOut()
       say(r.lines)
       process.exit(0)
     }
 
-    if (argv.includes('--on')) {
-      const r = turnOn({ confirmed: argv.includes('--yes') })
+    if (argv.includes('--skip')) {
+      const sid = opt('--skip')
+      if (!sid) {
+        console.error('usage: push.mjs --skip <session-id>')
+        process.exit(1)
+      }
+      const r = skipSession(sid)
       say(r.lines)
-      // Non-zero without --yes: a caller that treats exit 0 as "done" must not
-      // come away believing consent was recorded when it was only offered.
-      process.exit(r.on ? 0 : 1)
+      process.exit(0)
+    }
+
+    // --on is now "show me the disclosure and record that I read it", which is
+    // what the default needs rather than a switch. It still prints in full, and
+    // it still records nothing that was not printed in the same call.
+    if (argv.includes('--on')) {
+      let cfg: Config
+      try { cfg = config() } catch (e) {
+        console.error((e as Error).message)
+        process.exit(1)
+      }
+      const r = noteShown({ cfg })
+      say(r.lines)
+      say([``, `Recorded in ${r.path}.`])
+      process.exit(0)
     }
 
     if (argv.includes('--ship')) {
@@ -944,8 +1254,30 @@ if (isMain) {
       process.exit(0)
     }
 
-    // Default: state the switch, and nothing else. This command must be safe to
-    // run out of curiosity.
+    // Default: state what WOULD happen on the next /qpact, and do nothing. This
+    // command must be safe to run out of curiosity, and under a default that
+    // ships it has to answer a different question than it used to — not "is a
+    // switch on" but "would this machine send, and if not, why not".
+    {
+      const st = loadPush()
+      let c: Config | null = null
+      let ce: string | null = null
+      try { c = config() } catch (e) { ce = (e as Error).message }
+      const d = shipDecision({ state: st, cfg: c, configError: ce })
+      say([
+        d.act === 'ship'
+          ? `The next /qpact WOULD ship: ${d.why}.`
+          : `The next /qpact would NOT ship — ${d.why}.`,
+        ...(d.remedy || []),
+        '',
+        d.act === 'ship'
+          ? '  Stop it with:  node push.mjs --off      one session:  node push.mjs --skip <id>'
+          : '  See what would be sent with:  node push.mjs --on',
+      ])
+      process.exit(0)
+    }
+
+    // eslint-disable-next-line no-unreachable
     const state = loadPush()
     const on = isOn(state)
     console.log(`cloud shipping is ${on ? 'ON' : 'OFF'}`)
