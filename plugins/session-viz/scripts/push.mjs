@@ -540,22 +540,34 @@ function savePush(state) {
  * no path to `true` that does not go through a disclosure the current build
  * would print verbatim.
  */
+/**
+ * Would this machine ship, right now?
+ *
+ * Expressed in terms of the gate rather than beside it. There used to be a
+ * switch to read; two functions each deciding for themselves what "on" means
+ * would be two answers to one question, which is how a status line and a send
+ * end up disagreeing about the same machine.
+ */
 export function isOn(state = loadPush()) {
-    if (!state.enabled)
-        return false;
-    if (!state.disclosure?.sha256)
-        return false;
-    return state.disclosure.sha256 === disclosureDigest();
+    return decide(state).act === 'ship';
 }
-/** Why a state that looks on is not on. Empty when isOn() agrees. */
+/** Why a machine that could ship is not going to. Empty when it would. */
 export function offReason(state = loadPush()) {
-    if (!state.enabled)
-        return 'cloud shipping is off';
-    if (!state.disclosure?.sha256)
-        return 'the stored consent has no record of what you were shown — turn it on again';
-    if (state.disclosure.sha256 !== disclosureDigest())
-        return 'what /qpact sends has changed since you agreed to it — shipping is off until you read the new disclosure and turn it on again';
-    return '';
+    const d = decide(state);
+    return d.act === 'ship' ? '' : d.why;
+}
+/** Resolve the workspace and ask the gate. Shared by both, so they cannot drift
+ *  from each other or from shipReport. */
+function decide(state) {
+    let cfg = null;
+    let configError = null;
+    try {
+        cfg = config();
+    }
+    catch (e) {
+        configError = e.message;
+    }
+    return shipDecision({ state, cfg, configError });
 }
 /**
  * The gate. One function, five answers, and only one of them sends.
@@ -633,6 +645,10 @@ export function shipDecision(args) {
         return {
             act: 'needs-disclosure',
             why: 'the credential changed, so this run would send to a workspace you have not been shown this for',
+            // Which kind each was, because "the credential changed" is the same
+            // sentence for a rotated token and for an environment variable pointing
+            // somewhere else entirely, and only one of those is somebody's mistake.
+            remedy: [`  You were shown this for a ${shown.credential.source} credential; this run uses a ${cred.source} one.`],
         };
     // A print that went nowhere a person could read is not a showing.
     //
@@ -709,7 +725,9 @@ export function optOut() {
         path,
         lines: [
             `Report shipping is OFF for this machine, recorded in ${path}.`,
-            'Reports already in the console stay there — withdraw them from the report page.',
+            'The next /qpact sends nothing.',
+            'This does not delete what was already sent: reports already in the console stay',
+            'there until you withdraw them from the report page, or they are purged.',
         ],
     };
 }
@@ -796,6 +814,23 @@ export async function shipReport(args) {
     catch (e) {
         return fail(`could not read the spine at ${args.spinePath}: ${e.message}`);
     }
+    // The size refusal comes BEFORE the gate, and stays there.
+    //
+    // It is a local fact: this file is too large to send anywhere, to any
+    // workspace, under any consent. Deciding it first means somebody with a 9 MB
+    // report is told that, rather than being told their destination changed —
+    // both of which can be true at once, and only one of which they can act on.
+    // Nothing here opens a socket, so nothing is leaked by checking it early.
+    let html;
+    try {
+        html = readFileSync(args.reportPath, 'utf8');
+    }
+    catch (e) {
+        return fail(`could not read the report at ${args.reportPath}: ${e.message}`);
+    }
+    const bytes = Buffer.byteLength(html, 'utf8');
+    if (bytes > MAX_DOCUMENT_BYTES)
+        return fail(`${args.reportPath} is ${(bytes / 1048576).toFixed(1)} MB, over the ${MAX_DOCUMENT_BYTES / 1048576} MB limit`, ['  The local report is unaffected. Nothing was sent.']);
     const state = loadPush();
     let cfg = null;
     let configError = null;
@@ -833,16 +868,6 @@ export async function shipReport(args) {
             lines: [`  not sent to the cloud — ${decision.why}.`, ...(decision.remedy || [])],
         };
     }
-    let html;
-    try {
-        html = readFileSync(args.reportPath, 'utf8');
-    }
-    catch (e) {
-        return fail(`could not read the report at ${args.reportPath}: ${e.message}`);
-    }
-    const bytes = Buffer.byteLength(html, 'utf8');
-    if (bytes > MAX_DOCUMENT_BYTES)
-        return fail(`${args.reportPath} is ${(bytes / 1048576).toFixed(1)} MB, over the ${MAX_DOCUMENT_BYTES / 1048576} MB limit`, ['  The local report is unaffected. Nothing was sent.']);
     // `cfg` is non-null here: shipDecision returns 'no-workspace' when it is not,
     // and only 'ship' reaches this line.
     const dest = cfg;

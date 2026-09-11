@@ -57,7 +57,7 @@ process.env.SESSION_VIZ_ACTOR = 'claude-code'
 
 const {
   shipReport, turnOn, turnOff, isOn, loadPush, offReason,
-  STATE_SCHEMA_VERSION, credentialFingerprint, canRecord, pushPaths,
+  STATE_SCHEMA_VERSION, credentialFingerprint, canRecord, pushPaths, skipSession, optOut,
   standingDisclosure, disclosureDigest, pushTarget,
   FIELDS, HEADERS, REPORT_PATH, SCHEMA_VERSION, MAX_DOCUMENT_BYTES,
 } = await import('../scripts/push.mjs')
@@ -80,7 +80,11 @@ const chk = (name, ok, detail) => {
  */
 const ship = async (args) => {
   try {
-    return await shipReport(args)
+    // Every send in this file is standing in for a person at a terminal running
+    // /qpact. The gate treats a print with nothing attached to read it as not a
+    // showing, which is correct and is exercised deliberately in its own section
+    // below — it must not be the accidental state of every other assertion here.
+    return await shipReport({ isTty: true, ...args })
   } catch (e) {
     chk(`shipReport rejected instead of reporting: ${args.label || args.reportPath}`, false, String(e?.message))
     return { shipped: false, reason: `REJECTED: ${e?.message}`, lines: [], url: '' }
@@ -204,10 +208,20 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
   // A token is present in the environment right now. It is not consent.
   const r = await ship({ spinePath, reportPath, timeoutMs: 3000 })
   chk('nothing is sent when the switch is off', server.calls.length === 0, `${server.calls.length} request(s) reached the server`)
-  chk('and the result says so rather than pretending', r.shipped === false && /off/i.test(r.reason), r.reason)
-  chk('and the line a user reads names the local report as local only',
-    r.lines.some((l) => /local only/i.test(l)), r.lines.join('\n'))
-  chk('a token existing did not turn anything on', isOn() === false)
+  chk('and the result says why, in the gate\u2019s own words',
+    r.shipped === false && /has not been shown/i.test(r.reason), r.reason)
+  // The first run is where the disclosure is printed. It is not a refusal that
+  // points elsewhere — it is the showing itself, and it says so.
+  chk('the disclosure is printed in that same run',
+    FIELDS.every((f) => r.lines.join('\n').includes(f.path)),
+    FIELDS.filter((f) => !r.lines.join('\n').includes(f.path)).map((f) => f.path).join(', '))
+  chk('and it says plainly that this run sent nothing',
+    r.lines.some((l) => /Nothing has been sent yet, including this run/i.test(l)), r.lines.join('\n'))
+  chk('it names both ways to stop it',
+    /--off/.test(r.lines.join('\n')) && /--skip/.test(r.lines.join('\n')), r.lines.join('\n'))
+  // Under a default that ships, the first run is the showing — so afterwards
+  // this machine WILL send. That is the reversal, asserted rather than implied.
+  chk('having been shown once, the next run would ship', isOn() === true, offReason())
 }
 
 // ------------------------------- 2. the switch cannot move without the print
@@ -224,19 +238,31 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
   chk('it says the page carries every prompt', /full text of every prompt/i.test(text))
   chk('it says the home-path rewrite does NOT apply', /unrewritten/i.test(text))
   chk('it names the destination it would send to', text.includes(base), base)
-  chk('offering it does not turn it on', offered.on === false && isOn() === false)
-  chk('and writes nothing', !existsSync(pushTarget()))
+  chk('offering it records no acceptance', offered.on === false)
+  // A record already exists — the first run wrote one when it printed. What the
+  // preview must not do is CHANGE it, which is a different assertion from "no
+  // file exists" and is the one that still means something.
+  const beforePreview = readFileSync(pushTarget(), 'utf8')
+  turnOn({ confirmed: false })
+  chk('and changes nothing that was already recorded',
+    readFileSync(pushTarget(), 'utf8') === beforePreview)
 
   const on = turnOn({ confirmed: true })
-  chk('confirming turns it on', on.on === true && isOn() === true)
+  chk('confirming records that it was read',
+    on.on === true && loadPush().origin === 'consented', String(loadPush().origin))
   chk('and the same call printed the disclosure again',
     FIELDS.every((f) => on.lines.join('\n').includes(f.path)))
   chk('the consent record is not world-readable',
     (statSync(pushTarget()).mode & 0o777) === 0o600, (statSync(pushTarget()).mode & 0o777).toString(8))
 
   const rec = loadPush()
-  chk('the record binds to the destination', rec.url === base, String(rec.url))
-  chk('and to the digest of what was shown', rec.disclosure.sha256 === disclosureDigest(), rec.disclosure.sha256)
+  chk('the record binds to the destination', rec.shown?.url === base, String(rec.shown?.url))
+  chk('and to the digest of what was shown',
+    rec.shown?.disclosure.sha256 === disclosureDigest(), String(rec.shown?.disclosure.sha256))
+  chk('and to the credential, which is what names the workspace',
+    /^[0-9a-f]{16}$/.test(rec.shown?.credential.fingerprint || ''), String(rec.shown?.credential.fingerprint))
+  chk('and it records that somebody was there to read it',
+    rec.shown?.tty === true, String(rec.shown?.tty))
 }
 
 // ------------------------ 2b. consent that no longer matches is not consent
@@ -248,7 +274,10 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
   // text, which is exactly the state such an update would leave behind.
   writeFileSync(pushTarget(), JSON.stringify({
     ...good,
-    disclosure: { version: '1', sha256: disclosureDigest([...standingDisclosure(), '    payload.cwd    your working directory']) },
+    shown: {
+      ...good.shown,
+      disclosure: { version: '1', sha256: disclosureDigest([...standingDisclosure(), '    payload.cwd    your working directory']) },
+    },
   }))
   chk('consent given to an older disclosure does not carry over', isOn() === false)
   chk('and the reason says what changed', /has changed/i.test(offReason()), offReason())
@@ -256,8 +285,10 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
   chk('a lapsed consent sends nothing', server.calls.length === 0 && r.shipped === false, `${server.calls.length} call(s)`)
 
   // Forged outright: enabled, but no record of anything having been shown.
-  writeFileSync(pushTarget(), JSON.stringify({ schema_version: SCHEMA_VERSION, enabled: true }))
-  chk('an enabled flag with no disclosure record is not on', isOn() === false)
+  writeFileSync(pushTarget(), JSON.stringify({ schema_version: STATE_SCHEMA_VERSION, optedOut: false }))
+  chk('a record with no showing in it does not ship', isOn() === false, offReason())
+  chk('and it asks to be shown rather than refusing outright',
+    /has not been shown/i.test(offReason()), offReason())
 
   // Unparseable reads as off, not as on.
   writeFileSync(pushTarget(), '{ not json')
@@ -442,6 +473,11 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
 // ----------------------------------------------- 5. turning it off stops it
 {
   server.setMode('ok')
+  // The section before this one pointed the record at an unreachable host to
+  // test a timeout. Re-accept for the live one BEFORE the send: under a gate
+  // that binds consent to a destination, "still shipping" is only meaningful
+  // about the destination this run actually resolves to.
+  turnOn({ confirmed: true })
   const on = await ship({ spinePath, reportPath, timeoutMs: 5000 })
   chk('still shipping before it is turned off', on.shipped === true, on.reason)
   const sent = server.calls.length
@@ -519,12 +555,12 @@ console.log(`\n── ` + 'Consent is bound to the workspace, not to the hostnam
   const on = turnOn({ confirmed: true })
   chk('shipping is on again', on.on === true, on.lines.join('\n'))
   const rec = loadPush()
-  chk('the record fingerprints the credential', !!rec.credential?.fingerprint, JSON.stringify(rec.credential))
+  chk('the record fingerprints the credential', !!rec.shown?.credential?.fingerprint, JSON.stringify(rec.shown?.credential))
   chk('and never stores the credential itself',
     !JSON.stringify(rec).includes(process.env.SESSION_VIZ_TOKEN || '\u0000nope'),
     'the token must not be recoverable from the state file')
   chk('the fingerprint is a fingerprint, not a token',
-    /^[0-9a-f]{16}$/.test(rec.credential?.fingerprint || ''), String(rec.credential?.fingerprint))
+    /^[0-9a-f]{16}$/.test(rec.shown?.credential?.fingerprint || ''), String(rec.shown?.credential?.fingerprint))
   chk('two different tokens fingerprint differently',
     credentialFingerprint('token-a') !== credentialFingerprint('token-b'))
 
@@ -538,9 +574,105 @@ console.log(`\n── ` + 'Consent is bound to the workspace, not to the hostnam
     /credential changed/i.test(String(swapped.reason)), String(swapped.reason))
   chk('and it names which kind of credential each was',
     swapped.lines.some((l) => /file credential|env credential/i.test(l)), swapped.lines.join('\n'))
+  // Swapping back does NOT resume immediately, and that is the gate being
+  // consistent rather than inconvenient: the refused run showed the disclosure
+  // for the new workspace and recorded it, so the original is now the one that
+  // has not been shown. It earns the same single deferred run as any other
+  // destination, and then it ships.
   process.env.SESSION_VIZ_TOKEN = was
-  const restored = await ship({ spinePath, reportPath, timeoutMs: 3000, label: 'restored-credential' })
-  chk('and the original credential still ships', restored.shipped === true, JSON.stringify(restored.reason))
+  const back = await ship({ spinePath, reportPath, timeoutMs: 3000, label: 'restored-credential' })
+  chk('swapping back earns one deferred run, not an immediate send',
+    back.shipped === false && /credential changed|has not been shown/i.test(back.reason), String(back.reason))
+  const afterBack = await ship({ spinePath, reportPath, timeoutMs: 3000, label: 'after-restore' })
+  chk('and the run after that ships again', afterBack.shipped === true, String(afterBack.reason))
+}
+
+// ── The gate's other answers ─────────────────────────────────────────────
+//
+// Each of these writes the record it needs, so the order of this file does not
+// decide the result — the lesson from migrating the sections above, where an
+// assertion that looked like it was about consent was about which port the
+// previous section had left in an environment variable.
+
+console.log(`\n── ` + 'a session can be skipped one at a time')
+{
+  turnOn({ confirmed: true })
+  const before = server.calls.length
+  const sid = JSON.parse(readFileSync(spinePath, 'utf8')).sessionId
+  skipSession(sid)
+  const r = await ship({ spinePath, reportPath, timeoutMs: 3000 })
+  chk('the skipped session is not sent', r.shipped === false && server.calls.length === before, String(r.reason))
+  chk('and it says which reason it was', /this session was skipped/i.test(r.reason), r.reason)
+  chk('the machine is not turned off by it', loadPush().optedOut === false, JSON.stringify(loadPush().optedOut))
+
+  // A different session on the same machine is unaffected — the skip is one
+  // session, not a quiet standing opt-out.
+  const other = join(home, 'other-spine.json')
+  const sp = JSON.parse(readFileSync(spinePath, 'utf8'))
+  writeFileSync(other, JSON.stringify({ ...sp, sessionId: `${sp.sessionId}-other` }))
+  const r2 = await ship({ spinePath: other, reportPath, timeoutMs: 3000 })
+  chk('another session still ships', r2.shipped === true, String(r2.reason))
+}
+
+console.log(`\n── ` + 'a disclosure nothing was attached to read is not a showing')
+{
+  writeFileSync(pushTarget(), JSON.stringify({ schema_version: STATE_SCHEMA_VERSION, optedOut: false }), { mode: 0o600 })
+  const before = server.calls.length
+  const headless = await ship({ spinePath, reportPath, timeoutMs: 3000, isTty: false })
+  chk('the first headless run sends nothing', headless.shipped === false && server.calls.length === before)
+  chk('and it records that nothing was attached', loadPush().shown?.tty === false, String(loadPush().shown?.tty))
+
+  const again = await ship({ spinePath, reportPath, timeoutMs: 3000, isTty: false })
+  chk('and the NEXT headless run still sends nothing — a log is not a reader',
+    again.shipped === false && server.calls.length === before, String(again.reason))
+  chk('it names the escape', /SESSION_VIZ_SHIP_ACK/.test(again.lines.join('\n')), again.lines.join('\n'))
+
+  // The escape is still a human act: somebody read it and set the digest.
+  process.env.SESSION_VIZ_SHIP_ACK = disclosureDigest()
+  const acked = await ship({ spinePath, reportPath, timeoutMs: 3000, isTty: false })
+  chk('with the digest acknowledged, a headless run ships', acked.shipped === true, String(acked.reason))
+  process.env.SESSION_VIZ_SHIP_ACK = 'not-the-digest'
+  const wrong = await ship({ spinePath, reportPath, timeoutMs: 3000, isTty: false })
+  chk('and a wrong digest does not count', wrong.shipped === false, String(wrong.reason))
+  delete process.env.SESSION_VIZ_SHIP_ACK
+}
+
+console.log(`\n── ` + 'a version-1 record is read, and its two answers are not the same')
+{
+  const before = server.calls.length
+  writeFileSync(pushTarget(), JSON.stringify({ schema_version: '1', enabled: false }), { mode: 0o600 })
+  chk('an old NO is still a no', loadPush().origin === 'opted-out', String(loadPush().origin))
+  const r = await ship({ spinePath, reportPath, timeoutMs: 3000 })
+  chk('and it is not promoted into shipping by a version bump',
+    r.shipped === false && server.calls.length === before, String(r.reason))
+
+  writeFileSync(pushTarget(), JSON.stringify({
+    schema_version: '1', enabled: true, url: base,
+    disclosure: { version: '1', sha256: disclosureDigest() },
+  }), { mode: 0o600 })
+  chk('an old YES is not read as consent to what leaves now',
+    loadPush().origin === 'legacy-consented', String(loadPush().origin))
+  const r2 = await ship({ spinePath, reportPath, timeoutMs: 3000 })
+  chk('it earns the deferred run rather than a send',
+    r2.shipped === false && server.calls.length === before, String(r2.reason))
+  chk('and the reason says what changed', /has changed/i.test(r2.reason), r2.reason)
+  const r3 = await ship({ spinePath, reportPath, timeoutMs: 3000 })
+  chk('and then it ships', r3.shipped === true, String(r3.reason))
+}
+
+console.log(`\n── ` + 'no workspace is not the same answer as no')
+{
+  const token = process.env.SESSION_VIZ_TOKEN
+  const url = process.env.SESSION_VIZ_URL
+  turnOn({ confirmed: true })
+  delete process.env.SESSION_VIZ_TOKEN
+  process.env.SESSION_VIZ_URL = base
+  const r = await ship({ spinePath, reportPath, timeoutMs: 3000 })
+  chk('a URL with no token is refused in its own words', r.shipped === false)
+  chk('and not reported as a missing workspace',
+    !/there is no workspace configured/i.test(r.reason), r.reason)
+  process.env.SESSION_VIZ_TOKEN = token
+  process.env.SESSION_VIZ_URL = url
 }
 
 await server.close()

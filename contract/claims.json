@@ -234,16 +234,14 @@
       ]
     },
     "qpact.ship.default_on": {
-      "statement": "A /qpact report ships to the workspace whenever one is reachable, rather than waiting for a local switch.",
+      "statement": "A /qpact report ships to the workspace whenever one is reachable AND the current disclosure has been shown on this machine.",
       "value": true,
       "render": {
         "plain": "ships whenever a workspace is reachable"
       },
       "kind": "behaviour",
       "risk": "consent",
-      "status": "planned",
-      "why": "This reverses the guarantee push.mts is built around — three mechanisms currently make it arithmetically impossible for a report to leave without the user having read a disclosure their consent is digest-bound to. Reversing it is a decision that was made deliberately; recording it here is what makes every sentence still describing the old model findable when the behaviour changes.",
-      "plan": "push.mts probes for a configured workspace and ships when it can reach one, with the local --on gate removed. Until that lands the plugin is opt-in and every sentence saying so is TRUE, which is why nothing is forbidden here yet.",
+      "why": "This reverses the guarantee push.mts is built around — three mechanisms currently make it arithmetically impossible for a report to leave without the user having read a disclosure their consent is digest-bound to. Reversing it is a decision that was made deliberately; recording it here is what makes every sentence still describing the old model findable when the behaviour changes. The second half is not a hedge: it is the whole of what stops an existing install — which already holds a token minted by /qsetup for /qcontrib or /qshare — from posting somebody’s entire prompt history on the first run after an upgrade.",
       "discipline": "frozen",
       "consent_material": true,
       "generated": [],
@@ -255,7 +253,9 @@
         }
       ],
       "tells": [],
-      "guarded_by": []
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs"
+      ]
     },
     "facts.tiers": {
       "statement": "The indexable layer shipped beside a report has two tiers with different default visibility.",
@@ -546,6 +546,54 @@
       ],
       "guarded_by": [
         "plugins/session-viz/test/trace.mjs"
+      ]
+    },
+    "qpact.ship.deferred_first_run": {
+      "statement": "The first /qpact on a machine prints the disclosure, records that it printed it, and sends nothing.",
+      "value": true,
+      "render": {
+        "plain": "the first run shows and defers"
+      },
+      "kind": "behaviour",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "One deferred run per disclosure version is the entire cost of shipping by default, and it buys the thing default-on would otherwise destroy. Without it the reversal is an ambush: a token minted for another command becomes permission nobody gave, and an opt-out nobody was told about is not an opt-out.",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "Not silently, and not on the first run",
+          "as": "exact"
+        }
+      ],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs"
+      ]
+    },
+    "qpact.ship.needs_a_reader": {
+      "statement": "A disclosure printed where no terminal was attached does not count as having been shown.",
+      "value": true,
+      "render": {
+        "plain": "a log is not a reader"
+      },
+      "kind": "behaviour",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "Otherwise an unattended run prints the disclosure into a log nobody opens and treats its own output as consent. The escape is SESSION_VIZ_SHIP_ACK set to the digest, which is still a person having read it once and said so.",
+      "generated": [],
+      "checked": [
+        {
+          "file": "README.md",
+          "match": "does not count as having been read",
+          "as": "exact"
+        }
+      ],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/ship.mjs"
       ]
     }
   }
