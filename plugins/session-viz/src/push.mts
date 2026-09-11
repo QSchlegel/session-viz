@@ -556,6 +556,10 @@ export interface PushState {
     credential: { source: 'file' | 'env'; fingerprint: string }
     tty: boolean
   }
+  /** The last terms this host asserted, with the date this plugin fetched them.
+   *  A cache, never a source of truth: it is printed with its age attached and
+   *  only when the host cannot be reached now. */
+  terms?: Terms
   /** Set by loadPush, never written to disk. */
   origin?: PushOrigin
 }
@@ -564,6 +568,116 @@ export interface PushState {
  *  session and the list is not a database; past this the oldest fall off, and
  *  the standing opt-out is the answer for somebody who wants all of them. */
 export const SKIP_LIMIT = 200
+
+/**
+ * The terms this host asserts, fetched before a report is sent.
+ *
+ * These are the values the SERVER owns — how long a report is kept, how long a
+ * withdrawn one is held, the visibility ladder, whether trace volume is billed.
+ * They are deliberately outside the consent digest: a server-owned number
+ * rendered into digested text either binds somebody's agreement to a figure that
+ * later stops being true, or moves the digest the moment an operator edits a
+ * setting, switching shipping off for every user at once. Both are worse than
+ * printing them per send and saying where they came from.
+ *
+ * A FIXED set of keys, rendered whether or not the host supplied them. A host
+ * that omits one gets "the host did not say", never a shorter disclosure —
+ * because a disclosure that silently shortens is the failure mode this whole
+ * arrangement is trying to avoid, and a hostile host must not be able to
+ * shorten it by leaving fields out.
+ */
+export const TERM_KEYS = ['retentionDays', 'holdDays', 'scopes', 'tracePriced'] as const
+
+/** Its own timeout, and a short one. The upload's twenty seconds is the budget
+ *  for megabytes of document; this is one small GET, and a host that cannot
+ *  answer it quickly should not hold up a person's terminal. */
+export const TERMS_TIMEOUT_MS = 4_000
+
+export const TERMS_PATH = '/v1/qpact/terms'
+
+export interface Terms {
+  /** The host that asserted them, as the plugin resolved it. */
+  url: string
+  /** When this plugin fetched them. Never the host's own clock. */
+  at: string
+  values: Record<string, unknown>
+}
+
+/**
+ * Ask the host what it does with a report.
+ *
+ * Never throws, for the reason shipReport never does: a failure here is a thing
+ * to say out loud, not a crash in the middle of a command whose real work is
+ * already on screen.
+ */
+export async function fetchTerms(cfg: Config, timeoutMs = TERMS_TIMEOUT_MS): Promise<Terms | null> {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const r = await fetch(`${cfg.url}${TERMS_PATH}`, {
+      headers: { authorization: `Bearer ${cfg.token}` },
+      signal: ctrl.signal,
+    })
+    if (!r.ok) return null
+    const v: unknown = await r.json()
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+    return { url: cfg.url, at: new Date().toISOString(), values: v as Record<string, unknown> }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/** One value from a host, made safe to print.
+ *
+ *  Control characters stripped and the whole thing clipped: this string came
+ *  from somewhere else and is about to be printed into somebody's terminal
+ *  immediately above a decision they are making. A host that can put an escape
+ *  sequence there can redraw the lines above it. */
+const term = (v: unknown): string => {
+  const raw = Array.isArray(v) ? v.join(', ') : v === null || v === undefined ? '' : String(v)
+  // eslint-disable-next-line no-control-regex
+  const clean = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim()
+  return clean ? clean.slice(0, 80) : 'the host did not say'
+}
+
+/**
+ * The server-quoted half of the disclosure, printed on every send and OUTSIDE
+ * the digest — and it says so, because a reader has to be able to tell which
+ * half they agreed to and which half is being asserted at them today.
+ */
+export function termsLines(terms: Terms | null, host: string, fresh: boolean): string[] {
+  const L: string[] = []
+  L.push('')
+  if (!terms) {
+    L.push(`  WHAT ${host} DOES WITH IT — unknown`)
+    L.push('')
+    L.push('    This host could not be asked just now, and nothing here has ever')
+    L.push('    been able to ask it. The lines above describe what LEAVES; how long')
+    L.push('    it is kept, and who can read it, are that host\u2019s to state and it has')
+    L.push('    not.')
+    return L
+  }
+  L.push(`  WHAT ${host} SAYS IT DOES WITH IT — not part of what you agreed to`)
+  L.push(fresh
+    ? '  asserted by the host, fetched just now'
+    : `  asserted by the host, last fetched ${terms.at.slice(0, 16).replace('T', ' ')} UTC — it could not be reached just now`)
+  L.push('')
+  const label: Record<string, string> = {
+    retentionDays: 'kept for',
+    holdDays: 'withdrawn, then held',
+    scopes: 'visibility ladder',
+    tracePriced: 'trace volume billed',
+  }
+  for (const k of TERM_KEYS) {
+    const v = term(terms.values[k])
+    const unit = (k === 'retentionDays' || k === 'holdDays') && v !== 'the host did not say' ? ' days' : ''
+    L.push(`    ${label[k]!.padEnd(22)}${v}${unit}`)
+  }
+  return L
+}
+
 
 /** A credential, reduced to something comparable and useless to anyone reading
  *  the file. Sixteen hex characters of a sha256 — enough that two distinct
@@ -1089,34 +1203,41 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
   // and only 'ship' reaches this line.
   const dest = cfg as Config
 
-  // Consent was given for a host. This is the check that stops an environment
-  // variable redirecting an existing consent somewhere else — cloud.mts already
-  // refuses to pair a file token with an env URL, but a token and URL supplied
-  // together resolve cleanly and would otherwise inherit this switch.
-  if (state.url && state.url !== dest.url)
-    return fail(
-      `you turned shipping on for ${state.url}, but this run resolves to ${dest.url}`,
-      ['  Nothing was sent. Turn it on again if the new destination is the one you want.'])
+  // The destination and credential checks that used to live here are gone, not
+  // relaxed: shipDecision makes both, and it makes them against the record this
+  // build actually writes. What was here read `state.url` and `state.credential`
+  // — version-1 fields that nothing has written since the gate landed — so it
+  // was two checks that could no longer fire, sitting under comments explaining
+  // why they were essential. Dead code asserting a model the code no longer has
+  // is worse than no code: the next person reads it as the mechanism.
 
-  // The host is not the workspace, and this is the check that says so.
+  // ── What the host says it does, asked before anything is sent ────────────
   //
-  // Two tokens for two different workspaces resolve to the same URL, so the
-  // comparison above passes while the report lands somewhere the person never
-  // agreed to — a colleague's workspace, or a second one of their own. It also
-  // catches the shape cloud.mts warns about from the other end: a bare
-  // SESSION_VIZ_TOKEN resolves to the PUBLIC default, which is exactly what
-  // home.mts advises a confined harness to set, and without this a consent
-  // recorded for a self-hosted install would carry straight over to it.
+  // Before the POST and on its own short timeout, not the upload's twenty
+  // seconds: this is one small GET, and a host that cannot answer it quickly
+  // should not hold up somebody's terminal.
   //
-  // A rotated token stops shipping until the disclosure is accepted again. That
-  // is the fail-closed direction, and the sentence says which of the two it is
-  // so nobody debugs a network problem that is a consent problem.
-  const cred = { source: process.env.SESSION_VIZ_TOKEN ? 'env' : 'file', fingerprint: credentialFingerprint(dest.token) } as const
-  if (state.credential && state.credential.fingerprint !== cred.fingerprint)
+  // A host that cannot be reached AND has never once been reached is a refusal.
+  // The alternative is printing the fields that leave with nothing about what
+  // becomes of them — a disclosure that silently shortens, which is the shape
+  // this whole arrangement exists to avoid. A host that has answered before is
+  // quoted from cache with the date attached, because "kept 90 days" read
+  // months later is a different claim from the one that was fetched.
+  const freshTerms = await fetchTerms(dest)
+  const cachedTerms = state.terms && state.terms.url === dest.url ? state.terms : null
+  const terms = freshTerms || cachedTerms
+  if (!terms)
     return fail(
-      'the credential changed since you turned shipping on, so this run would send to a workspace you have not agreed to',
-      [`  Consent was recorded for a ${state.credential.source} credential; this run uses a ${cred.source} one.`,
-       '  Nothing was sent. Run push.mjs --on again if the new workspace is the one you want.'])
+      `${dest.url} could not be asked what it does with a report, and never has been`,
+      [
+        '  Nothing was sent, and the local report is unaffected. What leaves is known;',
+        '  how long it is kept and who can read it are that host\u2019s to state, and it',
+        '  has not.',
+      ])
+  if (freshTerms) {
+    try { savePush({ ...state, origin: undefined, terms: freshTerms }) } catch { /* a cache is not worth failing a send over */ }
+  }
+  lines.push(...termsLines(terms, dest.url, Boolean(freshTerms)))
 
   let payload: ReportPayload
   try {

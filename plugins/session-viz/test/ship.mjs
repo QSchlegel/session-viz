@@ -108,12 +108,30 @@ function stub() {
   const calls = []
   const sockets = new Set()
   let mode = 'ok'
+  let terms = null
   const server = createServer((req, res) => {
     let body = ''
     req.setEncoding('utf8')
     req.on('data', (c) => { body += c })
     req.on('end', () => {
       calls.push({ method: req.method, url: req.url, headers: { ...req.headers }, body })
+      // The terms GET is answered for real in 'ok' mode: the send path fetches
+      // it before the POST, and the printed table is asserted below. In every
+      // other mode it falls through with the rest, which is how "the host could
+      // not be asked" gets exercised.
+      // A host having a bad day cannot answer this either, and the send path has
+      // to fall back to the cache rather than parsing an error body as terms.
+      if (req.url === '/v1/qpact/terms' && mode !== 'ok') {
+        res.writeHead(503, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ error: 'unavailable' }))
+      }
+      if (mode === 'ok' && req.url === '/v1/qpact/terms') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify(terms ?? {
+          host: 'stub', retentionDays: 90, holdDays: 14,
+          scopes: ['private', 'admins', 'workspace'], tracePriced: true,
+        }))
+      }
       if (mode === 'hang') return // deliberately no response, ever
       // Deliberately does NOT contain the words the assertion looks for. With a
       // body that said "over quota", the check downstream passed even with the
@@ -131,6 +149,7 @@ function stub() {
   return {
     calls,
     setMode: (m) => { mode = m },
+    setTerms: (t) => { terms = t },
     listen: () => new Promise((r) => server.listen(0, '127.0.0.1', () => { port = server.address().port; r(`http://127.0.0.1:${port}`) })),
     close: () => new Promise((r) => { for (const s of sockets) s.destroy(); server.close(() => r()) }),
   }
@@ -303,13 +322,18 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
   server.setMode('ok')
   const r = await ship({ spinePath, reportPath, timeoutMs: 5000 })
   chk('a report ships when the switch is on', r.shipped === true, r.reason)
-  chk('exactly one request went out', server.calls.length === 1, String(server.calls.length))
+  // The terms GET precedes every send now, so "one request" means one REPORT.
+  const posts = server.calls.filter((c) => c.url === REPORT_PATH)
+  chk('exactly one report went out', posts.length === 1, String(posts.length))
+  chk('and the terms were asked for first, before anything was sent',
+    server.calls[0]?.url === '/v1/qpact/terms' && server.calls[0]?.method === 'GET',
+    JSON.stringify(server.calls.map((c) => `${c.method} ${c.url}`)))
 
   // Guarded rather than assumed. When an upstream guard correctly refuses a
   // send, nothing arrives -- and reading `server.calls[0].url` off an empty
   // array throws a TypeError, which exits with a stack trace instead of the
   // assertion that would have said which rule fired. A break has to be legible.
-  const call = server.calls[0]
+  const call = posts[0]
   if (!call) {
     chk('the wire assertions have a request to read', false, 'nothing reached the server; the assertions below could not run')
   } else {
@@ -383,6 +407,7 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
 // ------------------------ 4. failure is loud, and the local report survives
 {
   const before = server.calls.length
+  const sendsBefore = server.calls.filter((c) => c.url === REPORT_PATH).length
 
   server.setMode('quota')
   const quota = await ship({ spinePath, reportPath, timeoutMs: 5000 })
@@ -417,8 +442,12 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
   chk('the local report is untouched by every failure',
     after.sha === reportBefore.sha && after.size === reportBefore.size,
     `${reportBefore.sha.slice(0, 12)} -> ${after.sha.slice(0, 12)}`)
+  // Counted as REPORT posts. Each attempt now asks the host for its terms
+  // first, so raw request counts are two per attempt and say nothing about how
+  // many sends were made.
+  const sends = server.calls.filter((c) => c.url === REPORT_PATH).length
   chk('and every failure came back as a value, never a rejection',
-    server.calls.length === before + 4, `${server.calls.length - before} requests for 4 attempts`)
+    sends === sendsBefore + 4, `${sends - sendsBefore} sends for 4 attempts`)
 }
 
 // ------------------------------ 4b. refusals that never reach the network
@@ -673,6 +702,66 @@ console.log(`\n── ` + 'no workspace is not the same answer as no')
     !/there is no workspace configured/i.test(r.reason), r.reason)
   process.env.SESSION_VIZ_TOKEN = token
   process.env.SESSION_VIZ_URL = url
+}
+
+console.log(`\n── ` + 'what the host says it does is printed on every send, outside the digest')
+{
+  server.setMode('ok')
+  turnOn({ confirmed: true })
+  const r = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  const text = r.lines.join('\n')
+  chk('the send succeeded', r.shipped === true, String(r.reason))
+  chk('the host\u2019s terms are printed', /WHAT .* SAYS IT DOES WITH IT/.test(text), text)
+  chk('and labelled as not part of what was agreed',
+    /not part of what you agreed to/.test(text), text)
+  chk('and dated as fetched just now', /fetched just now/.test(text), text)
+  for (const [label, value] of [['kept for', '90 days'], ['withdrawn, then held', '14 days'],
+                                ['visibility ladder', 'private, admins, workspace'],
+                                ['trace volume billed', 'true']])
+    chk(`it prints ${label}`, text.includes(label) && text.includes(value), text)
+
+  // The digest covers what LEAVES. It must not cover what the host asserts, or
+  // an operator editing a retention setting would move it and switch shipping
+  // off for everybody at once.
+  chk('none of it is inside the digested text',
+    !standingDisclosure().join('\n').includes('kept for'), 'a server-owned value reached the digest')
+}
+
+console.log(`\n── ` + 'a host that omits a field cannot shorten the disclosure')
+{
+  server.setTerms({ retentionDays: 90 })
+  turnOn({ confirmed: true })
+  const r = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  const text = r.lines.join('\n')
+  chk('the fields it did not answer are still printed',
+    (text.match(/the host did not say/g) || []).length === 3, text)
+  chk('and the one it did answer is there', /kept for\s+90 days/.test(text), text)
+
+  // A value from somewhere else, printed into a terminal immediately above a
+  // decision. A host that can put an escape sequence there can redraw the lines
+  // above it.
+  server.setTerms({ retentionDays: '90\u001b[2J\u001b[H EVERYTHING IS FINE', holdDays: 14 })
+  const r2 = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  chk('control characters from the host are stripped',
+    !/\u001b/.test(r2.lines.join('\n')), JSON.stringify(r2.lines.join('\n').slice(0, 200)))
+  server.setTerms(null)
+}
+
+console.log(`\n── ` + 'a host that has answered before is quoted with the date')
+{
+  server.setMode('ok')
+  turnOn({ confirmed: true })
+  await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  chk('the terms were cached', !!loadPush().terms, JSON.stringify(loadPush().terms?.url))
+
+  server.setMode('error')
+  const r = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  const text = r.lines.join('\n')
+  chk('the cached terms are still printed when the host cannot be reached',
+    /WHAT .* SAYS IT DOES WITH IT/.test(text), text)
+  chk('with their age attached, not as if fetched now',
+    /last fetched .* UTC/.test(text) && !/fetched just now/.test(text), text)
+  server.setMode('ok')
 }
 
 await server.close()
