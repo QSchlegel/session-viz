@@ -151,7 +151,7 @@ export function wellFormed(reg) {
         // planned claim's. Requiring a capture group there forces a group around
         // the whole sentence whose only purpose is to satisfy this rule, which
         // is a pattern that asserts less, not more.
-        const presenceOnly = typeof c.value === 'boolean' || statusOf(c) !== 'asserted'
+        const presenceOnly = typeof c.value === 'boolean' || k.as === 'presence' || statusOf(c) !== 'asserted'
         if (!presenceOnly && groups !== 1)
           say(id, `an asserted checked match must have exactly one capture group: ${k.match}`)
         if (groups > 1) say(id, `checked match has ${groups} capture groups; at most one is read: ${k.match}`)
@@ -208,6 +208,13 @@ export function matches(as, captured, claim) {
   const n = Array.isArray(v) ? v.length : v
   const got = String(captured).trim()
   switch (as || 'exact') {
+    // The sentence matching IS the assertion. For a claim whose value is a list
+    // or a behaviour and whose surface is prose, there is nothing to extract and
+    // compare — and forcing a capture group around a phrase so the comparison
+    // has something to do produces a pattern that asserts less than the regex
+    // already did. Declared rather than inferred, so a surface that silently
+    // stopped comparing a number is not one of these by accident.
+    case 'presence': return true
     case 'exact': return got === String(v)
     case 'number': return Number(got) === Number(n)
     case 'plain-number': return Number(got) === Number(render(claim, 'plain').replace(/[^\d.]/g, ''))
