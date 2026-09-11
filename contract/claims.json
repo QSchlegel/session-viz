@@ -295,9 +295,7 @@
       },
       "kind": "number",
       "risk": "consent",
-      "status": "planned",
-      "why": "Withdrawal is a hold rather than a delete so a session that was part of an abuse can still be investigated. Admins see existence and metadata only; reading the content needs an audited operator action that is recorded and shown to the author. The number is the server's, which is why it is negotiated and never rendered into the digested disclosure.",
-      "plan": "hidden_at and purge_at on collab_report, reads filtered on both, an audited break-glass path, and a scheduled purge. None of it exists; report.retention.days is the only retention this schema has.",
+      "why": "Withdrawal is a hold rather than a delete so a session that was part of an abuse can still be investigated. Admins see existence and metadata only; reading the content needs an audited operator action that is recorded and shown to the author. The number is the server's, which is why it is negotiated and never rendered into the digested disclosure. The number is now enforced: withdrawSession sets purge_at to it and sweepFacts deletes past it.",
       "discipline": "negotiated",
       "consent_material": false,
       "enforced_by": {
@@ -328,9 +326,7 @@
       },
       "kind": "enum",
       "risk": "consent",
-      "status": "planned",
-      "why": "Scope is settable per session both on the local page and in the console, so the two sides must enumerate the same rungs in the same order or a scope set in one place means something else in the other. An enumeration restated by hand on two sides of a wire is the shape of drift this registry was built for.",
-      "plan": "A scope column on collab_report with two axes, a control on the rendered page, and a console control. Nothing enumerates these rungs today.",
+      "why": "Scope is settable per session both on the local page and in the console, so the two sides must enumerate the same rungs in the same order or a scope set in one place means something else in the other. An enumeration restated by hand on two sides of a wire is the shape of drift this registry was built for. Both halves now exist as columns with the same three rungs, so the enumeration is enforced rather than restated.",
       "discipline": "server-first",
       "consent_material": false,
       "generated": [],
@@ -343,7 +339,10 @@
         }
       ],
       "tells": [],
-      "guarded_by": []
+      "guarded_by": [],
+      "enforced_by": {
+        "server": "services/api/src/facts-store.ts#SCOPES"
+      }
     },
     "reads.role_gated": {
       "statement": "Reading another member's report requires a role, and every read is recorded and shown to the author.",
