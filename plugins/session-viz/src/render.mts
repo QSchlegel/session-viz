@@ -384,6 +384,10 @@ h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--mute
    this row holds one child and pushing it apart from nothing left the title
    hard against the left edge of a 1080px column for no reason. */
 .head{display:flex;gap:16px;align-items:flex-start}
+/* The sub line carries the working directory, which is the one string on
+   the page with no bound on its length and no space to break at. Break it
+   anywhere rather than let it set the page's width on a phone. */
+.head .sub{overflow-wrap:anywhere;word-break:break-word}
 #theme{flex:none;border:1px solid var(--line);background:var(--panel);color:var(--muted);
   font:inherit;font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer}
 #theme:hover{border-color:var(--accent);color:var(--ink)}
@@ -2285,7 +2289,13 @@ document.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{
   function fit(){k=1;tx=0;ty=0;apply();}
   function pt(ev){var r=svg.getBoundingClientRect();
     return [(ev.clientX-r.left)/(r.width||1)*d.w,(ev.clientY-r.top)/(r.height||1)*d.h];}
+  // Pinch and ctrl-wheel zoom; a plain wheel scrolls the PAGE. The canvas
+  // used to take every wheel event, so on a phone or a trackpad the page
+  // stopped dead at the graph and a swipe meant to reach the next section
+  // zoomed the picture to 45% instead. A trackpad pinch arrives as a wheel
+  // with ctrlKey set, which is the gesture that means zoom.
   canvas.addEventListener('wheel',function(ev){
+    if(!(ev.ctrlKey||ev.metaKey))return;
     ev.preventDefault();
     // deltaMode is lines on some browsers and pages on others. Reading all three
     // as pixels makes the wheel almost inert everywhere that does not use them.
