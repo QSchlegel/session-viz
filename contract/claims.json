@@ -353,9 +353,7 @@
       },
       "kind": "behaviour",
       "risk": "consent",
-      "status": "planned",
-      "why": "Today the tenant is the whole boundary: any member of a workspace can open any member's report and read their prompts verbatim, and nothing tells the author it happened. Role-gating without a read trail makes the product a management tool quietly; the trail is what makes it survivable for the people being read.",
-      "plan": "A role check on the report routes and an audited read, surfaced on the author's own report page. Neither exists — getReport filters on tenant alone.",
+      "why": "Today the tenant is the whole boundary: any member of a workspace can open any member's report and read their prompts verbatim, and nothing tells the author it happened. Role-gating without a read trail makes the product a management tool quietly; the trail is what makes it survivable for the people being read. Both halves now exist: getReport refuses a member who is not the author with the same 404 an unissued id gets, and collab_report_read records every read by anybody else and shows it to the author on their own report.",
       "discipline": "server-first",
       "consent_material": false,
       "enforced_by": {
@@ -371,7 +369,9 @@
         }
       ],
       "tells": [],
-      "guarded_by": []
+      "guarded_by": [
+        "services/api/test/report.mjs"
+      ]
     },
     "trace.pricing": {
       "statement": "Trace volume is metered and billed rather than capped.",
