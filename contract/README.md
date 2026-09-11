@@ -65,6 +65,29 @@ The bound is worth stating: a tell catches a *known* wording in a new file. A pa
 packets leave your laptop" — sails through. The hole is the size of how many wordings somebody
 thought of, and no check here closes it.
 
+## Asserted, or planned
+
+A claim is either true of the tree now (`asserted`, the default) or intended and not built yet
+(`planned`).
+
+The second is not a hedge. It is the only honest way to write a claim down before the behaviour
+exists: a registry that asserted the intended model would state something false with a machine's
+confidence behind it, which is the failure it exists to prevent. Seeding `tells` against the
+*current* model has the same problem pointing the other way — it would forbid sentences that are
+true today.
+
+So a planned claim carries its `checked` surfaces as a **definition of done**, and is reported
+rather than failed. It may not `generate` (that would write a value into code which does not
+implement it) and it must carry a `plan` saying what has to be built first.
+
+The assertion runs backwards, and that is what keeps it honest:
+
+> **A planned surface that matches is a failure.**
+
+The thing became true and nobody flipped the status, so the registry now understates what the
+product does — the same drift as overstating it. You cannot park a claim in `planned` once the
+tree agrees with it.
+
 ## Skew, and why values are immutable
 
 This server redeploys. A plugin install does not: it is a copy in a version-keyed cache directory

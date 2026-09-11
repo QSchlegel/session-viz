@@ -38,7 +38,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { load, wellFormed, matches, checkedRe, regionSpans, spliceRegion, files, rel, exists, lineOf, treeOf } from '../../../contract/contract.mjs'
+import { load, wellFormed, matches, checkedRe, regionSpans, spliceRegion, files, rel, exists, lineOf, treeOf, statusOf } from '../../../contract/contract.mjs'
 import { DERIVES } from '../../../contract/derive.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -93,6 +93,7 @@ if (underived.length)
 section('Surfaces still say it')
 let skipped = 0
 for (const [id, c] of Object.entries(reg.claims)) {
+  if (statusOf(c) !== 'asserted') continue
   for (const k of c.checked || []) {
     const t = treeRoot(treeOf(k))
     if (!t) { skipped++; console.log(`skip ${id} — ${k.file} lives in ${treeOf(k)}, which is not on this machine`); continue }
@@ -113,6 +114,35 @@ for (const [id, c] of Object.entries(reg.claims)) {
   }
 }
 if (skipped) console.log(`     ${skipped} surface(s) skipped because their tree is absent`)
+
+// ------------------------------------------------- 3b. what is not true yet
+
+// A planned claim records intended behaviour. It is reported, not asserted,
+// because writing it down as true would be the registry stating something false
+// with a machine's confidence behind it — the exact failure it exists to
+// prevent. Its checked surfaces are its definition of done.
+//
+// The assertion runs the other way, and it is the part that keeps this honest:
+// a planned surface that MATCHES is a failure. The thing became true and nobody
+// flipped the status, so the registry is now understating what the product does
+// — which is the same drift as overstating it, pointing the other way.
+section('Not true yet, and known not to be')
+const planned = Object.entries(reg.claims).filter(([, c]) => statusOf(c) === 'planned')
+for (const [id, c] of planned) {
+  console.log(`     ${id} — ${c.statement}`)
+  for (const k of c.checked || []) {
+    const t = treeRoot(treeOf(k))
+    if (!t) { console.log(`skip ${id} — ${k.file} lives in ${treeOf(k)}, which is not on this machine`); continue }
+    const hit = join(t.root, k.file)
+    if (!exists(hit)) continue
+    const text = readFileSync(hit, 'utf8')
+    const m = checkedRe(k.match).exec(text)
+    chk(`${id} is still planned, and ${treeOf(k)}/${k.file} still does not claim it`, !m,
+      m ? `${treeOf(k)}/${k.file}:${lineOf(text, m.index)} now says ${JSON.stringify(m[0])}. If the behaviour landed, set this claim's status to "asserted" so it is held to it; if the sentence landed and the behaviour did not, that sentence is the drift.` : '')
+  }
+}
+if (planned.length)
+  console.log(`     ${planned.length} planned claim(s). Each one's checked surfaces are what "done" means for it.`)
 
 // --------------------------------------------------------------- 4. the tells
 

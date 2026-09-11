@@ -41,6 +41,22 @@ export const TREES = ['session-viz', 'session-viz-cloud']
 export const treeOf = (entry) => entry.tree || 'session-viz'
 
 export const DISCIPLINES = ['frozen', 'server-first', 'negotiated']
+
+/** A claim is either true of the tree now, or intended and not built yet.
+ *
+ *  The second is not a hedge, it is the only honest way to write down a claim
+ *  before the behaviour exists. A registry that asserted the intended model
+ *  would be stating something false with a machine's confidence behind it —
+ *  precisely the failure it exists to prevent — and seeding `tells` against the
+ *  CURRENT model would forbid sentences that are true today.
+ *
+ *  So a planned claim carries its surfaces as a definition of done and is
+ *  reported rather than failed. The inversion is what keeps it honest: a planned
+ *  claim whose surface starts MATCHING is a failure, because the thing became
+ *  true and nobody flipped it. You cannot leave a claim parked in `planned` once
+ *  the tree agrees with it. */
+export const STATUSES = ['asserted', 'planned']
+export const statusOf = (claim) => claim.status || 'asserted'
 export const KINDS = ['number', 'list', 'enum', 'behaviour', 'prose']
 export const RISKS = ['consent', 'safety', 'accuracy', 'commercial', 'cosmetic']
 
@@ -74,6 +90,20 @@ export function wellFormed(reg) {
     if (!RISKS.includes(c.risk)) say(id, `risk must be one of ${RISKS.join(', ')}`)
     if (!DISCIPLINES.includes(c.discipline)) say(id, `discipline must be one of ${DISCIPLINES.join(', ')}`)
     if (c.value === undefined) say(id, 'no value')
+    if (!STATUSES.includes(statusOf(c))) say(id, `status must be one of ${STATUSES.join(', ')}`)
+
+    if (statusOf(c) === 'planned') {
+      // A planned claim that generates would write a value into code which does
+      // not implement it — a constant asserting a behaviour nothing performs.
+      if ((c.generated || []).length)
+        say(id, 'a planned claim may not generate — that writes a value into code that does not implement it yet')
+      // Without a surface it is a note, not a claim, and nothing will ever tell
+      // anybody it came true.
+      if (!(c.checked || []).length)
+        say(id, 'a planned claim needs at least one checked surface: that surface list is its definition of done')
+      if (!c.plan || String(c.plan).length < WHY_MIN)
+        say(id, `a planned claim needs a 'plan' of at least ${WHY_MIN} characters saying what has to be built before it is true`)
+    }
 
     // The two rules that keep consent honest, enforced rather than intended.
     //
@@ -98,7 +128,14 @@ export function wellFormed(reg) {
       if (!TREES.includes(treeOf(k))) say(id, `checked tree '${k.tree}' is not one of ${TREES.join(', ')}`)
       try {
         const re = new RegExp(k.match)
-        if (countGroups(re) !== 1) say(id, `checked match must have exactly one capture group: ${k.match}`)
+        // An asserted surface extracts a value and compares it, so it needs
+        // exactly one group. A planned surface is a presence test — has this
+        // sentence appeared yet — and has nothing to extract, because the value
+        // it would compare against is not true of anything yet.
+        const groups = countGroups(re)
+        if (statusOf(c) === 'asserted' && groups !== 1)
+          say(id, `an asserted checked match must have exactly one capture group: ${k.match}`)
+        if (groups > 1) say(id, `checked match has ${groups} capture groups; at most one is read: ${k.match}`)
       } catch { say(id, `checked match does not compile: ${k.match}`) }
     }
     for (const t of c.tells || []) {
