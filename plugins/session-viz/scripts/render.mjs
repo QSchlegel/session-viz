@@ -277,9 +277,42 @@ button.copy.done{background:var(--ok)}
 .intent.abandoned{border-color:var(--bad)} .intent.ongoing{border-color:var(--accent)}
 .intent h3{margin:0 0 4px;font-size:15px;font-weight:600}
 .intent p{margin:0;color:var(--muted);font-size:14px}
-.pill{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
-  padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted);
-  margin-left:8px;vertical-align:2px;font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:10px;text-transform:uppercase;
+  letter-spacing:.07em;padding:2px 7px;border-radius:999px;border:1px solid var(--line);
+  color:var(--muted);margin-left:8px;vertical-align:2px;font-weight:600}
+
+/* ---- the status mark ----
+   Four tokens, no literals, and the colour is the one the card's own left rule
+   already uses for that status -- .intent.done takes --ok and so does its tick.
+   A badge painting a fifth colour would be a second opinion about the status.
+
+   The RESTING state of every stroke is the finished one: dasharray is set,
+   dashoffset is left at 0, and the keyframes run FROM hidden TO that. Written
+   the other way round -- offset parked at 1, animated to 0 -- the marks would
+   be correct until somebody turned reduced motion on, and then every badge on
+   the page would be blank, which is the failure mode that gets shipped because
+   nobody developing it has the setting on. */
+.sg{width:11px;height:11px;flex:none;fill:none;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+/* --edge, not --line. The track is the thing the filled part is a FRACTION
+   of, so if it does not read, "60% of a bar" reads as a minus sign -- which is
+   what --line drew. --line is this sheet's faintest token and it is for
+   dividers nobody is asked to compare against. */
+.sg-track{stroke:var(--edge)}
+.sg-bar{stroke-width:4;stroke-linecap:butt}
+.pill.st-done .sg-draw{stroke:var(--ok)}
+.pill.st-partial .sg-bar{stroke:var(--warn)}
+.pill.st-abandoned .sg-draw,.pill.st-abandoned .sg-stub{stroke:var(--bad)}
+.pill.st-ongoing .sg-run{stroke:var(--accent)}
+.sg-stub{stroke-dasharray:.9 1.5}
+.sg-draw{stroke-dasharray:1;animation:sg-draw .55s ease-out both}
+.sg-bar{animation:sg-bar .7s ease-out both}
+/* fill-box, so the origin is the circle's own centre rather than the corner of
+   a viewBox this group does not fill. */
+.sg-spin{transform-box:fill-box;transform-origin:50% 50%;animation:sg-spin 2.6s linear infinite}
+@keyframes sg-draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes sg-bar{from{stroke-dashoffset:.6}to{stroke-dashoffset:0}}
+@keyframes sg-spin{to{transform:rotate(360deg)}}
 
 /* the drill-down on an unfinished thread.
 
@@ -559,6 +592,10 @@ body::after{
 /* Stopped, not slowed. */
 @media (prefers-reduced-motion:reduce){
   body::before,body::after{animation:none;transform:none;will-change:auto}
+  /* Stopped, not slowed -- and the marks stay legible stopped, because the
+     resting state of each stroke is the drawn one. The spinner parks at the
+     angle it was authored at rather than vanishing. */
+  .sg-draw,.sg-bar,.sg-spin{animation:none}
 }
 
 /* Translucency is opt-in on support, because a translucent panel over an
@@ -632,6 +669,54 @@ body::after{
 // honestly -- abandoned and ongoing -- and those are the two.
 const UNFINISHED = new Set(['abandoned', 'ongoing']);
 const unfinished = (i) => UNFINISHED.has(String(i.status || ''));
+/**
+ * The four statuses, as marks.
+ *
+ * WHICH ONE MOVES IS THE WHOLE DESIGN. brand.mts already states the rule this
+ * page lives under -- "an infinite animation says 'still running' on a page
+ * that finished before the reader opened it" -- and three of these four
+ * statuses are settled. So `done`, `partial` and `abandoned` draw themselves
+ * once and stop, which is what a finished thing does, and `ongoing` is the one
+ * that loops, because an ongoing thread IS still running. A page where every
+ * badge spun would be telling the reader that four states are one state.
+ *
+ * The mark repeats what the word beside it and the rule down the left of the
+ * card already say. That redundancy is deliberate: the word carries it for a
+ * screen reader, the colour carries it for a glance, and the shape carries it
+ * for a reader who has neither -- greyscale, or a stylesheet that did not load.
+ *
+ * pathLength="1" on every animated stroke, so the dash arithmetic is in
+ * fractions rather than in measured path lengths. A hand-measured dasharray is
+ * a number that silently stops matching the path the day somebody nudges a
+ * coordinate.
+ */
+const STATUS_GLYPH = {
+    // A tick, drawn once.
+    done: '<path class="sg-draw" d="M2.6 6.4 5 8.8 9.4 3.4" pathLength="1"/>',
+    // An arc that stops three fifths of the way round and stays there.
+    partial: '<circle class="sg-track" cx="6" cy="6" r="4"/>' +
+        '<circle class="sg-bar" cx="6" cy="6" r="2" pathLength="1" stroke-dasharray=".6 .4" transform="rotate(-90 6 6)"/>',
+    // A stroke that sets off and a dotted remainder it never covered.
+    abandoned: '<path class="sg-draw" d="M2.4 9.6 5.4 6.6" pathLength="1"/>' +
+        '<path class="sg-stub" d="M7.2 4.8 9.6 2.4"/>',
+    // The only one that loops.
+    ongoing: '<circle class="sg-track" cx="6" cy="6" r="4"/>' +
+        '<g class="sg-spin"><circle class="sg-run" cx="6" cy="6" r="4" pathLength="1" stroke-dasharray=".28 .72"/></g>',
+};
+/**
+ * The status badge: a mark, then the word.
+ *
+ * One definition, used by the intent cards and by the appendix, because two
+ * spellings of one badge is how a status ends up drawn two ways on one page.
+ * A status the analysis did not set, or set to something outside the four,
+ * still gets its badge and simply gets no mark -- an invented mark for an
+ * unrecognised word would be the renderer making the status up.
+ */
+function statusPill(status) {
+    const s = String(status || '');
+    const glyph = STATUS_GLYPH[s];
+    return `<span class="pill${glyph ? ` st-${kindClass(s)}` : ''}">${glyph ? `<svg class="sg" viewBox="0 0 12 12" aria-hidden="true" focusable="false">${glyph}</svg>` : ''}${esc(s)}</span>`;
+}
 /** Slugged from the title, because a reader typing `--followup` at a terminal
  *  has the title in front of them and not an index. Collisions fall back to the
  *  index, which is always unique and never ambiguous. */
@@ -914,7 +999,7 @@ function renderIntents(session, intent) {
   </div>`
             : '';
         return `<div class="intent ${esc(status)}">
-  <h3>${esc(i.title)}<span class="pill">${esc(i.status || '')}</span></h3>
+  <h3>${esc(i.title)}${statusPill(i.status)}</h3>
   <p>${esc(i.summary || '')}</p>${drill}
 </div>`;
     })
@@ -962,7 +1047,7 @@ function renderAppendix(session, intent) {
   <p class="dim" style="margin:0 0 10px">Read this as a fact about the reading, never as a finding that nothing was changed. The evidence package states it in its own words:</p>
   <p class="apx-quote">${esc(pathLimit(session))}</p>
   <ul class="apx-tasks">${items
-            .map((i) => `<li><b>${esc(i.title)}</b> <span class="pill">${esc(i.status || '')}</span> — ${citedTurns(i).length ? `turns ${esc(citedTurns(i).join(', '))}` : 'no turns cited'}</li>`)
+            .map((i) => `<li><b>${esc(i.title)}</b> ${statusPill(i.status)} — ${citedTurns(i).length ? `turns ${esc(citedTurns(i).join(', '))}` : 'no turns cited'}</li>`)
             .join('')}</ul>
 </div>`;
     const attr = attribute(session, items);
@@ -1004,7 +1089,7 @@ function renderAppendix(session, intent) {
             a.quiet ? `${plural(a.quiet, 'cited turn')} named no file.` : '',
         ].filter(Boolean);
         return `<div class="apx-task">
-  <h3>${esc(i.title)}<span class="pill">${esc(i.status || '')}</span></h3>
+  <h3>${esc(i.title)}${statusPill(i.status)}</h3>
   <p class="apx-cite">${cited}</p>
   ${body}
   ${notes.length ? `<p class="apx-say dim">${notes.map(esc).join(' ')}</p>` : ''}

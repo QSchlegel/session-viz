@@ -564,22 +564,52 @@ for (const [name, vars] of [['light', LIGHT], ['dark', DARK]]) {
     `${pad} + ${col} + ${gap} = ${pad + col + gap}, not ${indent}`)
 }
 
-// ------------------------------------------------------- 6. nothing moves yet
+// -------------------------------------------- 6. everything that moves escapes
 //
-// The card treatment is static on purpose. This is not a check that it must
-// stay that way, it is the guard for the day it does not: a transition or an
-// animation added here without a reduced-motion escape is the failure, not the
-// motion itself.
+// The card treatment was static, and this was written as "the guard for the day
+// it does not". That day came: the status badges animate. So it is no longer a
+// check that nothing moves, it is the check it always said it would become --
+// anything that moves here names a reduced-motion escape, and the failure is
+// the missing escape rather than the motion.
 {
   const moving = rules
     .filter((r) => !r.prelude.startsWith('@') && !inReduced(r))
-    .filter((r) => selectors(r.prelude).some((s) => s.startsWith('.turn') || s === '.idx' || s === '.chip'))
+    .filter((r) => selectors(r.prelude).some((s) =>
+      s.startsWith('.turn') || s === '.idx' || s === '.chip' || s.startsWith('.sg') || s.startsWith('.pill')))
     .flatMap((r) => decls(r.body).map(([p, v]) => [r.prelude, p, v]))
     .filter(([, p]) => p === 'animation' || p === 'transition')
-  chk('nothing on the turn card animates without a reduced-motion escape',
-    moving.length === 0 || rules.some((r) => inReduced(r) &&
-      selectors(r.prelude).some((s) => moving.some(([sel]) => selectors(sel).includes(s)))),
-    moving.map(([sel, p, v]) => `${sel} { ${p}:${v} }`).join('; '))
+  // Every moving selector needs its OWN escape, not merely the existence of a
+  // reduced-motion block somewhere in the sheet. The old spelling was satisfied
+  // by any one match, so a second animated thing added beside an escaped one
+  // would have passed on the first one's escape.
+  const escaped = new Set(rules.filter(inReduced)
+    .filter((r) => decls(r.body).some(([p, v]) => p === 'animation' && v.trim() === 'none'))
+    .flatMap((r) => selectors(r.prelude)))
+  const bare = moving.filter(([sel]) => !selectors(sel).some((s) => escaped.has(s)))
+  chk('everything that animates on a card names a reduced-motion escape',
+    bare.length === 0,
+    bare.map(([sel, p, v]) => `${sel} { ${p}:${v} }`).join('; '))
+
+  // The marks have to survive the escape. Their resting state is the drawn one,
+  // so a stroke whose dashoffset is parked away from 0 in the base rule is a
+  // badge that renders blank for every reader with the setting on -- which is
+  // the one bug in here nobody developing it would ever see.
+  const parked = ['.sg-draw', '.sg-bar', '.sg-run', '.sg-stub']
+    .map((s) => [s, prop(s, 'stroke-dashoffset')])
+    .filter(([, v]) => v !== undefined && v.trim() !== '0')
+  chk('no status mark rests anywhere but finished',
+    parked.length === 0, parked.map(([s, v]) => `${s} { stroke-dashoffset:${v} }`).join('; '))
+
+  // Exactly one of the four marks loops, and it is the one still running. The
+  // page carries one other infinite animation -- the aura behind it, which is a
+  // texture and not a status -- and it is deliberately out of scope: this is a
+  // claim about what the badges say, not a ban on motion anywhere on the page.
+  const loops = rules.filter((r) => !r.prelude.startsWith('@') && !inReduced(r))
+    .filter((r) => decls(r.body).some(([p, v]) => p === 'animation' && /\binfinite\b/.test(v)))
+    .flatMap((r) => selectors(r.prelude))
+    .filter((s) => s.startsWith('.sg') || s.startsWith('.pill'))
+  chk('only the ongoing mark loops; a settled status does not spin forever',
+    loops.length === 1 && loops[0] === '.sg-spin', loops.join(', ') || 'no mark loops at all')
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed')
