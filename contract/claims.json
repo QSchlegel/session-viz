@@ -595,6 +595,43 @@
       "guarded_by": [
         "plugins/session-viz/test/ship.mjs"
       ]
+    },
+    "limits.trace_bytes": {
+      "statement": "The largest trace one request may carry.",
+      "value": 16777216,
+      "unit": "bytes",
+      "render": {
+        "expr": "16 * 1024 * 1024",
+        "mib": "16 MiB",
+        "plain": "16 MB"
+      },
+      "kind": "number",
+      "risk": "accuracy",
+      "discipline": "server-first",
+      "consent_material": false,
+      "why": "Trace volume is metered rather than capped — a workspace may hold as much as it pays for — but a single HTTP request is a different question, and unbounded it is a memory exhaustion away from taking the service down for everybody. This is the per-request bound, not the tier's, and the two must not be confused in anything a user reads. There is no chunked upload: a trace over this is refused whole.",
+      "enforced_by": {
+        "server": "services/api/src/facts-store.ts#MAX_TRACE_BYTES"
+      },
+      "skew": {
+        "plugin_older": "ACCEPT. A plugin that refuses lower than the server would have taken is under-use, and never a surprise.",
+        "plugin_newer": "REFUSE. The plugin may not raise this before the server has; a raise lands as a new claim id, because an install is a frozen copy nothing can reach to update."
+      },
+      "generated": [
+        {
+          "tree": "session-viz-cloud",
+          "file": "services/api/src/facts-store.ts",
+          "region": "limits.trace_bytes",
+          "emit": "expr",
+          "template": "export const MAX_TRACE_BYTES = {}"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "services/api/test/report.mjs",
+        "services/api/test/contract.mjs"
+      ]
     }
   }
 }
