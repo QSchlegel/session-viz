@@ -55,10 +55,12 @@ process.env.XDG_CONFIG_HOME = join(home, '.config')
 process.env.HOME = home
 process.env.SESSION_VIZ_ACTOR = 'claude-code'
 
+const { INDEX_FIELDS, keyPaths } = await import('../scripts/facts.mjs')
+
 const {
   shipReport, turnOn, turnOff, isOn, loadPush, offReason,
   STATE_SCHEMA_VERSION, credentialFingerprint, canRecord, pushPaths, skipSession, optOut,
-  standingDisclosure, disclosureDigest, pushTarget,
+  standingDisclosure, disclosureDigest, pushTarget, FACTS_PATH,
   FIELDS, HEADERS, REPORT_PATH, SCHEMA_VERSION, MAX_DOCUMENT_BYTES,
 } = await import('../scripts/push.mjs')
 
@@ -109,6 +111,7 @@ function stub() {
   const sockets = new Set()
   let mode = 'ok'
   let terms = null
+  let factsMode = null
   const server = createServer((req, res) => {
     let body = ''
     req.setEncoding('utf8')
@@ -132,6 +135,12 @@ function stub() {
           scopes: ['private', 'admins', 'workspace'], tracePriced: true,
         }))
       }
+      // The sidecar can be refused on its own, which is the case that proves the
+      // document's success is not conditional on it.
+      if (factsMode === 'refuse' && req.url === '/v1/qpact/facts') {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ error: 'refused for the test' }))
+      }
       if (mode === 'hang') return // deliberately no response, ever
       // Deliberately does NOT contain the words the assertion looks for. With a
       // body that said "over quota", the check downstream passed even with the
@@ -150,6 +159,7 @@ function stub() {
     calls,
     setMode: (m) => { mode = m },
     setTerms: (t) => { terms = t },
+    setFactsMode: (m) => { factsMode = m },
     listen: () => new Promise((r) => server.listen(0, '127.0.0.1', () => { port = server.address().port; r(`http://127.0.0.1:${port}`) })),
     close: () => new Promise((r) => { for (const s of sockets) s.destroy(); server.close(() => r()) }),
   }
@@ -762,6 +772,64 @@ console.log(`\n── ` + 'a host that has answered before is quoted with the da
   chk('with their age attached, not as if fetched now',
     /last fetched .* UTC/.test(text) && !/fetched just now/.test(text), text)
   server.setMode('ok')
+}
+
+console.log(`\n── ` + 'the sidecar goes too, and is reported apart from the document')
+{
+  server.setMode('ok')
+  turnOn({ confirmed: true })
+  const before = server.calls.length
+  const r = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  const sent = server.calls.slice(before)
+  const factsCall = sent.find((c) => c.url === '/v1/qpact/facts')
+
+  chk('the document went', r.shipped === true, String(r.reason))
+  chk('and the sidecar went', !!factsCall && factsCall.method === 'POST',
+    JSON.stringify(sent.map((c) => `${c.method} ${c.url}`)))
+  chk('after the document, not before it',
+    sent.findIndex((c) => c.url === REPORT_PATH) < sent.findIndex((c) => c.url === '/v1/qpact/facts'),
+    JSON.stringify(sent.map((c) => c.url)))
+  chk('the two outcomes are reported separately, and neither says "shipped" alone',
+    r.lines.some((l) => /SHIPPED to /.test(l)) && r.lines.some((l) => /FACTS SENT/.test(l)),
+    r.lines.join('\n'))
+  chk('and the result carries the sidecar\u2019s own outcome', r.factsShipped === true)
+
+  // The payload itself, over the wire — not the projection re-run.
+  const body = JSON.parse(factsCall.body)
+  chk('it carries the facts under a named key', !!body.facts, Object.keys(body).join(', '))
+  chk(`and all ${INDEX_FIELDS.length} declared fields`,
+    keyPaths(body.facts, INDEX_FIELDS).length === INDEX_FIELDS.length,
+    String(keyPaths(body.facts, INDEX_FIELDS).length))
+  const wire = JSON.stringify(body)
+  for (const refused of ['"cwd"', '"file"', '"project"', 'turns[].text'])
+    chk(`and nothing named ${refused}`, !wire.includes(refused), refused)
+  chk('and no home path anywhere in it', !/\/Users\/|-Users-/.test(wire), wire.slice(0, 160))
+}
+
+console.log(`\n── ` + 'a sidecar that fails does not unmake a report that went')
+{
+  server.setMode('ok')
+  turnOn({ confirmed: true })
+  server.setFactsMode('refuse')
+  const r = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  chk('the document still went', r.shipped === true, String(r.reason))
+  chk('the sidecar is reported as not sent', r.factsShipped === false)
+  chk('and the line says the report is unaffected',
+    r.lines.some((l) => /FACTS NOT SENT/.test(l) && /unaffected/.test(l)), r.lines.join('\n'))
+  server.setFactsMode(null)
+}
+
+console.log(`\n── ` + 'the disclosure names the sidecar and what it refuses')
+{
+  const text = standingDisclosure().join('\n')
+  chk('it names the endpoint', text.includes('/v1/qpact/facts'), text.slice(0, 80))
+  chk(`it names all ${INDEX_FIELDS.length} fields`,
+    INDEX_FIELDS.every((f) => text.includes(f.split('.').pop())),
+    INDEX_FIELDS.filter((f) => !text.includes(f.split('.').pop())).join(', '))
+  chk('and what it refuses, by name',
+    ['file, project, cwd', 'turns[].text', 'turns[].signals'].every((x) => text.includes(x)), text)
+  chk('and the count matches the contract',
+    new RegExp(`${INDEX_FIELDS.length} bounded fields`).test(text), text)
 }
 
 await server.close()

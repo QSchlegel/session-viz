@@ -87,6 +87,8 @@ import { fileURLToPath } from 'node:url'
 
 import { configDirs, configTarget } from './home.mjs'
 import { config } from './cloud.mjs'
+import { indexFacts, undisclosedFacts, INDEX_FIELDS } from './facts.mjs'
+import type { Session } from './extract.mjs'
 import { redactionLimit } from './bundle.mjs'
 import { version } from './version.mjs'
 import type { Config } from './cloud.mjs'
@@ -250,6 +252,14 @@ export interface ReportPayload {
 /** The parts of a spine this reads. Narrow on purpose: every field named here
  *  is a field that can reach the wire, so the type is the second place the
  *  payload's surface is written down. */
+/**
+ * The handful of spine fields this file reads directly.
+ *
+ * Deliberately narrower than extract.mts's `Session`: what is parsed here comes
+ * off disk as untrusted JSON, and declaring the six fields actually used keeps
+ * that honest. The sidecar projection needs the whole thing, and takes it
+ * through `asSession` below rather than by widening this.
+ */
 export interface Spine {
   sessionId?: string | null
   cwd?: string | null
@@ -258,6 +268,18 @@ export interface Spine {
   turns?: unknown[]
   redactedPrompts?: boolean
 }
+
+/**
+ * The same object, handed to the projection as what it is.
+ *
+ * A cast and not a validation, and that is safe here for one reason worth
+ * writing down: indexFacts reads every field defensively and emits every key
+ * whether or not the source had it, and undisclosedFacts then walks what it
+ * produced. So a spine missing half of this yields nulls rather than a throw,
+ * and a spine carrying something extra yields nothing at all — the projection
+ * writes its keys out one at a time and never copies.
+ */
+const asSession = (spine: Spine): Session => spine as unknown as Session
 
 const sha256 = (s: string | Uint8Array): string => createHash('sha256').update(s).digest('hex')
 
@@ -424,6 +446,8 @@ export function standingDisclosure(): string[] {
   L.push('  Nothing else. The payload is assembled, walked, and refused unsent if it')
   L.push('  carries a single key this list does not name.')
   L.push('')
+  L.push(...factsDisclosure())
+  L.push('')
   L.push('WHAT IS AND IS NOT TRUE OF THAT TEXT')
   L.push('')
   for (const p of REDACTION_POSTURE) {
@@ -586,6 +610,66 @@ export const SKIP_LIMIT = 200
  * arrangement is trying to avoid, and a hostile host must not be able to
  * shorten it by leaving fields out.
  */
+export const FACTS_PATH = '/v1/qpact/facts'
+
+/**
+ * The facts sidecar's disclosure, and why it is grouped rather than itemised.
+ *
+ * FIELDS gives every key of the report payload its own paragraph, which works
+ * at fourteen. The index tier has forty-eight, and forty-eight paragraphs
+ * inside a disclosure somebody has to read before pressing a key is not a more
+ * honest disclosure — it is the same disclosure, unread.
+ *
+ * So every field is still NAMED, in groups, compactly, and the groups say what
+ * kind of thing each holds. Exhaustiveness is not traded away: the list is
+ * generated from the same INDEX_FIELDS the projection is walked against, so a
+ * field cannot be added to what leaves without appearing here, and the digest
+ * covers this text like the rest.
+ *
+ * The refusals are listed too. A disclosure that says what leaves and not what
+ * was deliberately left out tells somebody less than it could about a payload
+ * built from a spine that carries their prompts and their home directory.
+ */
+export function factsDisclosure(): string[] {
+  const L: string[] = []
+  const group = (name: string, prefix: string): void => {
+    const names = (INDEX_FIELDS as readonly string[])
+      .filter((f) => (prefix ? f.startsWith(`${prefix}.`) : !f.includes('.')))
+      .map((f) => (prefix ? f.slice(prefix.length + 1) : f))
+    if (!names.length) return
+    const head = `    ${name.padEnd(14)}`
+    let cur = head
+    for (const n of names) {
+      if (cur.length + n.length + 2 > 78) { L.push(cur.replace(/,$/, '')); cur = ' '.repeat(head.length) }
+      cur += `${n}, `
+    }
+    L.push(cur.replace(/,\s*$/, ''))
+  }
+
+  L.push(`  POST ${FACTS_PATH} — ${(INDEX_FIELDS as readonly string[]).length} bounded fields and no others:`)
+  L.push('')
+  group('session', '')
+  group('score', 'score')
+  group('totals', 'totals')
+  group('tokens', 'tokens')
+  L.push('')
+  L.push('    None of it can quote a prompt. `intents` and `graph` are titles and labels')
+  L.push('    written by the model, which can paraphrase one; everything else is a count,')
+  L.push('    a band, a name or a timestamp.')
+  L.push('')
+  L.push('    What it refuses, from a spine that carries all of it:')
+  L.push('      file, project, cwd   the transcript path and the project key — your home')
+  L.push('                           directory, and therefore your account name')
+  L.push('      turns[].text         the verbatim prompt')
+  L.push('      turns[].files        per-turn paths')
+  L.push('      turns[].signals      the prompt\u2019s shape, which is a fingerprint of it')
+  L.push('')
+  L.push('    `repo` is the repository name with the worktree folded onto it, never a path.')
+  L.push('    `files_touched` is repo-relative and anything escaping the repo is dropped')
+  L.push('    and counted.')
+  return L
+}
+
 export const TERM_KEYS = ['retentionDays', 'holdDays', 'scopes', 'tracePriced'] as const
 
 /** Its own timeout, and a short one. The upload's twenty seconds is the budget
@@ -1092,6 +1176,9 @@ export function turnOff(): { path: string; lines: string[] } {
 
 export interface ShipResult {
   shipped: boolean
+  /** The sidecar's own outcome. Separate from `shipped`, because the document
+   *  and the structure succeed and fail independently. */
+  factsShipped?: boolean
   id?: string
   url?: string
   bytes?: number
@@ -1310,9 +1397,71 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
   // console to another host will say so here; guessing would print a link that
   // 404s and read as a failed upload.
   const link = body.url || `${dest.url.replace(/\/$/, '')}/r/${body.id}`
+
+  // ── The sidecar, sent after the document and reported separately ─────────
+  //
+  // Two payloads, two outcomes, and the word "shipped" never stands alone
+  // again. The report is the page somebody can check; the sidecar is the
+  // structure a colleague can query, and they can succeed and fail
+  // independently. One line saying "shipped" over a half-send would be the same
+  // failure as a report somebody believes is in the cloud and is not.
+  //
+  // The document's success is not conditional on this. A sidecar that fails
+  // leaves a report that is already there, and saying so is better than
+  // unwinding a send that worked.
+  const facts = indexFacts(asSession(spine), { pluginVersion: version() })
+  const und = undisclosedFacts(facts)
+  if (und.extra.length || und.missing.length) {
+    // Fail closed, exactly as the report payload does: a field the disclosure
+    // does not name never reaches a socket, and a field it promises never goes
+    // missing without somebody being told.
+    return {
+      shipped: true, id: body.id, url: link, bytes, reason: '',
+      lines: [...lines, `  SHIPPED to ${link}`,
+        `  FACTS NOT SENT — the sidecar carries ${und.extra.length} field(s) the disclosure does not name` +
+        `${und.missing.length ? ` and is missing ${und.missing.length} it promises` : ''}.`,
+        `    ${[...und.extra, ...und.missing].slice(0, 6).join(', ')}`,
+        '    This is a defect in this build, not something you can fix. The report above went.'],
+    }
+  }
+
+  const fr = await post(`${dest.url}${FACTS_PATH}`, dest, { schema_version: SCHEMA_VERSION, facts }, args.timeoutMs)
+  const factsLine = fr.ok
+    ? '  FACTS SENT — the session is in the workspace roll-up'
+    : `  FACTS NOT SENT — ${fr.why}. The report above went and is unaffected.`
+
   return {
     shipped: true, id: body.id, url: link, bytes, reason: '',
-    lines: [...lines, `  SHIPPED to ${link}`, `  Turn this off at any time with:  node push.mjs --off`],
+    factsShipped: fr.ok,
+    lines: [...lines, `  SHIPPED to ${link}`, factsLine,
+      `  Turn this off at any time with:  node push.mjs --off`],
+  }
+}
+
+/** One POST, reduced to shipped-or-why. Used for the sidecar, whose failure is
+ *  reported beside the document's success rather than replacing it. */
+async function post(url: string, cfg: Config, payload: unknown, timeoutMs = DEFAULT_TIMEOUT_MS):
+Promise<{ ok: true } | { ok: false; why: string }> {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.token}` },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    })
+    if (r.ok) return { ok: true }
+    let why = `HTTP ${r.status}`
+    try {
+      const b = await r.json() as { error?: string }
+      if (b?.error) why = b.error
+    } catch { /* a refusal with no body is still a refusal */ }
+    return { ok: false, why }
+  } catch (e) {
+    return { ok: false, why: `could not reach ${url}: ${(e as Error).message}` }
+  } finally {
+    clearTimeout(t)
   }
 }
 

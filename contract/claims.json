@@ -271,7 +271,7 @@
       "risk": "consent",
       "status": "planned",
       "why": "The index tier — metrics, intent titles, the decision graph, files touched, trace shape — is workspace-visible so every roll-up is complete. The trace tier carries full tool inputs and results, which is bash command lines and file contents, and defaults to author-plus-admins: the same rung as the verbatim document, because it exposes as much.",
-      "plan": "A versioned sidecar schema, validated server-side before storage, with assertPlaneSeparation extended so no path, trace or repo name can reach the finding table. Neither tier exists yet.",
+      "plan": "The INDEX tier now ships beside every report and is disclosed. The TRACE tier still has no path out of the plugin: extract retains it behind --with-trace, the server accepts it at POST /v1/qpact/trace, and nothing in between sends it. The claim stays planned until both tiers ship with the default visibilities it describes.",
       "discipline": "frozen",
       "consent_material": true,
       "generated": [],
