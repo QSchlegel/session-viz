@@ -105,7 +105,62 @@ const modulesOf = (root, skill) => {
 const networkSkills = (root) =>
   skillNames(root).filter((s) => /\bcurl\b|SESSION_VIZ_URL/.test(read(join(SKILLS(root), s, 'SKILL.md'))))
 
+/** A minimal Session, enough for the projection to emit every key.
+ *
+ *  Synthetic rather than a real spine: a derive that reads a transcript would
+ *  change its answer depending on whose machine it ran on, and a check whose
+ *  result depends on the corpus is not a check. */
+const FIXTURE_SESSION = {
+  sessionId: 's', harness: 'claude-code', cwd: '/w/repo', gitBranch: 'b', version: '1',
+  title: 't', startedAt: '2026-01-01T00:00:00Z', endedAt: '2026-01-01T00:01:00Z',
+  durationMs: 60000, redactedPrompts: true, recordedPaths: true,
+  models: { m: 1 }, slashCommands: ['/x'],
+  artifacts: { tools: { git: 1 }, mcp: { s: 1 }, packages: {}, stack: {}, extensions: {}, skills: {}, fileTouches: 1 },
+  totals: {
+    records: 1, humanTurns: 1, assistantMessages: 1, toolCalls: 1, sidechainRecords: 0,
+    interruptions: 0, compactions: 0, steeringTurns: 0, repeats: 0, corrections: 0,
+    frictionTurns: 0, frictionRate: 0, tokens: { input: 1, output: 1, cacheRead: 1, cacheCreate: 1 },
+  },
+  turns: [{ index: 0, durationMs: 1, toolCallCount: 1, tokens: { output: 1 }, friction: [], score: { value: 1 }, files: [{ path: 'a.ts', count: 1 }] }],
+  score: { value: 1, band: 'clean', confidence: 'low', turnsScored: 1, frictionRate: 0, craftRate: 0, wastedTokens: 0, costliestTurn: 0 },
+}
+
+/**
+ * What the projection ACTUALLY emits, by running it.
+ *
+ * Not by reading the field list it exports — that constant is generated from the
+ * registry, so comparing it to the registry would compare the registry to
+ * itself. The walk's vocabulary comes from contract/facts.json, a third file, so
+ * three things must agree: the schema's membership, the registry's claim, and
+ * the keys the code writes. Any one of them moving alone is visible.
+ */
+/** ESM caches a module by URL, and the perturbation rewrites the same file in
+ *  the same directory — so a cache-buster derived from the file's CONTENT is no
+ *  buster at all when the content is what changed and the key is not. This
+ *  counter made --prove go from green to red on two derives that were reading a
+ *  stale copy of the module they claimed to be reading. */
+let importSeq = 0
+
+const emittedFields = async (root, tier) => {
+  const { readFileSync } = await import('node:fs')
+  const facts = JSON.parse(readFileSync(join(root, 'contract', 'facts.json'), 'utf8'))
+  const known = Object.entries(facts.fields).filter(([, v]) => v.tier === tier).map(([k]) => k)
+  const mod = await import(`${join(root, 'plugins', 'session-viz', 'scripts', 'facts.mjs')}?t=${importSeq++}`)
+  if (tier === 'trace') {
+    // Run the projection, do not read the schema back. A derive that returned
+    // facts.json's own keys would compare the schema to the registry — a
+    // comparison the suite already makes — while saying nothing at all about
+    // what the code writes, which is the only thing that reaches a wire.
+    const [call] = mod.traceFacts([{ turn: 0, seq: 0, tool: 'Bash', input: {}, result: 'x' }])
+    return Object.keys(call || {}).sort()
+  }
+  return mod.keyPaths(mod.indexFacts(FIXTURE_SESSION, { pluginVersion: '0' }), known).sort()
+}
+
 export const DERIVES = {
+  'facts.index.fields': (root) => emittedFields(root, 'index'),
+  'facts.trace.call_fields': (root) => emittedFields(root, 'trace'),
+
   'commands.count': (root) => skillNames(root).length,
 
   'commands.model_invocable': (root) =>
@@ -132,6 +187,22 @@ export const DERIVES = {
 /** One deliberate break per derive, each chosen to be the change a real feature
  *  would make: a new command, a flag removed, a network call added. */
 const PERTURBATIONS = {
+  // These break the PROJECTION, not the schema. Removing a field from
+  // contract/facts.json leaves the code emitting it and the walk reporting it
+  // as an undeclared path, so the derive's answer is unchanged and the
+  // perturbation proves nothing — which is how this was written first, and why
+  // --prove exists at all. The failure worth catching is a field added to the
+  // projection, so that is the field added here.
+  'facts.index.fields': (root) => {
+    const p = join(root, 'plugins', 'session-viz', 'scripts', 'facts.mjs')
+    writeFileSync(p, read(p).replace('schema_version: SCHEMA_VERSION,', 'schema_version: SCHEMA_VERSION, cwd: s.cwd,'))
+    return 'added cwd to the index projection'
+  },
+  'facts.trace.call_fields': (root) => {
+    const p = join(root, 'plugins', 'session-viz', 'scripts', 'facts.mjs')
+    writeFileSync(p, read(p).replace('turn: Number(c.turn || 0),', 'turn: Number(c.turn || 0), transcript: c.transcript,'))
+    return 'added transcript to the trace projection'
+  },
   'commands.count': (root) => {
     mkdirSync(join(SKILLS(root), 'qthirteen'), { recursive: true })
     writeFileSync(join(SKILLS(root), 'qthirteen', 'SKILL.md'), '---\nname: qthirteen\ndescription: a command that did not exist\n---\n')
@@ -161,7 +232,7 @@ const PERTURBATIONS = {
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
-export function prove(root) {
+export async function prove(root) {
   const results = []
   for (const [id, perturb] of Object.entries(PERTURBATIONS)) {
     const tmp = mkdtempSync(join(tmpdir(), 'sv-claims-'))
@@ -169,9 +240,12 @@ export function prove(root) {
       // Only the two directories the derives read. Copying the whole repository
       // would drag node_modules and .git through a temp dir on every CI run.
       cpSync(join(root, 'plugins'), join(tmp, 'plugins'), { recursive: true })
-      const before = DERIVES[id](tmp)
+      // contract/ too: the facts derives read the schema from it, and a copy
+      // without it would make them throw rather than disagree.
+      cpSync(join(root, 'contract'), join(tmp, 'contract'), { recursive: true })
+      const before = await DERIVES[id](tmp)
       const what = perturb(tmp)
-      const after = DERIVES[id](tmp)
+      const after = await DERIVES[id](tmp)
       results.push({ id, what, before, after, noticed: !same(before, after) })
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -190,7 +264,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     for (const id of Object.keys(DERIVES)) console.log(id)
   } else if (arg === '--prove') {
     let failed = 0
-    for (const r of prove(root)) {
+    for (const r of await prove(root)) {
       console.log(`${r.noticed ? 'ok  ' : 'FAIL'} ${r.id} — ${r.what}`)
       if (!r.noticed) {
         failed++
@@ -199,7 +273,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     process.exit(failed ? 1 : 0)
   } else if (DERIVES[arg]) {
-    console.log(JSON.stringify(DERIVES[arg](root)))
+    console.log(JSON.stringify(await DERIVES[arg](root)))
   } else {
     console.error(`no derive '${arg}'. Known: ${Object.keys(DERIVES).join(', ')}`)
     process.exit(2)

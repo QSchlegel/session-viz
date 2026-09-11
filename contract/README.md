@@ -65,6 +65,18 @@ The bound is worth stating: a tell catches a *known* wording in a new file. A pa
 packets leave your laptop" — sails through. The hole is the size of how many wordings somebody
 thought of, and no check here closes it.
 
+## Two files, one question each
+
+`claims.json` owns **membership**: which claims exist and what each one's value is.
+`facts.json` owns **shape**: for the facts sidecar, what each field is, what it may hold, and
+which tier it belongs to — plus a `refuses` block naming what the spine carries and the payload
+must not.
+
+They are cross-checked. The registry's `facts.index.fields` must name exactly the index-tier
+fields in `facts.json`, and the derive runs the real projection and reports the keys it actually
+writes. Three things therefore have to agree — the schema, the registry, and the code — so any one
+of them moving alone is visible.
+
 ## Asserted, or planned
 
 A claim is either true of the tree now (`asserted`, the default) or intended and not built yet

@@ -397,6 +397,135 @@
       ],
       "tells": [],
       "guarded_by": []
+    },
+    "facts.index.fields": {
+      "statement": "Every field the workspace-visible index tier may carry.",
+      "value": [
+        "branch",
+        "cli_version",
+        "duration_ms",
+        "ended_at",
+        "files_dropped",
+        "files_touched",
+        "friction_kinds",
+        "graph",
+        "harness",
+        "intents",
+        "mcp_servers",
+        "models",
+        "paths_recorded",
+        "plugin_version",
+        "repo",
+        "schema_version",
+        "score.band",
+        "score.confidence",
+        "score.costliest_turn",
+        "score.craft_rate",
+        "score.friction_rate",
+        "score.turns_scored",
+        "score.value",
+        "score.wasted_tokens",
+        "secrets_redacted",
+        "session_id",
+        "slash_commands",
+        "started_at",
+        "title",
+        "tokens.cache_create",
+        "tokens.cache_read",
+        "tokens.input",
+        "tokens.output",
+        "tools",
+        "totals.assistant_messages",
+        "totals.compactions",
+        "totals.corrections",
+        "totals.friction_turns",
+        "totals.human_turns",
+        "totals.interruptions",
+        "totals.records",
+        "totals.repeats",
+        "totals.sidechain_records",
+        "totals.steering_turns",
+        "totals.tool_calls",
+        "trace_shape",
+        "turns",
+        "worktree"
+      ],
+      "render": {
+        "expr": "export const INDEX_FIELDS = [\n  'branch', 'cli_version', 'duration_ms', 'ended_at', 'files_dropped', 'files_touched',\n  'friction_kinds', 'graph', 'harness', 'intents', 'mcp_servers', 'models', 'paths_recorded',\n  'plugin_version', 'repo', 'schema_version', 'score.band', 'score.confidence',\n  'score.costliest_turn', 'score.craft_rate', 'score.friction_rate', 'score.turns_scored',\n  'score.value', 'score.wasted_tokens', 'secrets_redacted', 'session_id', 'slash_commands',\n  'started_at', 'title', 'tokens.cache_create', 'tokens.cache_read', 'tokens.input',\n  'tokens.output', 'tools', 'totals.assistant_messages', 'totals.compactions',\n  'totals.corrections', 'totals.friction_turns', 'totals.human_turns', 'totals.interruptions',\n  'totals.records', 'totals.repeats', 'totals.sidechain_records', 'totals.steering_turns',\n  'totals.tool_calls', 'trace_shape', 'turns', 'worktree'\n] as const",
+        "count": "48"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "This is the second payload a report ships, and the first one a colleague can query. The spine it is built from carries the absolute transcript path, the dash-encoded project key and the verbatim prompt — each of which contains the home directory or the text of what somebody typed — so the field list is written down and the projection is walked against it rather than trusted. finding.mts states the rule for nine person-blind columns; this applies it to forty-eight.",
+      "derive": "facts.index.fields",
+      "generated": [
+        {
+          "file": "plugins/session-viz/src/facts.mts",
+          "region": "facts.index.fields",
+          "emit": "expr"
+        },
+        {
+          "tree": "session-viz-cloud",
+          "file": "services/api/src/facts.ts",
+          "region": "facts.index.fields",
+          "emit": "expr"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/facts.mjs",
+        "services/api/test/facts.mjs"
+      ]
+    },
+    "facts.trace.call_fields": {
+      "statement": "Every field one recorded tool call may carry in the trace tier.",
+      "value": [
+        "duration_ms",
+        "error_kind",
+        "input",
+        "input_bytes",
+        "mcp_server",
+        "ok",
+        "result",
+        "result_bytes",
+        "seq",
+        "started_at",
+        "tool",
+        "truncated",
+        "turn"
+      ],
+      "render": {
+        "expr": "export const TRACE_CALL_FIELDS = [\n  'duration_ms', 'error_kind', 'input', 'input_bytes', 'mcp_server', 'ok', 'result',\n  'result_bytes', 'seq', 'started_at', 'tool', 'truncated', 'turn'\n] as const",
+        "count": "13"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "discipline": "frozen",
+      "consent_material": true,
+      "why": "A trace call carries the tool input and the result in full: bash command lines, file contents, MCP arguments. It is the most exposing thing in this product after the rendered page itself, which is why it defaults to the same rung and why its fields are enumerated rather than passed through.",
+      "derive": "facts.trace.call_fields",
+      "generated": [
+        {
+          "file": "plugins/session-viz/src/facts.mts",
+          "region": "facts.trace.call_fields",
+          "emit": "expr"
+        },
+        {
+          "tree": "session-viz-cloud",
+          "file": "services/api/src/facts.ts",
+          "region": "facts.trace.call_fields",
+          "emit": "expr"
+        }
+      ],
+      "checked": [],
+      "tells": [],
+      "guarded_by": [
+        "plugins/session-viz/test/facts.mjs",
+        "services/api/test/facts.mjs"
+      ]
     }
   }
 }

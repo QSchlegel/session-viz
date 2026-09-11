@@ -118,6 +118,19 @@ export function wellFormed(reg) {
     if (c.consent_material && c.discipline === 'negotiated')
       say(id, 'consent_material and negotiated are the combination this design exists to refuse')
 
+    // A list claim whose render is a code literal must contain exactly the
+    // names in its value. Without this the generator would happily write a
+    // literal that disagrees with the claim it was generated from, and the
+    // registry would hold two answers to one question.
+    if (Array.isArray(c.value) && (c.render || {}).expr) {
+      const lit = String(c.render.expr)
+      const missing = c.value.filter((n) => !lit.includes(`'${n}'`))
+      const quoted = (lit.match(/'[^']+'/g) || []).map((q) => q.slice(1, -1))
+      if (missing.length) say(id, `render.expr omits ${missing.length} name(s) from value: ${missing.join(', ')}`)
+      if (quoted.length !== c.value.length)
+        say(id, `render.expr holds ${quoted.length} names and value holds ${c.value.length}`)
+    }
+
     for (const g of c.generated || []) {
       if (!g.file || !g.region) say(id, 'a generated entry needs file and region')
       if (!TREES.includes(treeOf(g))) say(id, `generated tree '${g.tree}' is not one of ${TREES.join(', ')}`)

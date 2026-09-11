@@ -70,6 +70,18 @@ jobs:
       - name: Claims
         run: node plugins/session-viz/test/claims.mjs
 
+      # The facts projection: the second payload a report ships, and the first
+      # one a colleague can query. It is built from a spine carrying the absolute
+      # transcript path, the dash-encoded project key, the working directory and
+      # the verbatim prompt — four things that each contain either a username or
+      # what somebody typed. This runs the projection against a spine where every
+      # refused field holds a unique sentinel and asserts none of them survive.
+      # A shape check passes on a projection that spreads the whole session in
+      # under a key nobody looked at; five of these assertions go red on exactly
+      # that one-line mistake.
+      - name: Facts projection
+        run: node plugins/session-viz/test/facts.mjs
+
       # A derive nobody has watched fail is documentation. This copies the tree to
       # a temp directory, breaks each claim on purpose — adds a thirteenth skill,
       # removes a frontmatter flag, wires the credential into a command that does

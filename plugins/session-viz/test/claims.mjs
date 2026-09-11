@@ -78,7 +78,7 @@ for (const [id, c] of Object.entries(reg.claims)) {
   if (!c.derive) continue
   const fn = DERIVES[c.derive]
   if (!fn) { chk(`${id} names a derive`, false, `no derive '${c.derive}'`); continue }
-  const got = fn(ROOT)
+  const got = await fn(ROOT)
   const want = c.value
   chk(`${id} — ${c.statement}`, JSON.stringify(got) === JSON.stringify(want),
     `the registry says ${JSON.stringify(want)}; the tree says ${JSON.stringify(got)}`)
@@ -87,6 +87,31 @@ for (const [id, c] of Object.entries(reg.claims)) {
 const underived = Object.entries(reg.claims).filter(([, c]) => !c.derive)
 if (underived.length)
   console.log(`     ${underived.length} claim(s) carry no derive and cannot be proved by machine: ${underived.map(([i]) => i).join(', ')}`)
+
+// ------------------------------------------------- 2b. the schema and the claim
+
+// contract/facts.json owns each field's shape; the registry owns the membership;
+// the code writes the keys. Three files, one question, so any one of them moving
+// alone is visible — and the derive above already compares the code against the
+// schema's vocabulary, which leaves exactly this comparison to make.
+section('The schema and the registry name the same fields')
+{
+  const facts = JSON.parse(readFileSync(join(ROOT, 'contract', 'facts.json'), 'utf8'))
+  const pairs = [
+    ['facts.index.fields', Object.entries(facts.fields).filter(([, v]) => v.tier === 'index').map(([k]) => k)],
+    ['facts.trace.call_fields', Object.keys(facts.trace_call_fields)],
+  ]
+  for (const [id, fromSchema] of pairs) {
+    const claim = reg.claims[id]
+    if (!claim) { chk(`${id} is registered`, false, 'contract/facts.json describes fields no claim carries'); continue }
+    const a = [...fromSchema].sort(), b = [...claim.value].sort()
+    const onlySchema = a.filter((x) => !b.includes(x))
+    const onlyClaim = b.filter((x) => !a.includes(x))
+    chk(`${id} matches contract/facts.json`, !onlySchema.length && !onlyClaim.length,
+      [onlySchema.length ? `only in facts.json: ${onlySchema.join(', ')}` : '',
+       onlyClaim.length ? `only in the claim: ${onlyClaim.join(', ')}` : ''].filter(Boolean).join('\n       '))
+  }
+}
 
 // ------------------------------------------------------------ 3. the surfaces
 
