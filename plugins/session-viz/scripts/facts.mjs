@@ -124,7 +124,142 @@ const countBy = (items, key) => {
  *  "touched nothing", which is the one failure that whole field exists against. */
 const pathsRecorded = (s) => s.recordedPaths === undefined ? 'unknown' : s.recordedPaths ? 'yes' : 'no';
 // ---------------------------------------------------------------- the index tier
-export function indexFacts(s, meta = {}) {
+/** The kinds a concept may carry on the wire. Anything else becomes null: an
+ *  unknown kind is not a leak, but the console draws and groups by kind and must
+ *  not be handed free text where it expects one of these words. The console
+ *  knows five of the six today and files `subsystem` under "other"; it still
+ *  crosses, because the per-session page shows the word and dropping it to null
+ *  would lose the kind the model chose. */
+export const CONCEPT_GROUPS = ['decision', 'defect', 'guard', 'thread', 'subsystem', 'question'];
+/** The same rule the local page applies to a concept id. Enforced here rather
+ *  than cut: an id that fails is dropped with its relations, so MAX_ID is a
+ *  guarantee about the wire and not a truncation that hands a concept a new
+ *  identity on the way out. */
+export const CONCEPT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** A title or label that contains this many characters of a prompt, after
+ *  normalisation, is treated as quoting it and withheld. Long enough that a
+ *  shared word or two never trips it; short enough that a sentence does. */
+export const QUOTE_RUN = 24;
+/** The statuses an intent may carry; anything else reads as still open. */
+export const INTENT_STATUSES = ['done', 'partial', 'abandoned', 'ongoing'];
+/** What the console's intent page will draw; the store may hold more and says so. */
+export const MAX_INTENTS = 40;
+export const MAX_CONCEPTS = 60;
+export const MAX_RELATIONS = 120;
+const MAX_LABEL = 120;
+/** Lower-case, one space between words, no punctuation — so "Add /qruns!" and
+ *  "add qruns" compare equal, and a run of a prompt is found regardless of how
+ *  the model re-punctuated it. */
+const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+/**
+ * Does this model-written string quote one of the prompts?
+ *
+ * The disclosure's one absolute sentence — "None of it can quote a prompt" —
+ * was true by vacancy while intents shipped empty. Populated, it has to be
+ * made true by code, because the model is shown no rule against titling an
+ * intent with the words the person typed, and a short prompt titled verbatim
+ * would ship verbatim to everyone in the workspace.
+ *
+ * Three tests, on normalised text: the string IS a prompt; it CONTAINS a whole
+ * prompt of eight characters or more ("add /qruns" inside "asked to add
+ * /qruns"); or a QUOTE_RUN-character window of it appears inside a prompt,
+ * which catches a sentence lifted from the middle. Eight stops a two-word
+ * "ok" or "fix" from withholding every title that happens to contain it.
+ */
+export function quotesAPrompt(text, prompts) {
+    const c = norm(text);
+    if (!c)
+        return false;
+    for (const raw of prompts) {
+        const p = norm(String(raw || ''));
+        if (!p)
+            continue;
+        if (c === p)
+            return true;
+        if (p.length >= 8 && c.includes(p))
+            return true;
+        if (p.length >= QUOTE_RUN && c.length >= QUOTE_RUN) {
+            for (let i = 0; i + QUOTE_RUN <= c.length; i++)
+                if (p.includes(c.slice(i, i + QUOTE_RUN)))
+                    return true;
+        }
+    }
+    return false;
+}
+/**
+ * Project a session's intent document onto the index tier.
+ *
+ * This is the half of the tier the model wrote, and it is the half the console
+ * could never show: facts.mts shipped `intents: []` from the day the sidecar
+ * existed, so /app/intent — four views built on exactly these fields — drew
+ * nothing for any session, while the disclosure told the user the fields left.
+ *
+ * What crosses, and what does not, is decided here and nowhere else. An intent
+ * keeps its title, status and cited turns and loses its summary; a concept keeps
+ * its id, label and kind and loses its note, its anchors and its provenance; a
+ * relation keeps its endpoints and label. Every dropped field is prose that can
+ * paraphrase a prompt, and this tier is visible to the whole workspace.
+ *
+ * `prior` — earlier sessions carried along as context — is never read. Filing
+ * another session's conclusions under this one is the exact confusion the
+ * store's provenance exists to prevent, and the wire must not undo it.
+ */
+export function projectIntent(doc, prompts = []) {
+    const empty = { intents: [], graph: { concepts: [], relations: [] }, withheld: 0 };
+    if (!doc || typeof doc !== 'object')
+        return empty;
+    let withheld = 0;
+    const quotes = (s) => { const q = quotesAPrompt(s, prompts); if (q)
+        withheld++; return q; };
+    const d = doc;
+    const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+    const turnsOf = (v) => Array.isArray(v) ? v.filter((n) => Number.isInteger(n) && n >= 0).slice(0, 200) : [];
+    const rec = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+    const intents = (Array.isArray(d.intents) ? d.intents : [])
+        .map(rec)
+        .filter((i) => !!i && typeof i.title === 'string' && i.title.trim().length > 0)
+        .filter((i) => !quotes(String(i.title)))
+        .slice(0, MAX_INTENTS)
+        .map((i) => ({
+        title: str(i.title, MAX_LABEL),
+        status: INTENT_STATUSES.includes(String(i.status)) ? String(i.status) : 'ongoing',
+        turns: turnsOf(i.turns),
+    }));
+    const g = rec(d.graph) || {};
+    const seen = new Set();
+    const concepts = (Array.isArray(g.concepts) ? g.concepts : [])
+        .map(rec)
+        .filter((c) => !!c && typeof c.id === 'string' && CONCEPT_ID_RE.test(c.id) && typeof c.label === 'string')
+        // The store merges duplicates on id; a render file should not carry two,
+        // but the wire must not either. First one wins, as it does in the store.
+        .filter((c) => { const id = c.id; if (seen.has(id))
+        return false; seen.add(id); return true; })
+        .filter((c) => !quotes(String(c.label)))
+        .slice(0, MAX_CONCEPTS)
+        .map((c) => ({
+        id: c.id,
+        label: str(c.label, MAX_LABEL),
+        group: CONCEPT_GROUPS.includes(String(c.group)) ? String(c.group) : null,
+    }));
+    // A relation's ends must both be concepts on this wire, and different ones.
+    // The local page can relate a concept to a derived node (`tool:Bash`,
+    // `turn:23`) or name an intent by its title; the console's merged graph has
+    // no such nodes, and an edge into nothing would be counted and dropped there
+    // anyway. Dropping it here keeps the count honest. A concept dropped above —
+    // bad id, duplicate, or a label that quoted a prompt — takes its edges with it.
+    const ids = new Set(concepts.map((c) => c.id));
+    const relations = (Array.isArray(g.relations) ? g.relations : [])
+        .map(rec)
+        .filter((r) => !!r && typeof r.from === 'string' && typeof r.to === 'string' && r.from !== r.to && ids.has(r.from) && ids.has(r.to))
+        .filter((r) => !(typeof r.label === 'string' && quotes(r.label)))
+        .slice(0, MAX_RELATIONS)
+        .map((r) => ({ from: r.from, to: r.to, label: typeof r.label === 'string' ? str(r.label, MAX_LABEL) : null }));
+    return { intents, graph: { concepts, relations }, withheld };
+}
+export function indexFacts(s, meta = {}, intent = null) {
+    // The prompts are handed in so a title that quotes one is withheld. They are
+    // read for that comparison and for nothing else; nothing below emits them.
+    const model = projectIntent(intent, (s.turns || []).map((t) => String(t.text || '')));
     const turns = s.turns || [];
     const { kept, dropped } = collectFiles(turns);
     const sc = s.score || {};
@@ -195,11 +330,11 @@ export function indexFacts(s, meta = {}) {
         // Shape of a trace nobody reading this tier is allowed to open, so a roll-up
         // can describe one without exposing it. Empty until a trace exists.
         trace_shape: {},
-        // Model-written, and thinner than the store holds. Intents keep their title,
-        // status and cited turns and LOSE their summary: a summary paraphrases the
-        // prompts, and this tier is visible to the whole workspace.
-        intents: [],
-        graph: { concepts: [], relations: [] },
+        // Model-written, and thinner than the store holds — see projectIntent for
+        // what crosses. Empty when no intent document was handed in, which is what
+        // a /qpact that skipped its derive step, or a facts-only ingest, produces.
+        intents: model.intents,
+        graph: model.graph,
     };
 }
 // ---------------------------------------------------------------- the trace tier

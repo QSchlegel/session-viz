@@ -14,7 +14,8 @@
 
 import {
   indexFacts, traceFacts, undisclosedFacts, undisclosedTrace,
-  collectFiles, keyPaths, INDEX_FIELDS, TRACE_CALL_FIELDS, MAX_RESULT_CHARS,
+  collectFiles, keyPaths, projectIntent, quotesAPrompt, INDEX_FIELDS, TRACE_CALL_FIELDS, MAX_RESULT_CHARS,
+  MAX_INTENTS, MAX_CONCEPTS, MAX_RELATIONS, QUOTE_RUN,
 } from '../scripts/facts.mjs'
 
 let failed = 0
@@ -79,6 +80,146 @@ for (const [what, value] of Object.entries(S)) {
 chk('the whole home directory is absent, in any field',
   !wire.includes('/Users/') && !wire.includes('-Users-'),
   'a path fragment survived; the index tier is workspace-visible and this is the username')
+
+// ------------------------------------------------- the model-written half
+
+section('Intents and the graph reach the index tier without their prose')
+// Every field the projection must drop carries its own sentinel, so a leak
+// names the field. The document is shaped like intent.mjs's render file: this
+// session's conclusions at the top level, earlier sessions under `prior`.
+const D = {
+  summary: 'SENTINEL-SUMMARY paraphrases what was typed',
+  note: 'SENTINEL-NOTE also paraphrases it',
+  tldr: 'SENTINEL-TLDR',
+  compact: 'SENTINEL-COMPACT',
+  quality: 'SENTINEL-QUALITY',
+  prov: 'SENTINEL-PROVENANCE',
+  prior: 'SENTINEL-PRIOR-SESSION',
+  anchor: 'tool:SENTINEL-ANCHOR',
+}
+const intentDoc = {
+  sessionId: 'sess-1', tldr: D.tldr, compactInstruction: D.compact,
+  intents: [
+    { title: 'Fix the parser', status: 'done', summary: D.summary, turns: [1, 2], provenance: { session: D.prov } },
+    { title: '   ', status: 'done' },
+    { title: 'Odd status', status: 'weird', turns: ['a', 3, -1, 2.5] },
+  ],
+  graph: {
+    concepts: [
+      { id: 'a', label: 'A defect', group: 'defect', note: D.note, anchors: [D.anchor], provenance: { session: D.prov } },
+      { id: 'b', label: 'Unknown kind', group: 'not-a-kind' },
+      { id: 7, label: 'not a string id' },
+    ],
+    relations: [
+      { from: 'a', to: 'b', label: 'hidden by', dashed: true, turns: [1] },
+      { from: 'a', to: D.anchor, label: 'into a derived node' },
+      { from: 'zzz', to: 'a', label: 'from nowhere' },
+    ],
+  },
+  prior: [{ sessionId: 'other', intents: [{ title: D.prior, status: 'done' }], graph: { concepts: [{ id: 'p', label: D.prior, group: 'decision' }], relations: [] } }],
+  quality: { verdict: D.quality },
+}
+const withIntent = indexFacts(spine, { pluginVersion: '0.26.0' }, intentDoc)
+const wire2 = JSON.stringify(withIntent)
+chk('intents carry title, status and turns, and only those',
+  JSON.stringify(withIntent.intents) === JSON.stringify([
+    { title: 'Fix the parser', status: 'done', turns: [1, 2] },
+    { title: 'Odd status', status: 'ongoing', turns: [3] },
+  ]), JSON.stringify(withIntent.intents))
+chk('a blank title is not an intent', withIntent.intents.length === 2)
+chk('an unknown status reads as ongoing', withIntent.intents[1].status === 'ongoing')
+chk('concepts carry id, label and kind, and only those',
+  JSON.stringify(withIntent.graph.concepts) === JSON.stringify([
+    { id: 'a', label: 'A defect', group: 'defect' },
+    { id: 'b', label: 'Unknown kind', group: null },
+  ]), JSON.stringify(withIntent.graph.concepts))
+chk('an unknown kind becomes null rather than free text', withIntent.graph.concepts[1].group === null)
+chk('a relation keeps only endpoints and label, and only between concepts',
+  JSON.stringify(withIntent.graph.relations) === JSON.stringify([{ from: 'a', to: 'b', label: 'hidden by' }]),
+  JSON.stringify(withIntent.graph.relations))
+for (const [what, value] of Object.entries(D)) {
+  chk(`no ${what} sentinel reaches the wire`, !wire2.includes(value), `${JSON.stringify(value)} crossed`)
+}
+chk('the original sentinels still do not cross with intents attached',
+  Object.values(S).every((v) => !wire2.includes(v)))
+const u2 = undisclosedFacts(withIntent)
+chk('the payload with intents is still exactly what the contract names',
+  u2.extra.length === 0 && u2.missing.length === 0, [...u2.extra, ...u2.missing].join(', '))
+chk('no document at all means empty, not absent',
+  JSON.stringify(indexFacts(spine, {}).intents) === '[]' && JSON.stringify(indexFacts(spine, {}).graph) === '{"concepts":[],"relations":[]}')
+chk('a document that is not an object means empty',
+  projectIntent('nonsense').intents.length === 0 && projectIntent(null).graph.concepts.length === 0)
+const many = {
+  intents: Array.from({ length: MAX_INTENTS + 15 }, (_, i) => ({ title: `t${i}`, status: 'done' })),
+  graph: {
+    concepts: Array.from({ length: MAX_CONCEPTS + 15 }, (_, i) => ({ id: `c${i}`, label: `l${i}`, group: 'thread' })),
+    relations: Array.from({ length: MAX_RELATIONS + 15 }, (_, i) => ({ from: `c${i % 10}`, to: `c${(i + 1) % 10}`, label: null })),
+  },
+}
+const capped = projectIntent(many)
+chk(`intents cap at ${MAX_INTENTS}`, capped.intents.length === MAX_INTENTS, String(capped.intents.length))
+chk(`concepts cap at ${MAX_CONCEPTS}`, capped.graph.concepts.length === MAX_CONCEPTS, String(capped.graph.concepts.length))
+chk(`relations cap at ${MAX_RELATIONS}`, capped.graph.relations.length === MAX_RELATIONS, String(capped.graph.relations.length))
+chk('a label longer than the wire allows is cut, not refused',
+  projectIntent({ graph: { concepts: [{ id: 'x', label: 'y'.repeat(500), group: 'guard' }], relations: [] } }).graph.concepts[0].label.length === 120)
+
+// ---------------------------------------- "None of it can quote a prompt"
+//
+// That sentence is inside the consent digest. It was true by vacancy while
+// intents shipped empty; populated, the code has to make it true, because a
+// title is a model-written string and the model is shown no rule against
+// restating the words the person typed.
+section('A title or label that quotes a prompt is withheld, and counted')
+const prompts = [S.prompt, 'add /qruns', 'ok']
+chk('a title that IS the prompt quotes it', quotesAPrompt(S.prompt, prompts))
+chk('re-punctuated and re-cased, it still does', quotesAPrompt('  ADD, /qruns!!', prompts))
+chk('a sentence lifted from the middle of a longer prompt does',
+  quotesAPrompt('we decided that ' + S.prompt.slice(4, 4 + QUOTE_RUN + 3) + ' later', prompts))
+chk('a title that contains a whole short prompt does', quotesAPrompt('The user asked to add /qruns to the ledger', prompts))
+chk('but a two-letter prompt does not withhold every title containing it', !quotesAPrompt('Look at the token', prompts))
+chk('and a paraphrase that shares words survives', !quotesAPrompt('The typed thing, restated', prompts))
+const quoting = {
+  sessionId: 'sess-1',
+  intents: [
+    { title: S.prompt, status: 'done', turns: [0] },
+    { title: 'A paraphrase of what was asked', status: 'partial', turns: [1] },
+  ],
+  graph: {
+    concepts: [
+      { id: 'q', label: 'decided: ' + S.prompt.slice(0, QUOTE_RUN + 2), group: 'decision' },
+      { id: 'ok', label: 'A fine label', group: 'guard' },
+      { id: 'ok2', label: 'Another fine label', group: 'thread' },
+      { id: 'the user said never touch prod', label: 'free-text id', group: 'guard' },
+      { id: 'Upper-Case', label: 'bad id', group: 'guard' },
+      { id: 'ok', label: 'duplicate id, second copy', group: 'thread' },
+    ],
+    relations: [
+      { from: 'q', to: 'ok', label: 'quoted concept edge' },
+      { from: 'ok', to: 'ok', label: 'self' },
+      { from: 'ok', to: 'the user said never touch prod', label: 'into a bad id' },
+      { from: 'ok', to: 'ok2', label: S.prompt },
+      { from: 'ok', to: 'ok2', label: 'kept' },
+    ],
+  },
+}
+const guarded = indexFacts(spine, {}, quoting)
+const gw = JSON.stringify(guarded)
+chk('the intent titled with the prompt is withheld', guarded.intents.length === 1 && guarded.intents[0].title === 'A paraphrase of what was asked', JSON.stringify(guarded.intents))
+chk('the concept whose label quotes the prompt is withheld', !guarded.graph.concepts.some((c) => c.id === 'q'))
+chk('and its relations go with it', !guarded.graph.relations.some((r) => r.from === 'q' || r.to === 'q'))
+chk('no prompt text reaches the wire through a title, label or relation', !gw.includes(S.prompt) && !gw.includes(S.prompt.slice(4, 4 + QUOTE_RUN)))
+chk('an id that fails the page’s own regex is dropped with its edges',
+  !gw.includes('never touch prod') && !gw.includes('Upper-Case') && !guarded.graph.relations.some((r) => /never touch/.test(r.to)))
+chk('a duplicate id keeps its first copy', guarded.graph.concepts.filter((c) => c.id === 'ok').length === 1 && guarded.graph.concepts.find((c) => c.id === 'ok').label === 'A fine label')
+chk('a relation from a concept to itself is dropped', !guarded.graph.relations.some((r) => r.from === r.to))
+chk('what survives is exactly the two fine labels',
+  JSON.stringify(guarded.graph.concepts) === JSON.stringify([{ id: 'ok', label: 'A fine label', group: 'guard' }, { id: 'ok2', label: 'Another fine label', group: 'thread' }]),
+  JSON.stringify(guarded.graph.concepts))
+chk('a relation whose label quotes the prompt is dropped and the kept one stays',
+  JSON.stringify(guarded.graph.relations) === JSON.stringify([{ from: 'ok', to: 'ok2', label: 'kept' }]), JSON.stringify(guarded.graph.relations))
+const counted = projectIntent(quoting, [S.prompt])
+chk('the withheld count names what was held back: one title, one label, one relation', counted.withheld === 3, String(counted.withheld))
+chk('with no prompts to compare against nothing is withheld', projectIntent(quoting, []).withheld === 0)
 
 // ------------------------------------------------------- closed, both ways
 
