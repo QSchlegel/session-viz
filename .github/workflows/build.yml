@@ -173,6 +173,13 @@ jobs:
       - name: Recorded file paths
         run: node plugins/session-viz/test/paths.mjs
 
+      # A skill body arrives under the user role, fifteen thousand characters
+      # long, stamped isMeta by the harness. Classified as typed, it is "what
+      # the person wrote" to everything downstream — including the guard that
+      # withholds a title for quoting a prompt.
+      - name: Nobody typed it
+        run: node plugins/session-viz/test/meta.mjs
+
       - name: Intent carried across sessions
         run: node plugins/session-viz/test/intent.mjs
 

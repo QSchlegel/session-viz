@@ -14,7 +14,7 @@
 
 import {
   indexFacts, traceFacts, undisclosedFacts, undisclosedTrace,
-  collectFiles, keyPaths, projectIntent, quotesAPrompt, INDEX_FIELDS, TRACE_CALL_FIELDS, MAX_RESULT_CHARS,
+  collectFiles, keyPaths, projectIntent, quotesAPrompt, typedPrompts, INDEX_FIELDS, TRACE_CALL_FIELDS, MAX_RESULT_CHARS,
   MAX_INTENTS, MAX_CONCEPTS, MAX_RELATIONS, QUOTE_RUN,
 } from '../scripts/facts.mjs'
 
@@ -220,6 +220,35 @@ chk('a relation whose label quotes the prompt is dropped and the kept one stays'
 const counted = projectIntent(quoting, [S.prompt])
 chk('the withheld count names what was held back: one title, one label, one relation', counted.withheld === 3, String(counted.withheld))
 chk('with no prompts to compare against nothing is withheld', projectIntent(quoting, []).withheld === 0)
+
+// A skill body is a user-role turn nobody typed. Fifteen thousand characters of
+// instructions read as a prompt, and a title that restates one line of them was
+// withheld for quoting the person — who never wrote it.
+section('The guard compares against what the person typed, not what the harness inserted')
+const SKILL_LINE = 'Analyse this session with /qpact, show it, and hand back a compact line worth running.'
+const skillBody = '# qpact\n\n' + SKILL_LINE + '\n' + 'Read the JSON, not the raw transcript. '.repeat(400)
+const withSkill = {
+  ...spine,
+  turns: [...spine.turns, { index: 2, durationMs: 10, toolCallCount: 0, tokens: { output: 1 }, text: skillBody, typed: false, files: [], toolCalls: [] }],
+}
+chk('a non-typed turn is not in the prompt set', typedPrompts(withSkill.turns).length === spine.turns.length && !typedPrompts(withSkill.turns).some((p) => p.includes('qpact')))
+chk('a turn with no typed flag at all still counts as typed', typedPrompts([{ text: 'x' }]).length === 1)
+const restating = {
+  sessionId: 'sess-1',
+  intents: [
+    { title: 'Analyse this session with /qpact', status: 'ongoing', turns: [2] },
+    { title: S.prompt, status: 'done', turns: [0] },
+  ],
+  graph: { concepts: [], relations: [] },
+}
+const kept = indexFacts(withSkill, {}, restating)
+chk('a title that restates a skill line is NOT withheld', kept.intents.some((i) => i.title === 'Analyse this session with /qpact'), JSON.stringify(kept.intents))
+chk('while a title that is the typed prompt still is', !kept.intents.some((i) => i.title === S.prompt))
+chk('and the count reflects only the typed one', projectIntent(restating, typedPrompts(withSkill.turns)).withheld === 1)
+// The same document against the skill body treated as typed would withhold
+// both — which is what the guard did on 2026-09-12 before this section existed.
+chk('treating the skill body as typed would have withheld it (the defect, pinned)',
+  projectIntent(restating, [...typedPrompts(withSkill.turns), skillBody]).withheld === 2)
 
 // ------------------------------------------------------- closed, both ways
 

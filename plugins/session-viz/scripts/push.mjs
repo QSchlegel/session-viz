@@ -87,7 +87,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { configDirs, configTarget } from './home.mjs';
 import { config } from './cloud.mjs';
-import { indexFacts, projectIntent, traceFacts, undisclosedFacts, undisclosedTrace, INDEX_FIELDS } from './facts.mjs';
+import { indexFacts, projectIntent, typedPrompts, traceFacts, undisclosedFacts, undisclosedTrace, INDEX_FIELDS } from './facts.mjs';
 import { redactionLimit } from './bundle.mjs';
 import { version } from './version.mjs';
 export const SCHEMA_VERSION = '1';
@@ -1253,9 +1253,7 @@ async function sendSidecars(spine, dest, args, lines, out) {
     const facts = indexFacts(asSession(spine), { pluginVersion: version() }, intentDoc);
     // Recomputed for the count only — projectIntent is pure, and indexFacts keeps
     // its 48 fields with no room for a "withheld" on the wire.
-    const withheldTitles = intentDoc
-        ? projectIntent(intentDoc, (spine.turns || []).map((t) => String(t?.text || ''))).withheld
-        : 0;
+    const withheldTitles = intentDoc ? projectIntent(intentDoc, typedPrompts(spine.turns)).withheld : 0;
     const und = undisclosedFacts(facts);
     if (und.extra.length || und.missing.length) {
         // Fail closed, exactly as the report payload does: a field the disclosure
