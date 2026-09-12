@@ -44,7 +44,6 @@ import { dirname, join } from 'node:path'
 import { render as renderPact } from '../scripts/render.mjs'
 import { render as renderTrends } from '../scripts/render-corpus.mjs'
 import { pickerPage } from '../scripts/qshare.mjs'
-import { PAGE as setupPage } from '../scripts/qsetup.mjs'
 import { LIMITS, NOT_A_CERTIFICATION, BUNDLE_GLOBAL, DOWNLOAD_HOOK, redactionLimit, pathLimit } from '../scripts/bundle.mjs'
 
 let failed = 0
@@ -449,7 +448,6 @@ const PAGES = {
   '/qpact': renderPact(SPINE, INTENT, { fingerprint: 'ab12cd34', spineAgeMin: 3 }),
   '/qtrends': renderTrends(CORPUS),
   '/qshare': pickerPage(ROWS, 'test-nonce', new Set()),
-  '/qsetup': setupPage('nonce123', 'https://example.invalid', '~/.claude/settings.json', ''),
 }
 
 for (const [page, html] of Object.entries(PAGES)) {
