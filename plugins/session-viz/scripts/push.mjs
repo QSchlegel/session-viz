@@ -1214,7 +1214,30 @@ async function sendSidecars(spine, dest, args, lines, out) {
     // The document's success is not conditional on this. A sidecar that fails
     // leaves a report that is already there, and saying so is better than
     // unwinding a send that worked.
-    const facts = indexFacts(asSession(spine), { pluginVersion: version() });
+    // The model-written half of the tier, read from the file step 5 printed.
+    // Two refusals, both local and both said out loud: a file that will not
+    // parse, and a file that names a different session. The second is the one
+    // that matters — the store carries earlier sessions as `prior`, but a render
+    // file for another session is another session's conclusions, and they must
+    // not be filed under this one because a path was copied wrong.
+    let intentDoc = null;
+    let intentNote = null;
+    if (args.intentPath) {
+        try {
+            const doc = JSON.parse(readFileSync(args.intentPath, 'utf8'));
+            const declared = typeof doc.sessionId === 'string' ? doc.sessionId : null;
+            if (declared && declared !== String(spine.sessionId)) {
+                intentNote = `  INTENTS NOT SENT — ${args.intentPath} describes session ${declared.slice(0, 8)}, not ${String(spine.sessionId).slice(0, 8)}; the facts went without them`;
+            }
+            else {
+                intentDoc = doc;
+            }
+        }
+        catch (e) {
+            intentNote = `  INTENTS NOT SENT — could not read ${args.intentPath}: ${e.message}; the facts went without them`;
+        }
+    }
+    const facts = indexFacts(asSession(spine), { pluginVersion: version() }, intentDoc);
     const und = undisclosedFacts(facts);
     if (und.extra.length || und.missing.length) {
         // Fail closed, exactly as the report payload does: a field the disclosure
@@ -1240,9 +1263,16 @@ async function sendSidecars(spine, dest, args, lines, out) {
     //
     // `schema_version` is not lost: it is one of the 48, inside the facts.
     const fr = await post(`${dest.url}${FACTS_PATH}`, dest, facts, args.timeoutMs);
+    const nI = facts.intents.length;
+    const nC = facts.graph.concepts.length;
+    const carried = nI || nC
+        ? `with ${nI} intent${nI === 1 ? '' : 's'} and ${nC} concept${nC === 1 ? '' : 's'}`
+        : args.intentPath ? 'with no intents' : 'with no intents — pass --intent <render file> to send them';
     const factsLine = fr.ok
-        ? '  FACTS SENT — the session is in the workspace roll-up'
+        ? `  FACTS SENT — the session is in the workspace roll-up, ${carried}`
         : `  FACTS NOT SENT — ${fr.why}.${out.shipped ? ' The report above went and is unaffected.' : ''}`;
+    if (intentNote)
+        lines.push(intentNote);
     // ── The trace, only when the extractor was asked to keep one ────────────
     //
     // There is no flag here and there should not be: retention is extract's
@@ -1369,11 +1399,12 @@ if (isMain) {
         if (argv.includes('--ship')) {
             const spinePath = opt('--spine');
             const reportPath = opt('--report');
+            const intentPath = opt('--intent') || undefined;
             if (!spinePath || !reportPath) {
-                console.error('usage: push.mjs --ship --spine <spine.json> --report <report.html>');
+                console.error('usage: push.mjs --ship --spine <spine.json> --report <report.html> [--intent <intent.json>]');
                 process.exit(1);
             }
-            const r = await shipReport({ spinePath, reportPath });
+            const r = await shipReport({ spinePath, reportPath, intentPath });
             say(r.lines);
             // Exit 0 either way. A failed upload is reported, not fatal: /qpact has
             // already produced its report, and a non-zero exit here would mark the

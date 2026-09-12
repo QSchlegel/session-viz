@@ -124,7 +124,77 @@ const countBy = (items, key) => {
  *  "touched nothing", which is the one failure that whole field exists against. */
 const pathsRecorded = (s) => s.recordedPaths === undefined ? 'unknown' : s.recordedPaths ? 'yes' : 'no';
 // ---------------------------------------------------------------- the index tier
-export function indexFacts(s, meta = {}) {
+/** The kinds a concept may carry on the wire. Anything else becomes null: an
+ *  unknown kind is not a leak, but the console draws and groups by kind and must
+ *  not be handed free text where it expects one of six words. */
+export const CONCEPT_GROUPS = ['decision', 'defect', 'guard', 'thread', 'subsystem', 'question'];
+/** The statuses an intent may carry; anything else reads as still open. */
+export const INTENT_STATUSES = ['done', 'partial', 'abandoned', 'ongoing'];
+/** What the console's intent page will draw; the store may hold more and says so. */
+export const MAX_INTENTS = 40;
+export const MAX_CONCEPTS = 60;
+export const MAX_RELATIONS = 120;
+const MAX_LABEL = 120;
+const MAX_ID = 64;
+/**
+ * Project a session's intent document onto the index tier.
+ *
+ * This is the half of the tier the model wrote, and it is the half the console
+ * could never show: facts.mts shipped `intents: []` from the day the sidecar
+ * existed, so /app/intent — four views built on exactly these fields — drew
+ * nothing for any session, while the disclosure told the user the fields left.
+ *
+ * What crosses, and what does not, is decided here and nowhere else. An intent
+ * keeps its title, status and cited turns and loses its summary; a concept keeps
+ * its id, label and kind and loses its note, its anchors and its provenance; a
+ * relation keeps its endpoints and label. Every dropped field is prose that can
+ * paraphrase a prompt, and this tier is visible to the whole workspace.
+ *
+ * `prior` — earlier sessions carried along as context — is never read. Filing
+ * another session's conclusions under this one is the exact confusion the
+ * store's provenance exists to prevent, and the wire must not undo it.
+ */
+export function projectIntent(doc) {
+    const empty = { intents: [], graph: { concepts: [], relations: [] } };
+    if (!doc || typeof doc !== 'object')
+        return empty;
+    const d = doc;
+    const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+    const turnsOf = (v) => Array.isArray(v) ? v.filter((n) => Number.isInteger(n) && n >= 0).slice(0, 200) : [];
+    const rec = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+    const intents = (Array.isArray(d.intents) ? d.intents : [])
+        .map(rec)
+        .filter((i) => !!i && typeof i.title === 'string' && i.title.trim().length > 0)
+        .slice(0, MAX_INTENTS)
+        .map((i) => ({
+        title: str(i.title, MAX_LABEL),
+        status: INTENT_STATUSES.includes(String(i.status)) ? String(i.status) : 'ongoing',
+        turns: turnsOf(i.turns),
+    }));
+    const g = rec(d.graph) || {};
+    const concepts = (Array.isArray(g.concepts) ? g.concepts : [])
+        .map(rec)
+        .filter((c) => !!c && typeof c.id === 'string' && typeof c.label === 'string')
+        .slice(0, MAX_CONCEPTS)
+        .map((c) => ({
+        id: str(c.id, MAX_ID),
+        label: str(c.label, MAX_LABEL),
+        group: CONCEPT_GROUPS.includes(String(c.group)) ? String(c.group) : null,
+    }));
+    // A relation's ends must both be concepts on this wire. The local page can
+    // relate a concept to a derived node (`tool:Bash`, `turn:23`); the console's
+    // merged graph has no such nodes, and an edge into nothing would be counted
+    // and dropped there anyway. Dropping it here keeps the count honest.
+    const ids = new Set(concepts.map((c) => c.id));
+    const relations = (Array.isArray(g.relations) ? g.relations : [])
+        .map(rec)
+        .filter((r) => !!r && typeof r.from === 'string' && typeof r.to === 'string' && ids.has(r.from) && ids.has(r.to))
+        .slice(0, MAX_RELATIONS)
+        .map((r) => ({ from: str(r.from, MAX_ID), to: str(r.to, MAX_ID), label: typeof r.label === 'string' ? str(r.label, MAX_LABEL) : null }));
+    return { intents, graph: { concepts, relations } };
+}
+export function indexFacts(s, meta = {}, intent = null) {
+    const model = projectIntent(intent);
     const turns = s.turns || [];
     const { kept, dropped } = collectFiles(turns);
     const sc = s.score || {};
@@ -195,11 +265,11 @@ export function indexFacts(s, meta = {}) {
         // Shape of a trace nobody reading this tier is allowed to open, so a roll-up
         // can describe one without exposing it. Empty until a trace exists.
         trace_shape: {},
-        // Model-written, and thinner than the store holds. Intents keep their title,
-        // status and cited turns and LOSE their summary: a summary paraphrases the
-        // prompts, and this tier is visible to the whole workspace.
-        intents: [],
-        graph: { concepts: [], relations: [] },
+        // Model-written, and thinner than the store holds — see projectIntent for
+        // what crosses. Empty when no intent document was handed in, which is what
+        // a /qpact that skipped its derive step, or a facts-only ingest, produces.
+        intents: model.intents,
+        graph: model.graph,
     };
 }
 // ---------------------------------------------------------------- the trace tier

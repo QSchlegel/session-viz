@@ -223,8 +223,16 @@ Say this accurately or not at all.
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --ship \
-  --spine /tmp/qpact-spine.json --report <the path step 6 printed>
+  --spine /tmp/qpact-spine.json --report <the path step 6 printed> \
+  --intent <the render path step 5 printed>
 ```
+
+`--intent` is what carries this session's intents and concept graph into the
+facts — titles, statuses, cited turns, labels and kinds; never a summary, a note
+or a prior session. Without it the facts still go, with no intents, and the
+console's intent page shows nothing for this session. It is the same render
+path step 6 used; do not hand it a different session's file — push refuses one
+whose `sessionId` is not this spine's and says so.
 
 Run this every time, after step 6 and never before it. It prints one line either
 way — where the report went, or why it stayed on this machine. **Pass through

@@ -810,6 +810,68 @@ console.log(`\n── ` + 'the sidecar goes too, and is reported apart from the 
   chk('and no home path anywhere in it', !/\/Users\/|-Users-/.test(wire), wire.slice(0, 160))
 }
 
+console.log(`\n── ` + 'the intents ride in the sidecar, and only this session’s')
+{
+  // The model-written half of the tier reached nobody for as long as the
+  // sidecar existed: facts.mts shipped `intents: []`, and the console page
+  // built on those fields drew nothing. This is the path that carries them —
+  // and the two ways it must refuse, said out loud rather than thrown.
+  server.setMode('ok')
+  server.setFactsMode(null)
+  turnOn({ confirmed: true })
+  const PRIOR_TITLE = 'a title from an earlier session that must stay home'
+  const SUMMARY = 'a summary that paraphrases the prompt and must stay home'
+  const intentPath = join(home, 'sess-abc-123.intent.json')
+  writeFileSync(intentPath, JSON.stringify({
+    sessionId: 'sess-abc-123', tldr: 'tldr stays home', compactInstruction: 'compact stays home',
+    intents: [{ title: 'Fix the cookie', status: 'done', summary: SUMMARY, turns: [0] }],
+    graph: { concepts: [{ id: 'cookie', label: 'The cookie', group: 'defect', note: 'note stays home' }], relations: [] },
+    prior: [{ sessionId: 'sess-old', intents: [{ title: PRIOR_TITLE, status: 'done' }] }],
+  }), { mode: 0o600 })
+
+  let before = server.calls.length
+  let r = await ship({ spinePath, reportPath, intentPath, timeoutMs: 5000 })
+  let facts = server.calls.slice(before).find((c) => c.url === '/v1/qpact/facts')
+  let body = facts ? JSON.parse(facts.body) : null
+  chk('with --intent the sidecar carries the intents',
+    !!body && body.intents.length === 1 && body.intents[0].title === 'Fix the cookie', JSON.stringify(body?.intents))
+  chk('and the concepts, with their kind',
+    !!body && body.graph.concepts.length === 1 && body.graph.concepts[0].group === 'defect', JSON.stringify(body?.graph))
+  const wire = facts ? facts.body : ''
+  chk('but not the summary', !wire.includes(SUMMARY))
+  chk('nor the note, the tldr or the compact instruction', !/note stays home|tldr stays home|compact stays home/.test(wire))
+  chk('nor anything from a prior session', !wire.includes(PRIOR_TITLE))
+  chk('and the outcome line says what was carried',
+    r.lines.some((l) => /FACTS SENT.*with 1 intent and 1 concept/.test(l)), r.lines.filter((l) => /FACTS/.test(l)).join('\n'))
+
+  // Another session's render file, handed over by a copied path. The facts
+  // must still go — this session is real — but with no intents, and the
+  // refusal must be printed where the person will read it.
+  const wrongPath = join(home, 'sess-other.intent.json')
+  writeFileSync(wrongPath, JSON.stringify({
+    sessionId: 'sess-other-999', intents: [{ title: 'Somebody else’s work', status: 'done' }], graph: { concepts: [], relations: [] },
+  }), { mode: 0o600 })
+  before = server.calls.length
+  r = await ship({ spinePath, reportPath, intentPath: wrongPath, timeoutMs: 5000 })
+  facts = server.calls.slice(before).find((c) => c.url === '/v1/qpact/facts')
+  body = facts ? JSON.parse(facts.body) : null
+  chk('a render file for another session is refused by name',
+    r.lines.some((l) => /INTENTS NOT SENT/.test(l) && /sess-oth/.test(l) && /sess-abc/.test(l)), r.lines.join('\n'))
+  chk('and the facts still go, empty of intents', !!body && body.intents.length === 0 && r.factsShipped === true)
+  chk('and nothing of the other session crosses', !(facts?.body || '').includes('Somebody else'))
+
+  // No file: the facts go, and the line says how to send intents next time.
+  before = server.calls.length
+  r = await ship({ spinePath, reportPath, timeoutMs: 5000 })
+  chk('without --intent the outcome line says so and names the flag',
+    r.lines.some((l) => /FACTS SENT.*no intents.*--intent/.test(l)), r.lines.filter((l) => /FACTS/.test(l)).join('\n'))
+
+  // An unreadable file: reported, and the facts still go.
+  r = await ship({ spinePath, reportPath, intentPath: join(home, 'missing.intent.json'), timeoutMs: 5000 })
+  chk('an unreadable render file is reported and the facts still go',
+    r.factsShipped === true && r.lines.some((l) => /INTENTS NOT SENT — could not read/.test(l)), r.lines.join('\n'))
+}
+
 console.log(`\n── ` + 'what is posted is what the server will accept')
 {
   // The assertion that was missing, and it cost two live defects to notice.
