@@ -846,7 +846,10 @@ export function shipDecision(args) {
 /** The credential this run would use, as the record stores it. */
 export function credentialNow(cfg) {
     return {
-        source: process.env.SESSION_VIZ_TOKEN ? 'env' : 'file',
+        // Always the file now: the environment credential is gone. The type still
+        // reads 'env' so a record written by an older build parses, and a machine
+        // whose source genuinely changed is re-asked rather than assumed.
+        source: 'file',
         fingerprint: credentialFingerprint(cfg.token),
     };
 }

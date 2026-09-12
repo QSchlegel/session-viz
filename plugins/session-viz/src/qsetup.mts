@@ -72,7 +72,7 @@ export function readConfig(): PluginConfig | null {
 export function resolveToken(): { url: string; token: string; actor?: string } | null {
   const cfg = readConfig()
   const url = process.env.SESSION_VIZ_URL || cfg?.url || DEFAULT_URL
-  const token = process.env.SESSION_VIZ_TOKEN || cfg?.token
+  const token = cfg?.token
   if (!token) return null
   const actor = process.env.SESSION_VIZ_ACTOR || cfg?.actor
   return actor ? { url, token, actor } : { url, token }

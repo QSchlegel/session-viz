@@ -158,11 +158,14 @@ const deadPort = await new Promise((resolve) => {
 const up = await startServer('answering')
 const silent = await startServer('silent')
 
-const CLOUD = (port) => ({
-  SESSION_VIZ_TOKEN: 'svt_test',
-  SESSION_VIZ_URL: `http://127.0.0.1:${port}`,
-  SESSION_VIZ_ACTOR: 'me@example',
-})
+// A connected machine is a config file now, not exported variables: the
+// credential cannot come from the environment any more.
+const CLOUD = (port) => {
+  writeFileSync(join(HOME, 'config.json'),
+    JSON.stringify({ url: `http://127.0.0.1:${port}`, token: 'svt_test', scope: 'collab', tenant: 't_test' }),
+    { mode: 0o600 })
+  return { SESSION_VIZ_ACTOR: 'me@example' }
+}
 
 try {
   // ───────────────────────────────────────────── 1. an empty backlog says so

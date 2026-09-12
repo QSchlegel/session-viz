@@ -82,7 +82,7 @@ function writeJson(targets, what, data) {
     }
     throw new Error(`cannot write the ${what} — permission denied at ${refused.join(', ')}. ` +
         'A sandboxed harness usually cannot write outside its workspace: set ' +
-        'SESSION_VIZ_HOME to a directory it can write, or set SESSION_VIZ_TOKEN ' +
+        'SESSION_VIZ_HOME to a directory it can write, or carry a config file ' +
         'in the environment and skip the file entirely.');
 }
 export function saveConfig(data) {
