@@ -7,9 +7,11 @@ disable-model-invocation: true
 # qteam
 
 The collaboration half of session-viz. Everything here goes through the hosted
-MCP server, which reads none of the configuration the local commands read — and
-against the public host, does not connect at all yet. Read the next section
-before promising anyone these tools.
+MCP server, which reads none of the configuration the local commands read. Read
+the next section before promising anyone these tools: the server accepts a stock
+client now, and nobody has yet driven the browser hand-off end to end against the
+public host. Those are different sentences and this file used to run them
+together.
 
 ## Before anything
 
@@ -23,28 +25,46 @@ not connected — say so plainly rather than guessing.
 {"mcpServers":{"session-viz":{"type":"http","url":"https://cloud.session-viz.com/v1/mcp"}}}
 ```
 
-**And against the public host it does not connect yet.** The endpoint does answer
-401 with a `WWW-Authenticate` naming its discovery document, but the browser
-hand-off behind that header does not complete. A client that registers itself is
-given an id, and `/authorize` then refuses that id — codes are issued only to the
-CLI's own `session-viz-cli`. It refuses the advertised scopes too: the discovery
-document offers `vault:read`, `task:write` and the rest, while the consent screen
-accepts only `contrib` and `collab`. Nobody is ever shown a consent screen from
-this path.
+**The server-side refusals this file used to describe are gone.** Until
+2026-08-20 the endpoint answered 401 with a `WWW-Authenticate` naming its
+discovery document and then refused everything behind it: a client that
+registered itself was given an id that `/authorize` would not accept, and the
+advertised scopes were refused in favour of `contrib` and `collab`. Both were
+fixed server-side. A client may now register itself (RFC 7591, unauthenticated),
+`/authorize` resolves that registration and matches its HTTPS redirect exactly,
+and the granular scopes are accepted and canonicalised into internal `collab`
+authority. Codes are bound to client id, redirect and PKCE verifier, single-use,
+and unredeemable by any other client.
 
-So do not tell a reader to restart and watch for a browser prompt. Say that the
-hosted MCP server is not connectable from a stock entry today, the way this tool
-names any harness it could not read. The fix is on the server, not on their
-machine, and nothing they do locally will bring the tools up.
+**One refusal is deliberate and still there:** a *subset* of the advertised
+scopes is rejected. Per-tool scope enforcement has not landed, so accepting
+`vault:read` alone and then minting a full `collab` token behind it would grant
+more than was asked. Until that lands, ask for the complete advertised set —
+`vault:read vault:write task:read task:write share:read share:write events:read`
+— or be refused. Order and repeats do not matter; the grant is canonicalised.
+
+**`X-Actor` is no longer needed for this path.** An OAuth-issued token carries
+the verified account that created it, and `/v1/mcp` takes the actor from there.
+The header is now required only for the legacy shared `COLLAB_TOKEN`, which has
+no creator to read.
+
+**What has NOT been verified:** the signed-in browser flow, end to end, against
+the public host. Nobody has yet watched a consent screen render accurate client,
+redirect and scope information, redeemed the code with PKCE from a stock client,
+and called `tools/list` with no actor header. The pieces are implemented and
+covered by tests; the run has not happened. So if a reader's tools do not appear,
+do not tell them it is their machine, and do not promise it will work either —
+say that the flow is implemented but unproven against the public host, and that
+the next thing anyone learns from it will come from someone actually trying it.
 
 `SESSION_VIZ_TOKEN`, `SESSION_VIZ_ACTOR` and `SESSION_VIZ_URL` reach this server
 by no path at all — the entry above has no `env` and no `headers`, so nothing
 carries them into the connection. Setting them for its benefit does nothing
 useful and two harmful things:
 
-- the missing tool stays missing. The connection is not waiting on a token, so
-  exporting one changes nothing about it, and the reader who believes it did
-  stops looking for the real cause;
+- the missing tool stays missing. The connection authenticates over OAuth and is
+  not waiting on a token, so exporting one changes nothing about it, and the
+  reader who believes it did stops looking for the real cause;
 - those three variables **are** read by `/qshare`, `/qfeed` and `/qcontrib`
   (`config()` in `src/cloud.mts`, environment beating the config file). A
   self-hosted `COLLAB_TOKEN` exported there carries no tenant, so `/qshare` fails
@@ -55,12 +75,12 @@ useful and two harmful things:
 
 If a shell profile still exports them for the MCP's sake, remove them.
 
-Self-hosting is the working path today, and it needs a hand edit: point the `url`
-at your own deployment, which accepts the legacy `Bearer COLLAB_TOKEN` with an
-`X-Actor` header. That is the path being retired rather than the one to build
-against, but it is the one that answers. `/v1/mcp` rejects a credential carrying
-no actor, and a bare-URL entry has nowhere to put one — so the header is not
-optional.
+Self-hosting still works and still needs a hand edit: point the `url` at your own
+deployment, which accepts the legacy `Bearer COLLAB_TOKEN` with an `X-Actor`
+header. That header is not optional on this path — a shared token names no
+creator, so `/v1/mcp` has nowhere else to read an actor from, and a bare-URL
+entry has nowhere to put one. It is the path being retired rather than the one to
+build against; it is no longer the *only* path that answers.
 
 `/qsetup --scope collab` is a separate errand: it gives the plugin's own
 commands plane B access. It does not configure this server, and this server does
@@ -133,11 +153,12 @@ its intent breakdown and open threads are already the right shape.
 ## Steps
 
 1. Confirm the `mcp__session-viz__*` tools are present. If they are not, stop.
-   Say the server is not connected, that against the public host it cannot
-   currently be connected, and that nothing exported here would change it. Do
-   not offer a token, a restart or a browser prompt as the remedy — none of the
-   three is one, and sending someone to hunt for a consent screen that never
-   appears costs more than the plain answer.
+   Say the server is not connected and that nothing exported here would change
+   it — `SESSION_VIZ_TOKEN` is not the remedy, because this connection
+   authenticates over OAuth and the shipped entry carries no `env` at all. The
+   sign-in is a browser hand-off the harness drives; whether it completes against
+   the public host has not been established by anyone yet, so do not assert that
+   it will, and do not assert that it cannot. Report what you observed.
 2. Do the smallest useful thing that was asked. This skill is a set of verbs, not
    a report generator — do not render HTML unless asked.
 3. State what changed in one or two lines, including anything the server refused
