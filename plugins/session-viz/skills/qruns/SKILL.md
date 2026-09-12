@@ -25,10 +25,18 @@ tree of files. `--since 30d` narrows the window.
 
 ## Read it in this order
 
-1. **Recurring tasks.** A task with `<< STALLED` has run three or more times and
-   produced no confirmed write. This is the headline finding and it is usually a
-   surprise, because a stalled task looks healthy: coherent transcripts, sensible
-   plans, often no errors at all.
+1. **Recurring tasks.** Three markers, three meanings, and only two are problems:
+   - `<< BLOCKED` — it tried to write and was refused. A settings line fixes it.
+   - `<< SILENT` — it meant to write, nothing landed, and nothing refused it.
+     No settings change explains this; somebody has to read a transcript.
+   - `·· quiet` — every run ended coherently having decided there was nothing to
+     do. **This is not a finding.** Do not report it as one, do not send anybody
+     to `/qdoctor` for it, and do not call it a task that "delivers nothing" — a
+     job whose correct answer is often "no change" is working.
+
+   BLOCKED and SILENT are the headline, and they are usually a surprise, because
+   a failing task looks healthy: coherent transcripts, sensible plans, often no
+   errors at all.
 2. **The `denied` column.** A permission the job was never granted. Headless runs
    cannot answer a prompt, so they die at the first write. The fix is a settings
    line, not a prompt change — check `permissionCoversWrite` with `/qdoctor`.
@@ -49,16 +57,22 @@ tree of files. `--since 30d` narrows the window.
 - **Read the `not in these numbers` block out loud when it appears.** It prints
   only when a harness is missing or its token data is partial, and is silent
   otherwise — so when it is there, a whole harness may be absent from the ledger
-  above. A stalled task that never shows up because its harness was not read is
+  above. A blocked task that never shows up because its harness was not read is
   the exact failure this page exists to catch, reported as an all-clear.
 - Subagent families come from a first-message heuristic. Say so when you quote a
   per-family number.
-- If a task is stalled, say what it cost and how long it has been stalled. "17
-  runs, 30 days, nothing" lands; "delivery rate 0%" does not.
+- If a task is BLOCKED or SILENT, say what it cost and how long it has been that
+  way. "17 runs, 30 days, nothing" lands; "delivery rate 0%" does not. A quiet
+  task needs no such sentence: say how many runs ended with nothing to do, or say
+  nothing at all.
+- **Never quote a task's zero as evidence that autonomous work does not deliver
+  without checking its verdict first.** A quiet task's zero is the system
+  working.
 
 ## What to do next
 
-A stalled task with `permission` errors → `/qdoctor` on that repo, then add the
-allow entry. A wide cache-read spread → look at the widest family's opening
+A BLOCKED task → `/qdoctor` on that repo, then add the allow entry; its
+`permission` count is the evidence. A SILENT task → open its most recent
+transcript, because no settings change will explain it. A quiet task → nothing. A wide cache-read spread → look at the widest family's opening
 prompt. Neither of those is a prompting problem, which is the point of having
 this separate from `/qtrends`.
