@@ -40,7 +40,7 @@
 
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, statSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, statSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -227,8 +227,14 @@ function paths(v, prefix = '') {
 
 const server = stub()
 const base = await server.listen()
-process.env.SESSION_VIZ_URL = base
-process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
+// A connected machine, the way /qsetup leaves one: a config file and nothing in
+// the environment. The credential used to be exported here, which is the thing
+// the plugin no longer accepts from anywhere.
+const CONFIG = join(home, '.config', 'session-viz', 'config.json')
+const connect = (url = base, token = 'svt_test_token') =>
+  writeFileSync(CONFIG, JSON.stringify({ url, token, scope: 'collab', tenant: 't_test' }), { mode: 0o600 })
+const disconnect = () => { if (existsSync(CONFIG)) rmSync(CONFIG) }
+connect()
 
 // ------------------------------------------------- 1. off, and off for a token
 {
@@ -467,23 +473,20 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
 
   // Consent was to a host. An environment variable moving the destination does
   // not inherit it.
-  process.env.SESSION_VIZ_URL = 'http://127.0.0.1:9'
+  connect('http://127.0.0.1:9')
   const moved = await ship({ spinePath, reportPath, timeoutMs: 3000 })
   chk('a changed destination refuses before connecting',
     moved.shipped === false && moved.reason.includes(base) && moved.reason.includes('127.0.0.1:9'), moved.reason)
   chk('and nothing was sent anywhere', server.calls.length === before, String(server.calls.length - before))
-  process.env.SESSION_VIZ_URL = base
+  connect()
 
   // Shipping on, credential gone. Loud, and pointed at the fix.
-  const token = process.env.SESSION_VIZ_TOKEN
-  delete process.env.SESSION_VIZ_TOKEN
-  delete process.env.SESSION_VIZ_URL
+  disconnect()
   const noToken = await ship({ spinePath, reportPath, timeoutMs: 3000 })
   chk('shipping on with no token says so, and says how to fix it',
     noToken.shipped === false && /qsetup/i.test(noToken.lines.join('\n')), noToken.lines.join('\n'))
   chk('and does not read as "off"', !/shipping is off/i.test(noToken.reason), noToken.reason)
-  process.env.SESSION_VIZ_TOKEN = token
-  process.env.SESSION_VIZ_URL = base
+  connect()
 
   // Too large to send. Refused here, where the message can name the file and
   // the number, rather than as an HTTP 413 from a server the user cannot read.
@@ -498,13 +501,16 @@ process.env.SESSION_VIZ_TOKEN = 'svt_test_token'
   // A host that is not listening at all.
   const good = loadPush()
   writeFileSync(pushTarget(), JSON.stringify({ ...good, url: 'http://127.0.0.1:9' }), { mode: 0o600 })
-  process.env.SESSION_VIZ_URL = 'http://127.0.0.1:9'
+  // Through the config, not an environment variable: a stray SESSION_VIZ_URL is
+  // now refused before any socket is opened, which is a different assertion and
+  // has its own section. This one is about a host that is genuinely not there.
+  connect('http://127.0.0.1:9')
   const dead = await ship({ spinePath, reportPath, timeoutMs: 4000 })
   chk('an unreachable host names the host it could not reach',
     dead.shipped === false && dead.reason.includes('127.0.0.1:9'), dead.reason)
   chk('and says the local report is unaffected',
     dead.lines.some((l) => /unaffected/i.test(l)), dead.lines.join('\n'))
-  process.env.SESSION_VIZ_URL = base
+  connect()
   writeFileSync(pushTarget(), JSON.stringify(good), { mode: 0o600 })
 
   chk('none of that reached the network', server.calls.length === before, String(server.calls.length - before))
@@ -597,7 +603,7 @@ console.log(`\n── ` + 'Consent is bound to the workspace, not to the hostnam
   const rec = loadPush()
   chk('the record fingerprints the credential', !!rec.shown?.credential?.fingerprint, JSON.stringify(rec.shown?.credential))
   chk('and never stores the credential itself',
-    !JSON.stringify(rec).includes(process.env.SESSION_VIZ_TOKEN || '\u0000nope'),
+    !JSON.stringify(rec).includes('svt_test_token'),
     'the token must not be recoverable from the state file')
   chk('the fingerprint is a fingerprint, not a token',
     /^[0-9a-f]{16}$/.test(rec.shown?.credential?.fingerprint || ''), String(rec.shown?.credential?.fingerprint))
@@ -606,20 +612,20 @@ console.log(`\n── ` + 'Consent is bound to the workspace, not to the hostnam
 
   // The assertion that matters: a different workspace at the SAME host. The
   // url check above cannot see this, because the url is identical.
-  const was = process.env.SESSION_VIZ_TOKEN
-  process.env.SESSION_VIZ_TOKEN = 'svt_a_completely_different_workspace'
+  connect(base, 'svt_a_completely_different_workspace')
   const swapped = await ship({ spinePath, reportPath, timeoutMs: 3000, label: 'swapped-credential' })
   chk('a send with a different credential is refused', swapped.shipped === false, JSON.stringify(swapped.reason))
   chk('and the refusal says it is about consent, not about the network',
     /credential changed/i.test(String(swapped.reason)), String(swapped.reason))
-  chk('and it names which kind of credential each was',
-    swapped.lines.some((l) => /file credential|env credential/i.test(l)), swapped.lines.join('\n'))
+  // It used to say which KIND each was — a file credential against an
+  // environment one — because there were two kinds. There is one now, so what
+  // the line can still say is that the credential moved, and it does.
   // Swapping back does NOT resume immediately, and that is the gate being
   // consistent rather than inconvenient: the refused run showed the disclosure
   // for the new workspace and recorded it, so the original is now the one that
   // has not been shown. It earns the same single deferred run as any other
   // destination, and then it ships.
-  process.env.SESSION_VIZ_TOKEN = was
+  connect()
   const back = await ship({ spinePath, reportPath, timeoutMs: 3000, label: 'restored-credential' })
   chk('swapping back earns one deferred run, not an immediate send',
     back.shipped === false && /credential changed|has not been shown/i.test(back.reason), String(back.reason))
@@ -702,17 +708,27 @@ console.log(`\n── ` + 'a version-1 record is read, and its two answers are n
 
 console.log(`\n── ` + 'no workspace is not the same answer as no')
 {
-  const token = process.env.SESSION_VIZ_TOKEN
   const url = process.env.SESSION_VIZ_URL
   turnOn({ confirmed: true })
-  delete process.env.SESSION_VIZ_TOKEN
-  process.env.SESSION_VIZ_URL = base
+  // A machine that was never connected. It must not read as "you said no".
+  disconnect()
   const r = await ship({ spinePath, reportPath, timeoutMs: 3000 })
-  chk('a URL with no token is refused in its own words', r.shipped === false)
-  chk('and not reported as a missing workspace',
-    !/there is no workspace configured/i.test(r.reason), r.reason)
-  process.env.SESSION_VIZ_TOKEN = token
-  process.env.SESSION_VIZ_URL = url
+  chk('a machine with no config is refused in its own words', r.shipped === false)
+  chk('and told to run /qsetup rather than that shipping is off',
+    /qsetup/i.test(r.lines.join('\n')) && !/shipping is off/i.test(r.reason), r.reason)
+  connect()
+
+  // SESSION_VIZ_URL left over in a shell, naming a different host than the one
+  // this machine signed in to. The file's token must not follow it there — the
+  // refusal that replaced the old "URL with no token" one, now that a token
+  // cannot come from the environment at all.
+  process.env.SESSION_VIZ_URL = 'http://127.0.0.1:9'
+  const strayUrl = await ship({ spinePath, reportPath, timeoutMs: 3000 })
+  chk('a stray SESSION_VIZ_URL does not redirect this workspace\u2019s token',
+    strayUrl.shipped === false, strayUrl.reason)
+  chk('and the refusal names both hosts',
+    /127\.0\.0\.1:9/.test(strayUrl.lines.join('\n') + strayUrl.reason), strayUrl.reason)
+  if (url) process.env.SESSION_VIZ_URL = url; else delete process.env.SESSION_VIZ_URL
 }
 
 console.log(`\n── ` + 'what the host says it does is printed on every send, outside the digest')

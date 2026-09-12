@@ -11,38 +11,35 @@
 // headers, and translates the two server answers that are actively misleading.
 import { loadConfig } from './home.mjs';
 /**
- * Environment over file, per field.
+ * One credential, from one place: the file `/qsetup` wrote after signing in.
  *
- * `SESSION_VIZ_TOKEN` is how a confined harness works at all, so it wins where
- * it is set and nowhere else: a URL in the environment must not drag along a
- * token from a config for a different workspace.
+ * `SESSION_VIZ_TOKEN` used to win wherever it was set. It is gone, and with it
+ * the last way to hold a workspace credential without having signed in for it —
+ * a token in an environment is a token in a shell profile, a CI variable, a
+ * process listing and whatever inherited that environment, held by whoever
+ * copied it there rather than by the person the workspace issued it to.
+ *
+ * What replaces it for a machine that cannot open a browser is not a weaker
+ * credential: it is signing in on a machine that can, and carrying the config
+ * file. `SESSION_VIZ_HOME` says where that file may live.
  */
 export function config() {
     const file = loadConfig() || {};
-    const envToken = process.env.SESSION_VIZ_TOKEN;
     const envUrl = process.env.SESSION_VIZ_URL;
-    // A URL and the token sent to it are ONE credential and come from ONE source.
-    // Resolved per field, `SESSION_VIZ_URL=http://elsewhere` with no token beside
-    // it picked the token out of the config file and put a live bearer for this
-    // workspace into a request to whatever that URL named. The doc comment above
-    // already stated the rule; the code resolved the two independently and broke
-    // it anyway.
-    if (envUrl && !envToken && file.token) {
-        throw new Error('SESSION_VIZ_URL is set but SESSION_VIZ_TOKEN is not.\n' +
-            '  Refusing to send the token from your config file to a different host.\n' +
-            '  Set both, or neither.');
+    // A URL and the token sent to it are ONE credential. `SESSION_VIZ_URL` left
+    // over in a shell profile — from pointing setup at a self-hosted deployment,
+    // say — must never decide where the file's token is sent: that would put a
+    // live bearer for this workspace into a request to whatever the variable
+    // happens to name.
+    if (envUrl && file.url && envUrl !== file.url) {
+        throw new Error(`SESSION_VIZ_URL names ${envUrl}, but this machine is connected to ${file.url}.\n` +
+            '  Refusing to send that workspace\'s token to a different host.\n' +
+            '  Unset it, or run /qsetup against the host you mean.');
     }
-    // Symmetric to the refusal above, and just as necessary: a token from the
-    // environment must not inherit a URL from the file either. Where the token is
-    // supplied explicitly, the destination is the one supplied with it or the
-    // public default — never a host left over in a config written for some other
-    // workspace.
-    const url = envToken
-        ? (envUrl || 'https://cloud.session-viz.com')
-        : (file.url || 'https://cloud.session-viz.com');
-    const token = envToken || file.token;
+    const url = file.url || envUrl || 'https://cloud.session-viz.com';
+    const token = file.token;
     if (!token)
-        throw new Error('no token — run /qsetup first, or set SESSION_VIZ_TOKEN');
+        throw new Error('no token — run /qsetup first; it signs you in and writes one');
     const actor = process.env.SESSION_VIZ_ACTOR || file.actor;
     const scope = file.scope;
     return { url, token, ...(actor ? { actor } : {}), ...(scope ? { scope } : {}) };

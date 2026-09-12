@@ -104,9 +104,8 @@ signed in — and the page asking for it has to be trusted before the token can 
 host that does not offer browser sign-in cannot connect this machine, and setup says so and
 stops rather than asking for a secret it cannot verify.
 
-`--show` reads the file and only the file. A machine that works from `SESSION_VIZ_TOKEN` in
-the environment has no file, and this prints the paths it looked in rather than the
-credential actually in force.
+`--show` reads the file, which is now the only place a credential lives. When there is none
+it prints the paths it looked in.
 
 ## A deployment that is not the public one
 
@@ -164,21 +163,19 @@ one already in use, or to the default when there is none.
 **Sandboxed harnesses.** Codex and friends confine writes to the workspace, so every
 path above fails with `EPERM` and no amount of retrying helps. Point
 `SESSION_VIZ_HOME` at a directory inside the workspace — it beats every other candidate,
-including a config that already exists somewhere unreachable. Setting `SESSION_VIZ_TOKEN`
-in the environment skips the file entirely.
+including a config that already exists somewhere unreachable.
 
-**The environment overrides the file, but a URL and the token sent to it count as one
-credential, not two fields.** `SESSION_VIZ_TOKEN` wins wherever it is set, and it brings the
-destination with it: the target is then `SESSION_VIZ_URL`, or the public host when that is
-unset — never the `url` sitting in the file. `SESSION_VIZ_URL` on its own, with a token in
-the file, is refused outright rather than sending a live workspace token to whatever that
-variable happens to name; set both, or neither. `SESSION_VIZ_ACTOR` is the only one of the
-three that overrides per field, and it decides a label, not a credential.
+**There is no credential in the environment.** `SESSION_VIZ_TOKEN` is gone: a token in a
+shell profile is a token in a CI variable, a process listing and every child process that
+inherited it, held by whoever copied it there rather than by the person the workspace issued
+it to. A machine that cannot open a browser is connected by signing in on one that can and
+carrying the `config.json` — `SESSION_VIZ_HOME` says where it may live.
 
-So a CI environment exports `SESSION_VIZ_TOKEN`, plus `SESSION_VIZ_URL` beside it when the
-host is not the public one. Exporting the URL alone — in a shell profile, say, left over
-from pointing setup at a self-hosted deployment — makes every command that needs the token
-stop with that refusal.
+`SESSION_VIZ_URL` still names the host **setup** signs in against, and after that the file
+decides: if the variable is still set and names a different host than the file, every
+command that would send something stops and says so rather than putting this workspace's
+token in a request to whatever the variable happens to name. `SESSION_VIZ_ACTOR` decides a
+label, not a credential.
 
 The MCP server needs none of this. `.mcp.json` carries a bare URL and no `env` block, so
 there is nothing to export — nothing on that path reads those variables at all.
