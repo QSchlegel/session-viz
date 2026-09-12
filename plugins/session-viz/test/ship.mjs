@@ -870,6 +870,43 @@ console.log(`\n── ` + 'the intents ride in the sidecar, and only this sessio
   r = await ship({ spinePath, reportPath, intentPath: join(home, 'missing.intent.json'), timeoutMs: 5000 })
   chk('an unreadable render file is reported and the facts still go',
     r.factsShipped === true && r.lines.some((l) => /INTENTS NOT SENT — could not read/.test(l)), r.lines.join('\n'))
+  chk('and the refusal is printed after the FACTS line it qualifies',
+    r.lines.findIndex((l) => /INTENTS NOT SENT/.test(l)) > r.lines.findIndex((l) => /FACTS SENT/.test(l)), r.lines.join('\n'))
+
+  // The step-4 fragment names no session. It is shaped like the render file
+  // and projects fine; it is also the un-merged draft, not the record.
+  const fragmentPath = join(home, 'a.fragment.json')
+  writeFileSync(fragmentPath, JSON.stringify({ intents: [{ title: 'From a fragment', status: 'done' }], graph: { concepts: [], relations: [] } }), { mode: 0o600 })
+  before = server.calls.length
+  r = await ship({ spinePath, reportPath, intentPath: fragmentPath, timeoutMs: 5000 })
+  facts = server.calls.slice(before).find((c) => c.url === '/v1/qpact/facts')
+  chk('a file that names no session is refused, and told which file to pass instead',
+    r.lines.some((l) => /INTENTS NOT SENT — .*names no session.*--merge/.test(l)) && JSON.parse(facts.body).intents.length === 0, r.lines.join('\n'))
+
+  // A title that quotes a prompt is withheld before it leaves, and counted.
+  const quotingPath = join(home, 'quoting.intent.json')
+  writeFileSync(quotingPath, JSON.stringify({
+    sessionId: 'sess-abc-123',
+    intents: [{ title: SECRET_PROMPT, status: 'done' }, { title: 'A safe paraphrase', status: 'done' }],
+    graph: { concepts: [], relations: [] },
+  }), { mode: 0o600 })
+  before = server.calls.length
+  r = await ship({ spinePath, reportPath, intentPath: quotingPath, timeoutMs: 5000 })
+  facts = server.calls.slice(before).find((c) => c.url === '/v1/qpact/facts')
+  chk('a title that is the prompt never reaches the socket', !facts.body.includes(SECRET_PROMPT))
+  chk('and the FACTS line counts it', r.lines.some((l) => /FACTS SENT.*1 intent.*1 title withheld for quoting a prompt/.test(l)), r.lines.filter((l) => /FACTS/.test(l)).join('\n'))
+
+  // The page withheld: the intents go with the page, not with the numbers.
+  withholdDocument(true)
+  before = server.calls.length
+  r = await ship({ spinePath, reportPath, intentPath, timeoutMs: 5000 })
+  facts = server.calls.slice(before).find((c) => c.url === '/v1/qpact/facts')
+  chk('with the page withheld the facts still go', r.factsShipped === true && !!facts)
+  chk('but carry no intents', JSON.parse(facts.body).intents.length === 0 && JSON.parse(facts.body).graph.concepts.length === 0)
+  chk('and both lines say so',
+    r.lines.some((l) => /PAGE WITHHELD.*without intents/.test(l)) && r.lines.some((l) => /FACTS SENT.*withheld with the page/.test(l)), r.lines.join('\n'))
+  chk('and nothing of the render file crosses', !facts.body.includes('Fix the cookie'))
+  withholdDocument(false)
 }
 
 console.log(`\n── ` + 'what is posted is what the server will accept')
@@ -914,11 +951,21 @@ console.log(`\n── ` + 'what is posted is what the server will accept')
       }],
     }))
 
+    // WITH intents, so the check cannot pass on an empty array — the server's
+    // validator stops at the declared leaves, and the first populated payload
+    // it ever saw was a real send.
+    const tracedIntent = join(home, 'traced.intent.json')
+    writeFileSync(tracedIntent, JSON.stringify({
+      sessionId: JSON.parse(readFileSync(traced, 'utf8')).sessionId,
+      intents: [{ title: 'Ship the trace', status: 'done', turns: [0] }],
+      graph: { concepts: [{ id: 'trace', label: 'The trace', group: 'subsystem' }], relations: [] },
+    }), { mode: 0o600 })
     const at = server.calls.length
-    await ship({ spinePath: traced, reportPath, timeoutMs: 5000 })
+    await ship({ spinePath: traced, reportPath, intentPath: tracedIntent, timeoutMs: 5000 })
     const sent = server.calls.slice(at)
 
     const factsBody = JSON.parse(sent.find((c) => c.url === FACTS_PATH).body)
+    chk('the payload validated carries intents, so this is not vacuous', factsBody.intents.length === 1 && factsBody.graph.concepts.length === 1)
     chk('the facts this plugin posts are what the server accepts',
       validateFacts(factsBody) === null, String(validateFacts(factsBody)))
 

@@ -227,8 +227,20 @@ const pathsRecorded = (s: Session): 'yes' | 'no' | 'unknown' =>
 
 /** The kinds a concept may carry on the wire. Anything else becomes null: an
  *  unknown kind is not a leak, but the console draws and groups by kind and must
- *  not be handed free text where it expects one of six words. */
+ *  not be handed free text where it expects one of these words. The console
+ *  knows five of the six today and files `subsystem` under "other"; it still
+ *  crosses, because the per-session page shows the word and dropping it to null
+ *  would lose the kind the model chose. */
 export const CONCEPT_GROUPS = ['decision', 'defect', 'guard', 'thread', 'subsystem', 'question'] as const
+/** The same rule the local page applies to a concept id. Enforced here rather
+ *  than cut: an id that fails is dropped with its relations, so MAX_ID is a
+ *  guarantee about the wire and not a truncation that hands a concept a new
+ *  identity on the way out. */
+export const CONCEPT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+/** A title or label that contains this many characters of a prompt, after
+ *  normalisation, is treated as quoting it and withheld. Long enough that a
+ *  shared word or two never trips it; short enough that a sentence does. */
+export const QUOTE_RUN = 24
 /** The statuses an intent may carry; anything else reads as still open. */
 export const INTENT_STATUSES = ['done', 'partial', 'abandoned', 'ongoing'] as const
 /** What the console's intent page will draw; the store may hold more and says so. */
@@ -236,7 +248,41 @@ export const MAX_INTENTS = 40
 export const MAX_CONCEPTS = 60
 export const MAX_RELATIONS = 120
 const MAX_LABEL = 120
-const MAX_ID = 64
+
+/** Lower-case, one space between words, no punctuation — so "Add /qruns!" and
+ *  "add qruns" compare equal, and a run of a prompt is found regardless of how
+ *  the model re-punctuated it. */
+const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+/**
+ * Does this model-written string quote one of the prompts?
+ *
+ * The disclosure's one absolute sentence — "None of it can quote a prompt" —
+ * was true by vacancy while intents shipped empty. Populated, it has to be
+ * made true by code, because the model is shown no rule against titling an
+ * intent with the words the person typed, and a short prompt titled verbatim
+ * would ship verbatim to everyone in the workspace.
+ *
+ * Three tests, on normalised text: the string IS a prompt; it CONTAINS a whole
+ * prompt of eight characters or more ("add /qruns" inside "asked to add
+ * /qruns"); or a QUOTE_RUN-character window of it appears inside a prompt,
+ * which catches a sentence lifted from the middle. Eight stops a two-word
+ * "ok" or "fix" from withholding every title that happens to contain it.
+ */
+export function quotesAPrompt(text: string, prompts: readonly string[]): boolean {
+  const c = norm(text)
+  if (!c) return false
+  for (const raw of prompts) {
+    const p = norm(String(raw || ''))
+    if (!p) continue
+    if (c === p) return true
+    if (p.length >= 8 && c.includes(p)) return true
+    if (p.length >= QUOTE_RUN && c.length >= QUOTE_RUN) {
+      for (let i = 0; i + QUOTE_RUN <= c.length; i++) if (p.includes(c.slice(i, i + QUOTE_RUN))) return true
+    }
+  }
+  return false
+}
 
 /**
  * Project a session's intent document onto the index tier.
@@ -256,9 +302,15 @@ const MAX_ID = 64
  * another session's conclusions under this one is the exact confusion the
  * store's provenance exists to prevent, and the wire must not undo it.
  */
-export function projectIntent(doc: unknown): { intents: IndexFacts['intents']; graph: IndexFacts['graph'] } {
-  const empty = { intents: [] as IndexFacts['intents'], graph: { concepts: [], relations: [] } as IndexFacts['graph'] }
+export function projectIntent(doc: unknown, prompts: readonly string[] = []): {
+  intents: IndexFacts['intents']; graph: IndexFacts['graph']
+  /** Titles and labels withheld because they quoted a prompt. Reported, never silent. */
+  withheld: number
+} {
+  const empty = { intents: [] as IndexFacts['intents'], graph: { concepts: [], relations: [] } as IndexFacts['graph'], withheld: 0 }
   if (!doc || typeof doc !== 'object') return empty
+  let withheld = 0
+  const quotes = (s: string): boolean => { const q = quotesAPrompt(s, prompts); if (q) withheld++; return q }
   const d = doc as { intents?: unknown; graph?: unknown }
   const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.slice(0, max) : '')
   const turnsOf = (v: unknown): number[] =>
@@ -268,6 +320,7 @@ export function projectIntent(doc: unknown): { intents: IndexFacts['intents']; g
   const intents = (Array.isArray(d.intents) ? d.intents : [])
     .map(rec)
     .filter((i): i is Record<string, unknown> => !!i && typeof i.title === 'string' && (i.title as string).trim().length > 0)
+    .filter((i) => !quotes(String(i.title)))
     .slice(0, MAX_INTENTS)
     .map((i) => ({
       title: str(i.title, MAX_LABEL),
@@ -276,31 +329,42 @@ export function projectIntent(doc: unknown): { intents: IndexFacts['intents']; g
     }))
 
   const g = rec(d.graph) || {}
+  const seen = new Set<string>()
   const concepts = (Array.isArray(g.concepts) ? g.concepts : [])
     .map(rec)
-    .filter((c): c is Record<string, unknown> => !!c && typeof c.id === 'string' && typeof c.label === 'string')
+    .filter((c): c is Record<string, unknown> => !!c && typeof c.id === 'string' && CONCEPT_ID_RE.test(c.id as string) && typeof c.label === 'string')
+    // The store merges duplicates on id; a render file should not carry two,
+    // but the wire must not either. First one wins, as it does in the store.
+    .filter((c) => { const id = c.id as string; if (seen.has(id)) return false; seen.add(id); return true })
+    .filter((c) => !quotes(String(c.label)))
     .slice(0, MAX_CONCEPTS)
     .map((c) => ({
-      id: str(c.id, MAX_ID),
+      id: c.id as string,
       label: str(c.label, MAX_LABEL),
       group: (CONCEPT_GROUPS as readonly string[]).includes(String(c.group)) ? String(c.group) : null,
     }))
-  // A relation's ends must both be concepts on this wire. The local page can
-  // relate a concept to a derived node (`tool:Bash`, `turn:23`); the console's
-  // merged graph has no such nodes, and an edge into nothing would be counted
-  // and dropped there anyway. Dropping it here keeps the count honest.
+  // A relation's ends must both be concepts on this wire, and different ones.
+  // The local page can relate a concept to a derived node (`tool:Bash`,
+  // `turn:23`) or name an intent by its title; the console's merged graph has
+  // no such nodes, and an edge into nothing would be counted and dropped there
+  // anyway. Dropping it here keeps the count honest. A concept dropped above —
+  // bad id, duplicate, or a label that quoted a prompt — takes its edges with it.
   const ids = new Set(concepts.map((c) => c.id))
   const relations = (Array.isArray(g.relations) ? g.relations : [])
     .map(rec)
-    .filter((r): r is Record<string, unknown> => !!r && typeof r.from === 'string' && typeof r.to === 'string' && ids.has(r.from as string) && ids.has(r.to as string))
+    .filter((r): r is Record<string, unknown> =>
+      !!r && typeof r.from === 'string' && typeof r.to === 'string' && r.from !== r.to && ids.has(r.from as string) && ids.has(r.to as string))
+    .filter((r) => !(typeof r.label === 'string' && quotes(r.label)))
     .slice(0, MAX_RELATIONS)
-    .map((r) => ({ from: str(r.from, MAX_ID), to: str(r.to, MAX_ID), label: typeof r.label === 'string' ? str(r.label, MAX_LABEL) : null }))
+    .map((r) => ({ from: r.from as string, to: r.to as string, label: typeof r.label === 'string' ? str(r.label, MAX_LABEL) : null }))
 
-  return { intents, graph: { concepts, relations } }
+  return { intents, graph: { concepts, relations }, withheld }
 }
 
 export function indexFacts(s: Session, meta: { pluginVersion?: string | null } = {}, intent: unknown = null): IndexFacts {
-  const model = projectIntent(intent)
+  // The prompts are handed in so a title that quotes one is withheld. They are
+  // read for that comparison and for nothing else; nothing below emits them.
+  const model = projectIntent(intent, (s.turns || []).map((t) => String(t.text || '')))
   const turns = s.turns || []
   const { kept, dropped } = collectFiles(turns)
   const sc = s.score || ({} as Session['score'])

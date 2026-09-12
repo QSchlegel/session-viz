@@ -258,7 +258,7 @@
     "graph": {
       "tier": "index",
       "type": "graph",
-      "note": "Model-written concepts and relations. Labels and notes are prose and can paraphrase a prompt; this is the one index field where that is true, and it is why intents drop their summaries."
+      "note": "Model-written concepts and relations. Concept and relation labels are prose and can paraphrase a prompt — the one index field where that is true, and why intents drop their summaries; a label that quotes a prompt is withheld before it leaves. Notes, anchors and provenance never cross. Ids must match ^[a-z0-9][a-z0-9_-]{0,63}$ or the concept is dropped with its relations."
     },
     "trace": {
       "tier": "trace",

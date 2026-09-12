@@ -89,7 +89,7 @@ import { fileURLToPath } from 'node:url'
 
 import { configDirs, configTarget } from './home.mjs'
 import { config } from './cloud.mjs'
-import { indexFacts, traceFacts, undisclosedFacts, undisclosedTrace, INDEX_FIELDS } from './facts.mjs'
+import { indexFacts, projectIntent, traceFacts, undisclosedFacts, undisclosedTrace, INDEX_FIELDS } from './facts.mjs'
 import type { Session } from './extract.mjs'
 import { redactionLimit } from './bundle.mjs'
 import { version } from './version.mjs'
@@ -1371,14 +1371,20 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
   //
   // Before the document is even read. The two payloads expose differently: the
   // page is every prompt in the session, verbatim; the sidecar is counts, bands
-  // and names. Somebody who wants their team's roll-up to be complete should
-  // not have to ship their prompts to achieve it, and somebody who withholds
-  // their prompts should not vanish from the numbers as a side effect — the
-  // shape of that absence is its own disclosure.
+  // and names — and, unless the page is withheld, the model-written titles of
+  // what the session was for. Somebody who wants their team's roll-up to be
+  // complete should not have to ship their prompts to achieve it, and somebody
+  // who withholds their prompts should not vanish from the numbers as a side
+  // effect — the shape of that absence is its own disclosure.
+  //
+  // The intents go with the page, not with the numbers. A title is a sentence
+  // about what the person typed, and somebody who withheld the page was uneasy
+  // about exactly that; the middle answer the withhold was offered as — the
+  // numbers without the prose — has to mean what it says.
   if (state.documentWithheld) {
-    const withheld = await sendSidecars(spine, dest, args, lines, {
-      shipped: false,
-      head: '  PAGE WITHHELD — you turned the rendered report off; the bounded facts still go',
+    const withheld = await sendSidecars(spine, dest, { ...args, intentPath: undefined }, lines, {
+      shipped: false, intentsWithheld: true,
+      head: '  PAGE WITHHELD — you turned the rendered report off; the bounded facts still go, without intents',
     })
     return { ...withheld, reason: 'the rendered page is withheld from this machine' }
   }
@@ -1480,7 +1486,7 @@ export async function shipReport(args: ShipArgs): Promise<ShipResult> {
  */
 async function sendSidecars(
   spine: Spine, dest: Config, args: ShipArgs, lines: string[],
-  out: { shipped: boolean; id?: string; url?: string; bytes?: number; head: string },
+  out: { shipped: boolean; id?: string; url?: string; bytes?: number; head: string; intentsWithheld?: boolean },
 ): Promise<ShipResult> {
   //
   // Two payloads, two outcomes, and the word "shipped" never stands alone
@@ -1498,22 +1504,33 @@ async function sendSidecars(
   // that matters — the store carries earlier sessions as `prior`, but a render
   // file for another session is another session's conclusions, and they must
   // not be filed under this one because a path was copied wrong.
+  // Three refusals, all local and all said out loud, after the FACTS line they
+  // qualify: a file that will not parse, a file that names no session (the
+  // step-4 fragment is the one document shaped like this — the un-merged draft,
+  // not the session's record), and a file that names a different session.
   let intentDoc: unknown = null
   let intentNote: string | null = null
   if (args.intentPath) {
     try {
       const doc = JSON.parse(readFileSync(args.intentPath, 'utf8')) as { sessionId?: unknown }
       const declared = typeof doc.sessionId === 'string' ? doc.sessionId : null
-      if (declared && declared !== String(spine.sessionId)) {
-        intentNote = `  INTENTS NOT SENT — ${args.intentPath} describes session ${declared.slice(0, 8)}, not ${String(spine.sessionId).slice(0, 8)}; the facts went without them`
+      if (!declared) {
+        intentNote = `  INTENTS NOT SENT — ${args.intentPath} names no session; pass the render path intent.mjs --merge printed, not the fragment`
+      } else if (declared !== String(spine.sessionId)) {
+        intentNote = `  INTENTS NOT SENT — ${args.intentPath} describes session ${declared.slice(0, 8)}, not ${String(spine.sessionId).slice(0, 8)}`
       } else {
         intentDoc = doc
       }
     } catch (e) {
-      intentNote = `  INTENTS NOT SENT — could not read ${args.intentPath}: ${(e as Error).message}; the facts went without them`
+      intentNote = `  INTENTS NOT SENT — could not read ${args.intentPath}: ${(e as Error).message}`
     }
   }
   const facts = indexFacts(asSession(spine), { pluginVersion: version() }, intentDoc)
+  // Recomputed for the count only — projectIntent is pure, and indexFacts keeps
+  // its 48 fields with no room for a "withheld" on the wire.
+  const withheldTitles = intentDoc
+    ? projectIntent(intentDoc, ((spine.turns || []) as { text?: unknown }[]).map((t) => String(t?.text || ''))).withheld
+    : 0
   const und = undisclosedFacts(facts)
   if (und.extra.length || und.missing.length) {
     // Fail closed, exactly as the report payload does: a field the disclosure
@@ -1542,13 +1559,16 @@ async function sendSidecars(
   const fr = await post(`${dest.url}${FACTS_PATH}`, dest, facts, args.timeoutMs)
   const nI = facts.intents.length
   const nC = facts.graph.concepts.length
-  const carried = nI || nC
-    ? `with ${nI} intent${nI === 1 ? '' : 's'} and ${nC} concept${nC === 1 ? '' : 's'}`
-    : args.intentPath ? 'with no intents' : 'with no intents — pass --intent <render file> to send them'
+  const quoted = withheldTitles ? `; ${withheldTitles} title${withheldTitles === 1 ? '' : 's'} withheld for quoting a prompt` : ''
+  const carried = out.intentsWithheld
+    ? 'with no intents — withheld with the page'
+    : nI || nC
+      ? `with ${nI} intent${nI === 1 ? '' : 's'} and ${nC} concept${nC === 1 ? '' : 's'}${quoted}`
+      : args.intentPath ? `with no intents${quoted}` : 'with no intents — pass --intent <render file> to send them'
   const factsLine = fr.ok
     ? `  FACTS SENT — the session is in the workspace roll-up, ${carried}`
     : `  FACTS NOT SENT — ${fr.why}.${out.shipped ? ' The report above went and is unaffected.' : ''}`
-  if (intentNote) lines.push(intentNote)
+  const afterFacts = intentNote ? [intentNote] : []
 
   // ── The trace, only when the extractor was asked to keep one ────────────
   //
@@ -1574,7 +1594,7 @@ async function sendSidecars(
     if (bad) {
       return {
         ...out, reason: '', factsShipped: fr.ok,
-        lines: [...lines, out.head, factsLine,
+        lines: [...lines, out.head, factsLine, ...afterFacts,
           `  TRACE NOT SENT — a call carries ${bad.extra.length} field(s) the contract does not name` +
           `${bad.missing.length ? ` and is missing ${bad.missing.length}` : ''}: ${[...bad.extra, ...bad.missing].join(', ')}`,
           '    This is a defect in this build, not something you can fix.'],
@@ -1589,7 +1609,7 @@ async function sendSidecars(
 
   return {
     ...out, reason: '', factsShipped: fr.ok,
-    lines: [...lines, out.head, factsLine, ...(traceLine ? [traceLine] : []),
+    lines: [...lines, out.head, factsLine, ...afterFacts, ...(traceLine ? [traceLine] : []),
       `  Turn this off at any time with:  node push.mjs --off`],
   }
 }

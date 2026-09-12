@@ -232,7 +232,13 @@ facts — titles, statuses, cited turns, labels and kinds; never a summary, a no
 or a prior session. Without it the facts still go, with no intents, and the
 console's intent page shows nothing for this session. It is the same render
 path step 6 used; do not hand it a different session's file — push refuses one
-whose `sessionId` is not this spine's and says so.
+whose `sessionId` is not this spine's and says so, and refuses the step-4
+fragment the same way because it names no session. A render file filed under
+`--session <id>` is another session's file to push, and is refused too.
+
+A title that quotes a prompt is withheld before it leaves, and the FACTS line
+says how many were. The disclosure promises that none of the facts can quote a
+prompt; that promise is kept by code here, not by the model's restraint.
 
 Run this every time, after step 6 and never before it. It prints one line either
 way — where the report went, or why it stayed on this machine. **Pass through
@@ -284,7 +290,9 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/push.mjs --withhold-document    # keep the fa
 uneasy about the page but not about the numbers: it stops sending the rendered
 report — every prompt in the session, verbatim — and keeps sending the 48
 bounded fields, so they stay in their team's roll-up without their prompts going
-with them.
+with them. The intents go with the page, not with the numbers: a withheld page
+means the facts ship with no intents, because a title is a sentence about what
+was typed and that is what the person was uneasy about.
 
 A step 7 run prints two outcomes now, and sometimes three: the page, the facts,
 and a trace when the extractor was asked to keep one. Relay all of them. "Shipped"
