@@ -177,7 +177,9 @@ export interface SessionTurn {
   text: string
   fullChars: number
   hasImage: boolean
-  /** false when the record was IDE-wrapped rather than written by hand */
+  /** false when nobody wrote it: an IDE-wrapped record, or one the harness
+   *  inserted on the user's behalf — a skill body is the common case, fifteen
+   *  thousand characters of instructions that read as a prompt and are not. */
   typed: boolean
   /** true when the turn arrived as a queued_command mid-flight */
   steering: boolean
@@ -484,6 +486,10 @@ export interface TranscriptRecord {
   isSidechain?: boolean
   promptId?: string
   effort?: string
+  /** Set by the harness on a user-role record it inserted itself — a skill body
+   *  after a slash command, a companion note — as opposed to text a person
+   *  typed. Absent on typed prompts. */
+  isMeta?: boolean
   title?: string
   customTitle?: string
   aiTitle?: string
@@ -557,6 +563,11 @@ interface NewTurnArgs {
 //              events, compaction summaries). Never human intent.
 //   IDE      - wrapped, but genuinely user-initiated (clicking an element in
 //              the IDE integration). Counted as a turn, flagged as non-typed.
+//   META     - the harness inserting text under the user role: the body of a
+//              skill after a slash command, a companion note. `isMeta: true` on
+//              the record. A real turn — the model acts on it — but nobody typed
+//              it, and anything that compares a model's words against "what the
+//              person wrote" must not count it.
 const SLASH = /^<(command-name|command-message|command-args|local-command-caveat|local-command-stdout|local-command-stderr|user-prompt-submit-hook)\b/
 // `scheduled-task` is a cron firing, not a person typing. It reads like a prompt
 // and lands on the same code path as one, so without it the corpus attributes a
@@ -594,6 +605,7 @@ function classifyUser(rec: TranscriptRecord): UserRecordClass {
     return { kind: 'slash', command: cmd ? cmd[1]!.trim() : null }
   }
   if (IDE.test(text)) return { kind: 'human', text, hasImage, typed: false }
+  if (rec.isMeta === true && text) return { kind: 'human', text, hasImage, typed: false }
   if (!text) return hasImage ? { kind: 'human', text: '[image]', hasImage, typed: true } : { kind: 'empty' }
   return { kind: 'human', text, hasImage, typed: true }
 }

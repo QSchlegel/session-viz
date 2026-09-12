@@ -361,10 +361,23 @@ export function projectIntent(doc: unknown, prompts: readonly string[] = []): {
   return { intents, graph: { concepts, relations }, withheld }
 }
 
+/**
+ * What the person actually wrote, and nothing the harness wrote for them.
+ *
+ * A skill body arrives as a user-role turn fifteen thousand characters long,
+ * flagged `typed: false` by extract. Compared against it, a title that
+ * restates the skill's own words ("Analyse this session") is withheld for
+ * quoting a prompt nobody typed — three of the first real send's ten intents
+ * went that way. The guard is about the person's words; this is the set.
+ */
+export function typedPrompts(turns: readonly { text?: unknown; typed?: unknown }[] | undefined): string[] {
+  return (turns || []).filter((t) => t && t.typed !== false).map((t) => String(t.text || ''))
+}
+
 export function indexFacts(s: Session, meta: { pluginVersion?: string | null } = {}, intent: unknown = null): IndexFacts {
   // The prompts are handed in so a title that quotes one is withheld. They are
   // read for that comparison and for nothing else; nothing below emits them.
-  const model = projectIntent(intent, (s.turns || []).map((t) => String(t.text || '')))
+  const model = projectIntent(intent, typedPrompts(s.turns))
   const turns = s.turns || []
   const { kept, dropped } = collectFiles(turns)
   const sc = s.score || ({} as Session['score'])
