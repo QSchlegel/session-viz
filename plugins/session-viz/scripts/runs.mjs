@@ -444,11 +444,23 @@ const by = (a, k) => {
     }
     return m;
 };
+/** A run that ended coherently having neither written nor tried to. */
+const isQuietRun = (r) => (r.terminal === 'completed_prose' || r.terminal === 'completed_structured') &&
+    r.delivery === 'no_intent' && r.errorClass === 'none';
 export function ledger(runs) {
     const auto = runs.filter((r) => r.kind !== 'human');
     const tasks = [...by(runs.filter((r) => r.task), 'task').entries()].map(([task, a]) => {
         const delivered = a.filter((r) => r.delivery === 'wrote_ok').length;
         const denied = a.filter((r) => r.delivery === 'denied').length;
+        const permissionRuns = a.filter((r) => r.errorClass === 'permission').length;
+        const quietRuns = a.filter(isQuietRun).length;
+        // Precedence, not a score. One refusal is the loudest fact a task can
+        // carry; after that, a run that meant to write and did not; and only a task
+        // with nothing but clean no-ops is quiet.
+        const verdict = delivered > 0 ? 'delivering'
+            : denied > 0 || permissionRuns > 0 ? 'blocked'
+                : quietRuns === a.length ? 'quiet'
+                    : 'silent';
         return {
             task, runs: a.length, delivered, denied,
             artifactPresent: a.filter((r) => r.artifact.present > 0).length,
@@ -461,9 +473,17 @@ export function ledger(runs) {
             series: a.map((r) => r.out),
             // The honest form of a zero denominator is a refusal plus both numbers.
             cpdo: delivered ? sum(a, (r) => r.out) / delivered : null,
-            permission: a.filter((r) => r.errorClass === 'permission').length,
-            // Same announced next step every run, and no successful write result.
-            stalled: delivered === 0 && a.length >= 3,
+            permission: permissionRuns,
+            // Per cause, so a reader sees "1 quiet, 2 stopped" rather than one word
+            // covering both. A `quiet` run is a success of a kind — the job ran,
+            // decided, and reported — and must never be counted as a failure.
+            quiet: quietRuns,
+            stopped: a.length - delivered - denied - quietRuns,
+            verdict,
+            // Kept because the renderer, the skill and /qfeed all read it, and
+            // narrowed: a task every one of whose runs ended coherently with nothing
+            // to do is not stalled, however many times it has run.
+            stalled: (verdict === 'blocked' || verdict === 'silent') && a.length >= 3,
         };
     }).sort((x, y) => y.runs - x.runs);
     const families = [...by(runs.filter((r) => r.family), 'family').entries()].map(([family, a]) => ({
@@ -556,7 +576,14 @@ export function renderLedger(L) {
         out.push('  runs  wrote  present  not-found  unavailable  denied  output   cost/write-result   task');
         for (const x of L.tasks) {
             const cp = x.cpdo === null ? `undefined (${x.runs} runs, ${fmt(x.out)} out, 0 writes)` : fmt(Math.round(x.cpdo));
-            out.push(`  ${String(x.runs).padStart(4)}  ${String(x.delivered).padStart(5)}  ${String(x.artifactPresent).padStart(7)}  ${String(x.artifactNotFound).padStart(9)}  ${String(x.artifactUnavailable).padStart(11)}  ${String(x.denied).padStart(6)}  ${fmt(x.out).padStart(6)}   ${cp.padEnd(19)} ${x.task}${x.stalled ? '   << STALLED' : ''}`);
+            // Each cause reads differently, because each has a different remedy: a
+            // blocked task needs a settings line, a silent one needs somebody to read
+            // a transcript, and a quiet one needs nothing at all.
+            const mark = x.verdict === 'blocked' ? '   << BLOCKED — refused, never wrote'
+                : x.verdict === 'silent' ? `   << SILENT — ${x.stopped} run(s) stopped without writing`
+                    : x.verdict === 'quiet' ? `   ·· quiet — ${x.quiet} run(s) ended with nothing to do`
+                        : '';
+            out.push(`  ${String(x.runs).padStart(4)}  ${String(x.delivered).padStart(5)}  ${String(x.artifactPresent).padStart(7)}  ${String(x.artifactNotFound).padStart(9)}  ${String(x.artifactUnavailable).padStart(11)}  ${String(x.denied).padStart(6)}  ${fmt(x.out).padStart(6)}   ${cp.padEnd(19)} ${x.task}${mark}`);
         }
     }
     if (L.families.length) {

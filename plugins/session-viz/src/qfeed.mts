@@ -52,7 +52,14 @@ export interface Candidate {
 }
 
 interface RunsLedger {
-  tasks?: Array<{ task: string; runs: number; delivered: number; denied: number; out: number; lastRun?: string }>
+  tasks?: Array<{
+    task: string; runs: number; delivered: number; denied: number; out: number; lastRun?: string
+    /** Why it produced nothing — see TaskVerdict in runs.mts. Optional so a
+     *  ledger written by an older build still parses; a task without one is
+     *  treated as not a candidate rather than as a failure. */
+    verdict?: 'delivering' | 'blocked' | 'silent' | 'quiet'
+    quiet?: number; stopped?: number
+  }>
   families?: Array<{ family: string; runs: number; structured: number; structuredFail: number }>
   totals?: { runs?: number }
 }
@@ -80,14 +87,23 @@ const json = async <T,>(script: string, args: string[]): Promise<T> => {
  */
 function stalledTasks(l: RunsLedger): Candidate[] {
   return (l.tasks || [])
-    .filter((t) => t.runs >= 5 && t.delivered === 0)
+    // Not `delivered === 0`: a task whose runs all end coherently with nothing
+    // to do delivers nothing by design, and filing it as work to fix is how a
+    // backlog fills with jobs that are already correct. The ledger's verdict
+    // separates the causes; only the two failures are candidates.
+    .filter((t) => t.runs >= 5 && (t.verdict === 'blocked' || t.verdict === 'silent'))
     .map((t) => ({
       detector: 'qruns:stalled',
       source: `qruns:stalled:${t.task}`,
-      title: `${t.task} recorded no successful writes in ${t.runs} runs`,
+      title: t.verdict === 'blocked'
+        ? `${t.task} was refused a write in ${t.runs} runs`
+        : `${t.task} stopped without writing in ${t.runs} runs`,
       brief:
         `The scheduled task \`${t.task}\` has run ${t.runs} times and recorded no successful write result.\n` +
-        `${t.denied} run(s) had a write blocked by a permission prompt, which a headless run cannot answer.\n` +
+        (t.verdict === 'blocked'
+          ? `${t.denied} run(s) had a write blocked by a permission prompt, which a headless run cannot answer.\n`
+          : `${t.stopped} run(s) stopped before writing anything — no refusal was recorded, so read a transcript rather than a settings file.\n`) +
+        (t.quiet ? `${t.quiet} run(s) ended coherently with nothing to do; those are not failures and are excluded from this count.\n` : '') +
         `It has spent ${Math.round(t.out / 1000)}k output tokens without a recorded successful write.\n` +
         (t.lastRun ? `Last run ${t.lastRun}.\n` : '') +
         `\nWhere to start: inspect the denied count and the repo's Write/Edit permission boundary. ` +
