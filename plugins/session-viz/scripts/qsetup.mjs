@@ -4,7 +4,6 @@
 //
 //   node qsetup.mjs                 # sign in in the browser, get a token back
 //   node qsetup.mjs --scope collab  # ask for plane B access (admins only)
-//   node qsetup.mjs --paste         # the old flow: paste a token into a page
 //   node qsetup.mjs --show          # print the current config, redacted
 //   node qsetup.mjs --forget        # delete it
 //
@@ -144,93 +143,6 @@ ${brandHeader({ plain: true })}
 ${goto ? `<p style="margin-top:14px"><a href="${goto}">Open your workspace</a></p>` : ''}
 ${brandFooter({ plain: true, facts: ['written by /qsetup — check the address bar says 127.0.0.1 before typing a token'] })}
 </div></body></html>`;
-/** Exported for the same reason as `done`: the brand test renders the real
- *  page rather than a copy of its markup. */
-export const PAGE = (nonce, defaultUrl, target, actor) => `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Connect session-viz</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-${TOKENS}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);
-  color:var(--ink);font:15px/1.55 var(--sans);padding:24px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
-  padding:26px 28px;max-width:520px;width:100%;box-shadow:0 6px 24px -14px var(--shadow)}
-h1{font-size:20px;margin:0 0 6px}
-p{color:var(--dim);margin:0 0 18px}
-label{display:block;font:600 10.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
-  color:var(--dim);margin:14px 0 6px}
-input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;
-  font:13.5px var(--mono);background:var(--bg);color:var(--ink)}
-input:focus{outline:2px solid var(--green);outline-offset:-1px}
-button{margin-top:18px;width:100%;padding:11px;border:0;border-radius:8px;background:var(--ink);
-  color:var(--bg);font:500 14px var(--sans);cursor:pointer}
-button:disabled{opacity:.45;cursor:not-allowed}
-.msg{margin-top:14px;font:13px var(--mono);min-height:20px}
-.ok{color:var(--green)} .bad{color:var(--red)}
-code{font-family:var(--mono);font-size:12.5px;color:var(--accent)}
-${brandCss()}
-</style></head><body>
-<div class="card">
-  ${brandHeader({ plain: true })}
-  <h1>Connect this machine</h1>
-  <p>Paste the token from your workspace. It is checked against the server before anything
-     is written, and stored only in <code>${esc(target)}</code>.</p>
-  <label for="u">Server</label>
-  <input id="u" type="text" value="${esc(defaultUrl)}" spellcheck="false">
-  <label for="t">Plugin token</label>
-  <input id="t" type="password" placeholder="svt_…" spellcheck="false" autocomplete="off" autofocus>
-  <label for="a">Actor label (optional)</label>
-  <input id="a" type="text" placeholder="you@example.com" spellcheck="false" value="${esc(actor)}">
-  <button id="go" type="button">Verify and save</button>
-  <p class="msg" id="m"></p>
-  ${brandFooter({
-    plain: true,
-    // What this page is, stated flatly. No claim about the token, the server or
-    // the transport — the page has no way to know any of that yet, and a
-    // reassuring footer under a secret field is worth less than nothing.
-    facts: ['written by /qsetup — check the address bar says 127.0.0.1 before typing a token'],
-})}
-</div>
-<script>
-const $ = (id) => document.getElementById(id)
-const m = $('m')
-const say = (t, cls) => { m.textContent = t; m.className = 'msg ' + (cls || '') }
-$('go').onclick = async () => {
-  const token = $('t').value.trim()
-  if (!token) return say('Paste the token first.', 'bad')
-  $('go').disabled = true
-  say('Verifying with the server…')
-  try {
-    const r = await fetch('/save?nonce=${nonce}', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token, url: $('u').value.trim(), actor: $('a').value.trim() }),
-    })
-    const d = await r.json()
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status))
-    // Back to the workspace rather than "you can close this tab". The console
-    // is where the next thing happens, and it now sees this machine as
-    // connected — telling somebody to close the tab left them looking at a
-    // checklist that had no idea the setup they just did had happened.
-    say('Saved — scope ' + d.scope + ', workspace ' + d.tenant + '. Taking you to your workspace…', 'ok')
-    $('t').value = ''
-    // A link too, because a redirect can be blocked and a dead end here is a
-    // person with a working config who thinks it failed.
-    const a = document.createElement('a')
-    a.href = d.app
-    a.textContent = 'Open it now'
-    a.style.marginLeft = '8px'
-    m.appendChild(a)
-    setTimeout(() => { location.href = d.app }, 1200)
-  } catch (e) {
-    say(e.message, 'bad')
-    $('go').disabled = false
-  }
-}
-$('t').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('go').click() })
-</script>
-</body></html>`;
 // ---------------------------------------------------------------- cli
 function openBrowser(url) {
     const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
@@ -385,90 +297,6 @@ async function runOAuth(target, scope, actor) {
     });
     return ok;
 }
-// ---------------------------------------------------------------- paste flow
-async function runPaste(defaultUrl, harness) {
-    const nonce = crypto.randomBytes(18).toString('base64url');
-    await new Promise((resolve) => {
-        const server = http.createServer(async (req, res) => {
-            const url = new URL(req.url || '/', 'http://127.0.0.1');
-            const send = (code, body) => {
-                res.writeHead(code, { 'content-type': 'application/json' });
-                res.end(JSON.stringify(body));
-            };
-            if (req.method === 'GET' && url.pathname === '/') {
-                res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-                return res.end(PAGE(nonce, defaultUrl, configTarget(), harness === 'unknown' ? '' : harness));
-            }
-            if (req.method === 'POST' && url.pathname === '/save') {
-                // The nonce is the whole reason another local process cannot drive
-                // this: it is only ever printed to this terminal and handed to the
-                // browser we opened.
-                if (url.searchParams.get('nonce') !== nonce)
-                    return send(403, { error: 'bad nonce' });
-                let raw = '';
-                for await (const chunk of req) {
-                    raw += chunk;
-                    if (raw.length > 8192)
-                        return send(413, { error: 'too large' });
-                }
-                let body;
-                try {
-                    body = JSON.parse(raw);
-                }
-                catch {
-                    return send(400, { error: 'invalid json' });
-                }
-                const token = String(body.token || '').trim();
-                const target = String(body.url || defaultUrl).trim().replace(/\/$/, '');
-                if (!token)
-                    return send(400, { error: 'no token' });
-                if (!/^svt_/.test(token)) {
-                    return send(400, { error: 'that does not look like a plugin token — they begin svt_' });
-                }
-                try {
-                    const info = await verify(target, token);
-                    const actor = String(body.actor || '').trim();
-                    const saved = saveConfig({
-                        url: target, token, scope: info.scope, tenant: info.tenant,
-                        ...(actor ? { actor } : {}),
-                        savedAt: new Date().toISOString(),
-                    });
-                    const app = `${target}/app`;
-                    send(200, { saved: true, scope: info.scope, tenant: info.tenant, app });
-                    report({ saved, token, scope: info.scope, tenant: info.tenant, target, actor });
-                    console.log(`  browser sent to ${app}`);
-                    server.close();
-                    resolve();
-                }
-                catch (e) {
-                    send(400, { error: e.message });
-                }
-                return;
-            }
-            send(404, { error: 'not found' });
-        });
-        // Loopback only. Port 0 lets the kernel pick, so this is never a predictable
-        // target between runs.
-        server.listen(0, '127.0.0.1', () => {
-            const addr = server.address();
-            const port = typeof addr === 'object' && addr ? addr.port : 0;
-            const link = `http://127.0.0.1:${port}/?nonce=${nonce}`;
-            console.log('session-viz setup');
-            console.log(`  opening ${link}`);
-            console.log('  paste the token from your workspace at ' + defaultUrl + '/app');
-            console.log('  waiting… (ctrl-c to cancel)');
-            openBrowser(link);
-        });
-        // A setup page that outlives the terminal it was started from is a loose
-        // end, not a convenience.
-        const timer = setTimeout(() => {
-            console.log('\n  timed out after 5 minutes — nothing was written');
-            server.close();
-            resolve();
-        }, DEADLINE_MS);
-        timer.unref();
-    });
-}
 async function run() {
     const argv = process.argv.slice(2);
     if (argv.includes('--show')) {
@@ -514,19 +342,24 @@ async function run() {
         process.exitCode = 2;
         return;
     }
-    if (!argv.includes('--paste')) {
-        if (await supportsOAuth(defaultUrl)) {
-            const ok = await runOAuth(defaultUrl, scope, actor);
-            // A refusal, a timeout or a failed exchange are all answers, not reasons
-            // to quietly offer a text box instead. Falling through to the paste page
-            // after somebody pressed Deny would be its own small betrayal.
-            if (!ok)
-                process.exitCode = 1;
-            return;
-        }
-        console.log(`  note    ${defaultUrl} has no browser sign-in; using the paste page instead.`);
+    // One way in. A token typed into a box is a token that can be read over a
+    // shoulder, saved by a password manager that thinks it is a password, pasted
+    // into the wrong window, or held by somebody who never signed in — and the
+    // page that asked for it had to be trusted before the token could be checked.
+    // The browser hand-off has none of those: nothing secret is typed, the
+    // workspace mints the credential itself, and the exchange proves the machine
+    // that asked is the machine that receives.
+    if (!await supportsOAuth(defaultUrl)) {
+        console.error(`\n  ${defaultUrl} does not offer browser sign-in, and there is no other way in.`);
+        console.error('  A host that cannot sign you in cannot connect this machine. Check the');
+        console.error('  address, or point SESSION_VIZ_URL at a workspace that can.');
+        process.exitCode = 1;
+        return;
     }
-    await runPaste(defaultUrl, harness);
+    // A refusal, a timeout or a failed exchange are all answers. None of them is
+    // a reason to offer a text box instead.
+    if (!await runOAuth(defaultUrl, scope, actor))
+        process.exitCode = 1;
 }
 const isMain = process.argv[1] && process.argv[1].endsWith('qsetup.mjs');
 if (isMain)

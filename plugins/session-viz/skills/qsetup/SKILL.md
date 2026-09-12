@@ -1,6 +1,6 @@
 ---
 name: qsetup
-description: Connect this machine to a session-viz workspace by signing in through the browser — no token is ever typed, pasted or shown in the terminal.
+description: Connect this machine to a session-viz workspace by signing in through the browser — the only way in; no token is ever typed, pasted or shown in the terminal.
 disable-model-invocation: true
 ---
 
@@ -86,25 +86,23 @@ If the output carries a `note` about the preferred location not being writable, 
 path it settled on — that is a sandboxed harness, and the next command needs to find the
 same file.
 
-In the browser flow a non-zero exit means nothing was written: declining the consent
-screen, the five-minute deadline and a failed exchange all end that way, and none of them
-quietly offers the text box instead. Say which of the three happened and offer to run it
-again. The `--paste` fallback is the exception — it exits 0 even when it timed out — so
-there, read the `saved` line and not the status code. Either way, never report a connection
-that the output does not show.
+A non-zero exit means nothing was written: declining the consent screen, the five-minute
+deadline, a failed exchange, and a host with no browser sign-in all end that way. Say which
+happened and offer to run it again. Never report a connection the output does not show.
 
 ## Other flags
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/scripts/qsetup.mjs --show     # current config, token redacted
 node ${CLAUDE_PLUGIN_ROOT}/scripts/qsetup.mjs --forget   # delete it
-node ${CLAUDE_PLUGIN_ROOT}/scripts/qsetup.mjs --paste    # the old flow, for a token you already hold
 ```
 
-`--paste` opens a local page with a text box instead. It is the right answer in exactly two
-cases: a self-hosted server too old to have `/authorize` — which the plugin detects on its
-own and falls back to without being asked — and an admin installing a token they were
-handed rather than one they are about to approve.
+There is no flag that takes a token. A machine is connected by signing in, or not at all: a
+token typed into a box is one that can be read over a shoulder, filed by a password manager
+that thinks it is a password, pasted into the wrong window, or held by somebody who never
+signed in — and the page asking for it has to be trusted before the token can be checked. A
+host that does not offer browser sign-in cannot connect this machine, and setup says so and
+stops rather than asking for a secret it cannot verify.
 
 `--show` reads the file and only the file. A machine that works from `SESSION_VIZ_TOKEN` in
 the environment has no file, and this prints the paths it looked in rather than the
@@ -121,9 +119,7 @@ SESSION_VIZ_URL=https://sv.example.internal node ${CLAUDE_PLUGIN_ROOT}/scripts/q
 
 Set it for that one run. The host it verified against is written into `config.json`, so
 every later command reads the destination from there — and leaving the variable exported
-afterwards is what breaks them, for the reason under **What it writes** below. On the
-`--paste` page the same field is editable, and the host that page verifies is the host it
-writes.
+afterwards is what breaks them, for the reason under **What it writes** below.
 
 ## What it writes
 

@@ -36,7 +36,7 @@ import { dirname, join } from 'node:path'
 
 import { render as renderTrends } from '../scripts/render-corpus.mjs'
 import { pickerPage } from '../scripts/qshare.mjs'
-import { PAGE as setupPage, done as setupDone } from '../scripts/qsetup.mjs'
+import { done as setupDone } from '../scripts/qsetup.mjs'
 import { MIN_MARK } from '../scripts/brand.mjs'
 
 // src/render.mts is the one wrapper this stream does not own, so the chrome
@@ -516,20 +516,9 @@ provenance('/qshare', picker, [
 chk('/qshare: the inline script survived the interpolation',
   /<script>[\s\S]*addEventListener[\s\S]*<\/script>/.test(picker))
 
-console.log('\n/qsetup — connect this machine')
-const setup = setupPage('nonce123', 'https://example.invalid', '~/.claude/settings.json', '')
-brandChecks('/qsetup', setup, { plain: true })
-selfContained('/qsetup', setup)
-provenance('/qsetup', setup, [
-  'Connect this machine',
-  'written by /qsetup — check the address bar says 127.0.0.1 before typing a token',
-])
-// A local auth page must not dress up. These are the words that would make it
-// look like it had authority it does not have.
-for (const word of ['Verified', 'Secure', 'Official', 'Trusted', 'Certified']) {
-  chk(`/qsetup: does not call itself "${word}"`, !new RegExp(`\\b${word}\\b`, 'i').test(setup))
-}
-
+// The page that asked for a token is gone: /qsetup connects through the
+// browser and nothing secret is ever typed into a local page. What is left to
+// dress up is the loopback reply, and the same rule applies to it.
 console.log('\n/qsetup — the loopback reply')
 const reply = setupDone('Connected', 'Scope collab, workspace acme.')
 brandChecks('/qsetup reply', reply, { plain: true })
@@ -544,6 +533,11 @@ const bounce = setupDone('Connected', 'Taking you back.', 'https://example.inval
 brandChecks('/qsetup redirect', bounce, { plain: true })
 selfContained('/qsetup redirect', bounce)
 provenance('/qsetup redirect', bounce, ['Open your workspace'])
+// A local page must not dress up: these are the words that would make it look
+// like it had authority it does not have.
+for (const word of ['Verified', 'Secure', 'Official', 'Trusted', 'Certified']) {
+  chk(`/qsetup reply: does not call itself "${word}"`, !new RegExp(`\\b${word}\\b`, 'i').test(reply))
+}
 
 console.log('\n/qpact — render.mjs')
 const pact = renderPact(SESSION, null, { fingerprint: 'ab12cd34', spineAgeMin: 3 })
