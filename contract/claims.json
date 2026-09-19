@@ -659,6 +659,34 @@
       "guarded_by": [
         "plugins/session-viz/test/ship.mjs"
       ]
+    },
+    "ladder.rungs": {
+      "statement": "The measured rungs of the outcome ladder, in order. `claimed` is authored by the model and is deliberately not among them.",
+      "value": [
+        "wrote",
+        "verified",
+        "committed"
+      ],
+      "render": {
+        "plain": "wrote, verified, committed",
+        "count": "3",
+        "word": "three"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "why": "These name what a session is measured to have achieved. They are local today — the /qpact page reads them and nothing ships them — and the moment facts carry them they change what leaves a machine under a disclosure somebody read. Registered while still local so the step that ships them cannot do it quietly.",
+      "discipline": "frozen",
+      "consent_material": true,
+      "derive": "ladder.rungs",
+      "generated": [],
+      "checked": [],
+      "tells": [
+        "\\blanded\\s+rung\\b"
+      ],
+      "guarded_by": [
+        "plugins/session-viz/test/outcome.mjs",
+        "plugins/session-viz/test/landed.mjs"
+      ]
     }
   }
 }

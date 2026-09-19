@@ -25,6 +25,7 @@
 import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const SRC = (root) => join(root, 'plugins', 'session-viz', 'src')
 const SKILLS = (root) => join(root, 'plugins', 'session-viz', 'skills')
@@ -158,6 +159,46 @@ const emittedFields = async (root, tier) => {
 }
 
 export const DERIVES = {
+  /**
+   * Which rungs the code can actually report, found by running it.
+   *
+   * Not a grep for three strings: a field can be declared, typed and never
+   * populated, and the claim this backs is about what a session is MEASURED
+   * to have achieved. So the extractor is run over a transcript that writes a
+   * file and then checks it, and the rungs are read back off the result.
+   *
+   * `committed` comes back `unavailable` here — a temp directory is not a
+   * repository — and that is the correct reading: the rung exists and says it
+   * could not look, which is the distinction the whole probe is built on.
+   */
+  'ladder.rungs': async (root) => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { extract } = await import(
+      pathToFileURL(join(root, 'plugins/session-viz/scripts/extract.mjs')).href)
+    const dir = mkdtempSync(join(tmpdir(), 'sv-rungs-'))
+    try {
+      const f = join(dir, 's.jsonl')
+      const rec = (o) => JSON.stringify(o)
+      writeFileSync(f, [
+        rec({ type: 'user', uuid: 'u', timestamp: '2026-01-01T00:00:00Z', sessionId: 's', cwd: dir, message: { role: 'user', content: 'do it' } }),
+        rec({ type: 'assistant', uuid: 'a', timestamp: '2026-01-01T00:00:01Z', sessionId: 's', cwd: dir, message: { model: 'm', content: [{ type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: 'a.ts' } }] } }),
+        rec({ type: 'user', uuid: 'b', timestamp: '2026-01-01T00:00:02Z', sessionId: 's', cwd: dir, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w1', content: 'ok' }] } }),
+        rec({ type: 'assistant', uuid: 'c', timestamp: '2026-01-01T00:00:03Z', sessionId: 's', cwd: dir, message: { model: 'm', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } }),
+        rec({ type: 'user', uuid: 'd', timestamp: '2026-01-01T00:00:04Z', sessionId: 's', cwd: dir, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'pass' }] } }),
+      ].join('\n') + '\n')
+      const s = await extract(f, { probeGit: false })
+      const o = s.outcomes || {}
+      const rungs = []
+      if (o.delivery === 'wrote_ok') rungs.push('wrote')
+      if (o.verification === 'passed') rungs.push('verified')
+      if (o.landed && typeof o.landed.state === 'string') rungs.push('committed')
+      return rungs
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+
   /** Run the extractor with no options over a two-record transcript and look at
    *  what came back. Not a grep for the flag name: a flag can be renamed, wired
    *  to the wrong option, or defaulted the other way in the function signature,

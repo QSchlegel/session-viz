@@ -81,6 +81,10 @@ interface SessionTotals {
   interruptions: number
   steeringTurns: number
   records: number
+  /** Turns the extractor read as a correction of the one before. Optional:
+   *  the field predates this renderer reading it, and a spine without it must
+   *  not render as zero corrections, which reads as praise. */
+  corrections?: number
 }
 
 interface SessionScore {
@@ -124,6 +128,22 @@ interface Session {
    *  be able to say which -- an empty table reads as "nothing was changed",
    *  which neither of them means. */
   recordedPaths?: boolean
+  /** The measured rungs of the ladder, absent on a spine written before they
+   *  existed — which is why the block that reads them returns nothing rather
+   *  than rendering a row of zeroes for a session nobody measured. */
+  outcomes?: {
+    delivery: string
+    verification: string
+    checks: Array<{ label: string; ok: boolean | null }>
+    landed: {
+      state: string
+      commits: number
+      overlap: number
+      unrelated: number
+      repos: number
+      why: string | null
+    }
+  }
 }
 
 interface IntentItem {
@@ -596,6 +616,22 @@ table.apx tr.apx-shared td:not(:first-child){border-left:0}
 footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono);
   border-top:1px solid var(--line);padding-top:14px}
 /* knowledge graph */
+/* Beyond the task. A key/value ledger, not prose: each row is one rung and
+   the eye should be able to find the one that is empty. */
+.bt{padding:0}
+.bt-r{display:flex;gap:14px;align-items:baseline;padding:11px 16px;border-bottom:1px solid var(--line)}
+.bt-r:last-of-type{border-bottom:0}
+.bt-k{flex:0 0 74px;font-family:var(--mono);font-size:11.5px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--muted)}
+.bt-v{flex:1 1 auto;min-width:0;font-size:14.5px;overflow-wrap:anywhere}
+.bt-f{margin:0;padding:12px 16px;border-top:1px solid var(--line);background:var(--bg);
+  color:var(--muted);font-size:12.5px;line-height:1.55}
+@media (max-width:640px){
+  /* The key sits above its value rather than squeezing it into a third of a
+     phone. */
+  .bt-r{flex-direction:column;gap:3px}
+  .bt-k{flex:none}
+}
 .gwrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:0;border:1px solid var(--line);
   border-radius:10px;overflow:hidden;margin:10px 0 0;background:var(--panel)}
 /* minmax(0,1fr), not a bare 1fr. A bare 1fr means minmax(auto,1fr), and that
@@ -1430,6 +1466,90 @@ function renderAppendix(session: Session, intent: Intent | null | undefined): st
 ${tables}`
 }
 
+/**
+ * Beyond the task — the MEASURED column, beneath the model's authored one.
+ *
+ * Every line is "this session did X, and Y happened", drawn from tool results
+ * and the local repository. It never says "you should", and the reason is not
+ * politeness: Kluger and DeNisi's meta-analysis of 607 effect sizes found more
+ * than a third of feedback interventions made performance WORSE, and the
+ * effect shrank as attention moved from the task toward the self. A sentence
+ * about the work is feedback on the task. A sentence about the person is the
+ * kind that backfires.
+ *
+ * It never omits a line either. A missing line and "nothing happened" look
+ * identical, and only one of them is true — so every rung says what it saw,
+ * including that it saw nothing.
+ */
+function renderBeyond(session: Session, intent: Intent | null | undefined): string {
+  const o = session.outcomes
+  if (!o) return ''
+  const n = (x: number) => x.toLocaleString('en-GB')
+  const rows: Array<[string, string]> = []
+
+  // ---- intents: the authored rung against the measured ones ----
+  const items = intent?.intents || []
+  const done = items.filter((i) => i.status === 'done').length
+  if (done) {
+    const landedPart = o.landed.state === 'during' || o.landed.state === 'after'
+      ? `${n(o.landed.commits)} commit${o.landed.commits === 1 ? '' : 's'} carried this work`
+      : o.landed.state === 'none' ? 'no commit carried this work'
+        : `commits could not be checked — ${esc(o.landed.why || 'unavailable')}`
+    rows.push(['intents',
+      `${n(done)} marked done · ${landedPart}` +
+      (o.verification === 'none' && o.delivery === 'wrote_ok'
+        ? ' · nothing ran after the last change' : '')])
+  } else if (items.length) {
+    rows.push(['intents', `${n(items.length)} recorded, none marked done — nothing to measure against`])
+  } else {
+    rows.push(['intents', 'no intent was recorded, so there is nothing to measure against'])
+  }
+
+  // ---- checks ----
+  // Deduplicated with a count. A session that builds after every edit ran the
+  // same check seven times, and listing it seven times turned the one line
+  // that should say "something checked this" into a wall.
+  const label = (list: Array<{ label: string; ok: boolean | null }>): string => {
+    const by = new Map<string, number>()
+    for (const c of list) by.set(c.label, (by.get(c.label) || 0) + 1)
+    return [...by.entries()]
+      .map(([l, k]) => (k > 1 ? `${l} (${n(k)}×)` : l))
+      .join(', ')
+  }
+  rows.push(['checks', o.verification === 'none'
+    ? (o.delivery === 'wrote_ok'
+      ? 'nothing ran after the last change'
+      : 'nothing was written, so nothing needed checking')
+    : o.verification === 'ran'
+      ? `${label(o.checks)} ran after the last change; the result is not in the transcript`
+      : `${label(o.checks.filter((c) => c.ok !== null))} ran after the last change and ${o.verification}`])
+
+  // ---- what landed ----
+  rows.push(['landed', o.landed.state === 'unavailable'
+    ? `not checked — ${o.landed.why}`
+    : o.landed.state === 'none'
+      ? `nothing committed in the session window${o.landed.unrelated ? `, though ${n(o.landed.unrelated)} unrelated commit${o.landed.unrelated === 1 ? '' : 's'} landed` : ''}`
+      : `${n(o.landed.commits)} commit${o.landed.commits === 1 ? '' : 's'} ${o.landed.state === 'after' ? 'just after the session' : 'during the session'}, covering ${n(o.landed.overlap)} of the files it wrote` +
+        (o.landed.repos > 1 ? ` across ${n(o.landed.repos)} repositories` : '')])
+
+  // ---- questions asked of the model ----
+  const turns = session.turns.length
+  const corr = session.totals.corrections || 0
+  rows.push(['questions', turns
+    ? `${n(corr)} correction${corr === 1 ? '' : 's'} in ${n(turns)} turn${turns === 1 ? '' : 's'}`
+    : 'no turns to read'])
+
+  const body = rows.map(([k, v]) =>
+    `<div class="bt-r"><span class="bt-k">${esc(k)}</span><span class="bt-v">${esc(v)}</span></div>`).join('')
+
+  return `<h2>Beyond the task</h2><div class="card bt">
+  ${body}
+  <p class="bt-f">Measured from this transcript and these repositories — what happened, not what it
+  means. A commit is not a merge; a passing check is not correctness; a file written by a shell
+  command is not counted among the files this session wrote.</p>
+</div>`
+}
+
 function renderQuality(intent: Intent | null | undefined): string {
   const q = intent?.quality
   if (!q) return ''
@@ -2126,6 +2246,7 @@ ${
 }
 ${renderIntents(session, intent)}
 ${renderQuality(intent)}
+${renderBeyond(session, intent)}
 ${renderGraph(session, intent, meta?.bom)}
 
 ${renderAppendix(session, intent)}

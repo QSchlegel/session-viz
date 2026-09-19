@@ -64,6 +64,13 @@
 // that scrubs prompt text already has to handle the absolute form appearing
 // there, and still does.
 
+import {
+  newOutcomeScan, noteToolUse, noteToolResult, noteUnansweredCall,
+  deliveryOf, verificationOf, checksAfterLastWrite,
+} from './outcome.mjs'
+import { probeLanded } from './landed.mjs'
+import type { OutcomeScan, DeliveryState, VerificationState } from './outcome.mjs'
+import type { Landed } from './landed.mjs'
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { join, basename } from 'node:path'
@@ -339,6 +346,25 @@ export interface Session {
   retainedTrace: boolean
   /** Every retained tool call, in document order. Empty unless retainTrace. */
   trace: RetainedCall[]
+  /**
+   * What became of the work — the measured rungs of the ladder.
+   *
+   * Distinct from `score`, which grades the PROMPTING, and from the intent
+   * store, which records what the model said it set out to do. This is the
+   * only part of a spine that answers "did it land", and every field of it is
+   * an enum or a count: no path, no SHA, no command line.
+   *
+   * `delivery` and `verification` come from tool results and are always
+   * present. `landed` needs a repository and answers `unavailable` with a
+   * reason whenever it could not look — which is not the same as `none`.
+   */
+  outcomes: {
+    delivery: DeliveryState
+    verification: VerificationState
+    /** The checks that ran after the last successful write, by label. */
+    checks: Array<{ label: string; ok: boolean | null }>
+    landed: Landed
+  }
 }
 
 export interface ExtractOptions {
@@ -360,6 +386,17 @@ export interface ExtractOptions {
    * spine says which happened.
    */
   retainTrace?: boolean
+  /**
+   * Ask the local repository whether the session's work reached a commit.
+   *
+   * Default true, and it is the only thing in this extractor that reads
+   * anything but a transcript. It runs `git log` in the session's own working
+   * directory, keeps no SHA, message, author or path, and answers
+   * `unavailable` with a reason on any failure. `--no-git` turns it off — for
+   * a scan over hundreds of sessions, where one subprocess each is the whole
+   * cost of the run.
+   */
+  probeGit?: boolean
 }
 
 /** One transcript file on disk, as returned by listSessions(). */
@@ -532,7 +569,7 @@ type TurnDraft = Omit<SessionTurn, LateTurnField | 'endedAt'> &
     _files?: Record<string, number>
   }
 
-type LateSessionField = 'score' | 'durationMs'
+type LateSessionField = 'score' | 'durationMs' | 'outcomes'
 type LateTotalsField = 'frictionTurns' | 'frictionRate' | 'repeats' | 'corrections'
 type SessionDraft = Omit<Session, LateSessionField | 'totals'> &
   Partial<Pick<Session, LateSessionField>> & {
@@ -1212,7 +1249,7 @@ function rootOf(file: string): TranscriptRoot | null {
 
 export async function extract(
   file: string,
-  { redactText = true, maxPromptChars = 4000, recordPaths = true, retainTrace = false, harness: harnessOpt }: ExtractOptions = {}
+  { redactText = true, maxPromptChars = 4000, recordPaths = true, retainTrace = false, probeGit = true, harness: harnessOpt }: ExtractOptions = {}
 ): Promise<Session> {
   const root = rootOf(file)
   // Cursor is sniffed ahead of the root lookup, not after it. Its sessions are
@@ -1268,6 +1305,12 @@ export async function extract(
   // which is correct for a serial tool loop and is stated rather than assumed.
   const pending = new Map<string, RetainedCall>()
   const open: RetainedCall[] = []
+  // The outcome scan's own pair, for the same reason and with the same
+  // pairing rule. Separate from the trace's because it must run when the
+  // trace does not.
+  const outcome: OutcomeScan = newOutcomeScan()
+  const outcomePending = new Map<string, ReturnType<typeof noteToolUse>>()
+  const outcomeOpen: Array<ReturnType<typeof noteToolUse>> = []
   let current: TurnDraft | null = null
 
   const newTurn = ({ index, uuid, ts, text, promptId = null, hasImage = false, typed = true, steering = false, origin = null, effort = null }: NewTurnArgs): TurnDraft => ({
@@ -1433,6 +1476,14 @@ export async function extract(
           // counted in `fileTouches`, which is why that count can exceed the
           // paths below and why nothing may present one as the total of the other.
           harvestTool(block, session.artifacts, current?._files ?? null)
+          // The outcome scan runs whether or not a trace was asked for, and
+          // keeps NO bodies: a tool name, a write target and an error flag.
+          // The trace reader below is gated on retainTrace because it retains
+          // inputs and results; these two rungs need neither, and gating them
+          // the same way would have made "did it land" a --with-trace feature.
+          const oc = noteToolUse(outcome, { name: block.name, input: block.input })
+          if (block.id) outcomePending.set(block.id, oc)
+          else outcomeOpen.push(oc)
           if (!current) continue
           current._tools![block.name] = (current._tools![block.name] || 0) + 1
           if (!current.firstToolAt) {
@@ -1446,6 +1497,14 @@ export async function extract(
 
       case 'user': {
         const c = classifyUser(rec)
+        if (c.kind === 'tool_result') {
+          const r = resultOf(rec)
+          if (r) {
+            const call = r.id ? outcomePending.get(r.id) : outcomeOpen.shift()
+            if (r.id) outcomePending.delete(r.id)
+            noteToolResult(outcome, call, r.isError)
+          }
+        }
         if (retainTrace && c.kind === 'tool_result') {
           const r = resultOf(rec)
           // A result whose call was never seen is dropped rather than invented:
@@ -1566,6 +1625,27 @@ export async function extract(
   session.totals.corrections = session.turns.filter((t) => t.signals.isCorrection).length
 
   session.durationMs = Date.parse(session.endedAt!) - Date.parse(session.startedAt!) || 0
+
+  // A check whose result never arrived still ran. Recorded before the state is
+  // read, so "ran, outcome unknown" survives rather than collapsing to "never
+  // ran" — which is the reading that would praise a session for nothing.
+  for (const call of [...outcomePending.values(), ...outcomeOpen]) noteUnansweredCall(outcome, call)
+
+  const filesTouched = [...new Set(session.turns.flatMap((t) => t.files.map((f) => f.path)))]
+  session.outcomes = {
+    delivery: deliveryOf(outcome),
+    verification: verificationOf(outcome),
+    checks: checksAfterLastWrite(outcome).map((c) => ({ label: c.label, ok: c.ok })),
+    // Reads the repository, so it is the one part of this extractor that can
+    // fail for a reason outside the transcript. It answers `unavailable` with
+    // the reason rather than throwing; `probeGit: false` skips it entirely.
+    landed: probeGit
+      ? probeLanded({
+        cwd: session.cwd, startedAt: session.startedAt, endedAt: session.endedAt, filesTouched,
+      })
+      : { state: 'unavailable', commits: 0, overlap: 0, unrelated: 0, repos: 0, why: 'not probed' },
+  }
+
   return session as Session
 }
 
