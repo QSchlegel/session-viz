@@ -56,10 +56,10 @@
     },
     "commands.count": {
       "statement": "The number of commands the plugin ships, counted as skill directories.",
-      "value": 13,
+      "value": 14,
       "render": {
-        "plain": "13",
-        "word": "thirteen"
+        "plain": "14",
+        "word": "fourteen"
       },
       "kind": "number",
       "risk": "commercial",
@@ -71,7 +71,7 @@
       "checked": [
         {
           "file": "README.md",
-          "match": "all (thirteen|twelve|eleven|ten|nine|\\d+) commands",
+          "match": "all (fourteen|thirteen|twelve|eleven|ten|nine|\\d+) commands",
           "as": "count-word"
         }
       ],
@@ -112,12 +112,13 @@
         "qdrive",
         "qfeed",
         "qpact",
+        "qrunner",
         "qshare"
       ],
       "render": {
-        "plain": "/qcontrib, /qshare, /qfeed, /qbl --shared, /qpact and /qdrive",
-        "count": "6",
-        "word": "six"
+        "plain": "/qcontrib, /qshare, /qfeed, /qbl --shared, /qpact, /qdrive and /qrunner",
+        "count": "7",
+        "word": "seven"
       },
       "kind": "list",
       "risk": "consent",
@@ -129,7 +130,7 @@
       "checked": [
         {
           "file": "README.md",
-          "match": "(Six|Five|Four|Three|Two|\\d+) of the (?:thirteen|twelve) can deliberately put something about your work on a wire",
+          "match": "(Seven|Six|Five|Four|Three|Two|\\d+) of the (?:fourteen|thirteen|twelve) can deliberately put something about your work on a wire",
           "as": "count-word"
         }
       ],
