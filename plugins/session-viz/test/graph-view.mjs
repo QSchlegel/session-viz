@@ -509,5 +509,38 @@ const SKEW = base(
     style.includes('color:var(--kg-label);opacity:.8'))
 }
 
+// ------------------------------------------------- 12. the panel on a phone
+{
+  const html = render(SKEW, null)
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+  // ---- the graph panel on a phone ----------------------------------------
+  //
+  // MEASURED IN A BROWSER, because this file's header is right that node has
+  // no layout engine. At 375px, before this fix:
+  //
+  //   .gwrap  clientWidth 333, scrollWidth 480, overflow-x hidden
+  //   grid-template-columns resolved to 479.758px for a 333px box
+  //   .greplay  flex-wrap nowrap, children 73 + 115 + 235 = 423px
+  //
+  // So the single column was floored at the replay row's min-content width,
+  // and .gwrap's overflow:hidden — which it needs for its rounded corners —
+  // clipped the right 30% of the canvas, the legend and the whole side panel,
+  // with nothing to scroll. After: track 333px, scrollWidth === clientWidth.
+  //
+  // What can be checked without a renderer is that the two rules responsible
+  // are still there, which is what would be deleted by accident.
+  chk('the narrow-screen graph column can shrink below its content',
+    /@media \(max-width:900px\)\{\.gwrap\{grid-template-columns:minmax\(0,1fr\)\}\}/.test(style),
+    'a bare 1fr floors the track at min-content and .gwrap clips the overflow')
+  chk('and the replay row wraps instead of setting that floor',
+    /\.greplay\{[^}]*flex-wrap:wrap/.test(style),
+    'without wrapping, the replay controls decide how wide the whole panel is')
+  chk('the replay slider gives up its width when the row wraps',
+    /\.greplay input\[type=range\]\{[^}]*min-width:0/.test(style))
+  chk('the desktop two-column rule still asks for a shrinkable first track',
+    /\.gwrap\{display:grid;grid-template-columns:minmax\(0,1fr\) 300px/.test(style),
+    'the desktop rule always had this; only the narrow override was missing it')
+}
+
 console.log(failed ? `\n${failed} failed` : '\nall passed')
 process.exit(failed ? 1 : 0)

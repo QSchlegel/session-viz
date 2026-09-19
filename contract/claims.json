@@ -56,10 +56,10 @@
     },
     "commands.count": {
       "statement": "The number of commands the plugin ships, counted as skill directories.",
-      "value": 12,
+      "value": 14,
       "render": {
-        "plain": "12",
-        "word": "twelve"
+        "plain": "14",
+        "word": "fourteen"
       },
       "kind": "number",
       "risk": "commercial",
@@ -71,7 +71,7 @@
       "checked": [
         {
           "file": "README.md",
-          "match": "all (twelve|eleven|ten|nine|\\d+) commands",
+          "match": "all (fourteen|thirteen|twelve|eleven|ten|nine|\\d+) commands",
           "as": "count-word"
         }
       ],
@@ -109,14 +109,16 @@
       "value": [
         "qbl",
         "qcontrib",
+        "qdrive",
         "qfeed",
         "qpact",
+        "qrunner",
         "qshare"
       ],
       "render": {
-        "plain": "/qcontrib, /qshare, /qfeed, /qbl --shared and /qpact",
-        "count": "5",
-        "word": "five"
+        "plain": "/qcontrib, /qshare, /qfeed, /qbl --shared, /qpact, /qdrive and /qrunner",
+        "count": "7",
+        "word": "seven"
       },
       "kind": "list",
       "risk": "consent",
@@ -128,7 +130,7 @@
       "checked": [
         {
           "file": "README.md",
-          "match": "(Five|Four|Three|Two|\\d+) of the twelve can deliberately put something about your work on a wire",
+          "match": "(Seven|Six|Five|Four|Three|Two|\\d+) of the (?:fourteen|thirteen|twelve) can deliberately put something about your work on a wire",
           "as": "count-word"
         }
       ],
@@ -401,8 +403,10 @@
     "facts.index.fields": {
       "statement": "Every field the workspace-visible index tier may carry.",
       "value": [
+        "artifact",
         "branch",
         "cli_version",
+        "delivery",
         "duration_ms",
         "ended_at",
         "files_dropped",
@@ -411,6 +415,7 @@
         "graph",
         "harness",
         "intents",
+        "landed",
         "mcp_servers",
         "models",
         "paths_recorded",
@@ -448,11 +453,12 @@
         "totals.tool_calls",
         "trace_shape",
         "turns",
+        "verification",
         "worktree"
       ],
       "render": {
-        "expr": "export const INDEX_FIELDS = [\n  'branch', 'cli_version', 'duration_ms', 'ended_at', 'files_dropped', 'files_touched',\n  'friction_kinds', 'graph', 'harness', 'intents', 'mcp_servers', 'models', 'paths_recorded',\n  'plugin_version', 'repo', 'schema_version', 'score.band', 'score.confidence',\n  'score.costliest_turn', 'score.craft_rate', 'score.friction_rate', 'score.turns_scored',\n  'score.value', 'score.wasted_tokens', 'secrets_redacted', 'session_id', 'slash_commands',\n  'started_at', 'title', 'tokens.cache_create', 'tokens.cache_read', 'tokens.input',\n  'tokens.output', 'tools', 'totals.assistant_messages', 'totals.compactions',\n  'totals.corrections', 'totals.friction_turns', 'totals.human_turns', 'totals.interruptions',\n  'totals.records', 'totals.repeats', 'totals.sidechain_records', 'totals.steering_turns',\n  'totals.tool_calls', 'trace_shape', 'turns', 'worktree'\n] as const",
-        "count": "48"
+        "expr": "export const INDEX_FIELDS = [\n  'artifact', 'branch', 'cli_version', 'delivery', 'duration_ms', 'ended_at',\n  'files_dropped', 'files_touched', 'friction_kinds', 'graph', 'harness', 'intents',\n  'landed', 'mcp_servers', 'models', 'paths_recorded', 'plugin_version', 'repo',\n  'schema_version', 'score.band', 'score.confidence', 'score.costliest_turn',\n  'score.craft_rate', 'score.friction_rate', 'score.turns_scored', 'score.value',\n  'score.wasted_tokens', 'secrets_redacted', 'session_id', 'slash_commands', 'started_at',\n  'title', 'tokens.cache_create', 'tokens.cache_read', 'tokens.input', 'tokens.output',\n  'tools', 'totals.assistant_messages', 'totals.compactions', 'totals.corrections',\n  'totals.friction_turns', 'totals.human_turns', 'totals.interruptions', 'totals.records',\n  'totals.repeats', 'totals.sidechain_records', 'totals.steering_turns',\n  'totals.tool_calls', 'trace_shape', 'turns', 'verification', 'worktree'\n] as const",
+        "count": "52"
       },
       "kind": "list",
       "risk": "consent",
@@ -656,6 +662,34 @@
       "tells": [],
       "guarded_by": [
         "plugins/session-viz/test/ship.mjs"
+      ]
+    },
+    "ladder.rungs": {
+      "statement": "The measured rungs of the outcome ladder, in order. `claimed` is authored by the model and is deliberately not among them.",
+      "value": [
+        "wrote",
+        "verified",
+        "committed"
+      ],
+      "render": {
+        "plain": "wrote, verified, committed",
+        "count": "3",
+        "word": "three"
+      },
+      "kind": "list",
+      "risk": "consent",
+      "why": "These name what a session is measured to have achieved. They are local today — the /qpact page reads them and nothing ships them — and the moment facts carry them they change what leaves a machine under a disclosure somebody read. Registered while still local so the step that ships them cannot do it quietly.",
+      "discipline": "frozen",
+      "consent_material": true,
+      "derive": "ladder.rungs",
+      "generated": [],
+      "checked": [],
+      "tells": [
+        "\\blanded\\s+rung\\b"
+      ],
+      "guarded_by": [
+        "plugins/session-viz/test/outcome.mjs",
+        "plugins/session-viz/test/landed.mjs"
       ]
     }
   }

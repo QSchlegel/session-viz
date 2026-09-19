@@ -21,6 +21,13 @@ import { harnessCoverage, transcriptRoots } from './home.mjs';
 import { codexRecords, listCodexSessions } from './codex.mjs';
 import { cursorRecords, listCursorSessions } from './cursor.mjs';
 import { repoFromSlug, repoName } from './repo.mjs';
+// The write/verify/artifact vocabulary, shared with the human-session path.
+import { probeWriteTargets, WRITE_TOOLS as SHARED_WRITE_TOOLS, writeTarget as sharedWriteTarget, newOutcomeScan, noteToolUse, noteToolResult, verificationOf, } from './outcome.mjs';
+import { probeLanded } from './landed.mjs';
+// Re-exported, not merely used: these were part of this module's surface
+// before they were shared, and /qfeed, /qshare and the probe's own suite
+// import them from here. Moving a definition should not move its address.
+export { probeWriteTargets } from './outcome.mjs';
 import { versionNote } from './version.mjs';
 // No PROJECTS constant any more. This file used to hardcode ~/.claude/projects
 // while extract.mts, corpus.mts and doctor.mts had already moved to
@@ -36,56 +43,8 @@ import { versionNote } from './version.mjs';
 const RETURN_SET = new Set(['StructuredOutput']);
 // Widened to accept a missing name: the membership tests below run against
 // tool names that may not have been seen (an unmatched tool_result).
-const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
-/** The path field used by the three write tools across supported harnesses.
- *  Exported for the contract test: format drift here silently turns a real
- *  probe back into an `unavailable` counter. */
-export function writeTarget(name, input) {
-    if (!WRITE_TOOLS.has(name) || !input || typeof input !== 'object' || Array.isArray(input))
-        return null;
-    const o = input;
-    const raw = name === 'NotebookEdit'
-        ? o.notebook_path ?? o.file_path ?? o.path
-        : o.file_path ?? o.path;
-    const value = typeof raw === 'string' ? raw.trim() : '';
-    return value || null;
-}
-/** Probe only successful write targets and report what is visible NOW.
- *
- * A missing local path is not called failed delivery: the tool may have run in
- * a container, worktree, or remote filesystem, or the artifact may have moved
- * after the run. Presence is useful corroborating evidence; absence is a lead
- * to investigate. Both remain distinct from the transcript's `wrote_ok` fact. */
-export function probeWriteTargets(targets, cwd, unavailable = 0) {
-    let targeted = 0, present = 0, notFoundLocal = 0;
-    for (const target of new Set(targets)) {
-        targeted++;
-        if (!isAbsolute(target) && !cwd) {
-            unavailable++;
-            continue;
-        }
-        const path = isAbsolute(target) ? target : resolve(cwd, target);
-        try {
-            const st = statSync(path);
-            if (st.isFile())
-                present++;
-            else
-                unavailable++;
-        }
-        catch (e) {
-            if (e.code === 'ENOENT')
-                notFoundLocal++;
-            else
-                unavailable++;
-        }
-    }
-    const state = present && notFoundLocal ? 'partial'
-        : present ? 'present'
-            : notFoundLocal ? 'not_found_local'
-                : targeted || unavailable ? 'unavailable'
-                    : 'not_applicable';
-    return { state, targeted, present, notFoundLocal, unavailable };
-}
+const WRITE_TOOLS = SHARED_WRITE_TOOLS;
+export const writeTarget = sharedWriteTarget;
 function* walk(dir) {
     let entries;
     try {
@@ -162,9 +121,11 @@ async function scanRecords(source) {
         successfulWriteTargets: new Set(), successfulWritesWithoutTarget: 0,
         permission: false, auth: false, loops: 0,
         toolCounts: new Map(), version: null,
+        outcome: newOutcomeScan(),
     };
     const names = new Map();
     const targets = new Map();
+    const pending = new Map();
     let lastKey = null;
     for await (const o of source) {
         const ts = o.timestamp;
@@ -220,6 +181,10 @@ async function scanRecords(source) {
                     if (target)
                         targets.set(b.id, target);
                 }
+                // The shared scan, alongside this loop's own counters rather than
+                // replacing them: it is what knows whether a CHECK ran after the last
+                // write, which this file has never tracked and the ladder needs.
+                pending.set(b.id, noteToolUse(r.outcome, { name: b.name, input: b.input }));
                 // Loop detection: the same tool with the same input, back to back.
                 // Keyed per tool name this measured "the previous use OF THIS TOOL",
                 // so Read(A), Bash(X), Read(A) — a re-read after other work, not a
@@ -248,6 +213,8 @@ async function scanRecords(source) {
                 for (const b of c) {
                     if (b.type === 'tool_result') {
                         r.resolved.add(b.tool_use_id);
+                        noteToolResult(r.outcome, pending.get(b.tool_use_id), b.is_error === true);
+                        pending.delete(b.tool_use_id);
                         const n = names.get(b.tool_use_id);
                         const txt = typeof b.content === 'string' ? b.content : JSON.stringify(b.content || '');
                         if (b.is_error) {
@@ -375,7 +342,7 @@ function* rootFiles(harness, dir) {
         }
     }
 }
-export async function collectRuns({ since = null } = {}) {
+export async function collectRuns({ since = null, probeGit = false } = {}) {
     const runs = [];
     const roots = transcriptRoots();
     for (const { harness, dir } of roots) {
@@ -411,6 +378,13 @@ export async function collectRuns({ since = null } = {}) {
                 week: isoWeek(s.started), started: s.started,
                 ended: s.lastRecord, cliVersion: s.version,
                 terminal: terminalState(s), delivery: deliveryState(s),
+                verification: verificationOf(s.outcome),
+                landed: probeGit
+                    ? probeLanded({
+                        cwd: s.cwd, startedAt: s.started, endedAt: s.lastRecord,
+                        filesTouched: [...s.successfulWriteTargets],
+                    }).state
+                    : 'unavailable',
                 errorClass: s.permission ? 'permission' : s.auth ? 'auth' : s.toolErr ? 'tool_error' : 'none',
                 out: s.out, cread: s.cread, ccreate: s.ccreate, cin: s.cin,
                 tools: s.tools, toolErr: s.toolErr, loops: s.loops,

@@ -285,6 +285,51 @@
       "type": "string",
       "nullable": true,
       "note": "The second axis. Kept rather than folded away, because two checkouts of one repository are otherwise indistinguishable."
+    },
+    "delivery": {
+      "tier": "index",
+      "type": "enum",
+      "values": [
+        "wrote_ok",
+        "denied",
+        "unverified",
+        "no_intent"
+      ],
+      "note": "Whether the session's write tools succeeded, from their results. `wrote_ok`, never DELIVERED: a tool result is not a claim that the file is correct or still present."
+    },
+    "artifact": {
+      "tier": "index",
+      "type": "enum",
+      "values": [
+        "present",
+        "partial",
+        "not_found_local",
+        "unavailable",
+        "not_applicable"
+      ],
+      "note": "Whether the files it wrote are on that disk now. Corroboration only — a container, a worktree or a later move makes a real write absent, so absence is never called failed delivery."
+    },
+    "verification": {
+      "tier": "index",
+      "type": "enum",
+      "values": [
+        "none",
+        "ran",
+        "passed",
+        "failed"
+      ],
+      "note": "Whether a test, lint or build ran AFTER the last successful write, and what it said. A check before that write proved the state before the final edit. `passed` means a process exited zero, not that the code is correct."
+    },
+    "landed": {
+      "tier": "index",
+      "type": "enum",
+      "values": [
+        "none",
+        "during",
+        "after",
+        "unavailable"
+      ],
+      "note": "Whether a commit in the session window changed files the session wrote, found by git log in the repositories those files are in. No SHA, message, author or path leaves. A commit is not a merge; `unavailable` means the probe could not look and is never read as nothing landed."
     }
   },
   "trace_call_fields": {

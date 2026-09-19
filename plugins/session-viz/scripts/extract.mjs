@@ -63,6 +63,8 @@
 // into prompts, and `turn.text` still holds whatever they typed; every consumer
 // that scrubs prompt text already has to handle the absolute form appearing
 // there, and still does.
+import { newOutcomeScan, noteToolUse, noteToolResult, noteUnansweredCall, deliveryOf, verificationOf, checksAfterLastWrite, probeWriteTargets, } from './outcome.mjs';
+import { probeLanded } from './landed.mjs';
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, basename } from 'node:path';
@@ -706,7 +708,7 @@ function rootOf(file) {
     return ROOTS.find((r) => file.startsWith(r.dir.endsWith('/') ? r.dir : r.dir + '/')) || null;
 }
 // ---------------------------------------------------------------- extraction
-export async function extract(file, { redactText = true, maxPromptChars = 4000, recordPaths = true, retainTrace = false, harness: harnessOpt } = {}) {
+export async function extract(file, { redactText = true, maxPromptChars = 4000, recordPaths = true, retainTrace = false, probeGit = true, harness: harnessOpt } = {}) {
     const root = rootOf(file);
     // Cursor is sniffed ahead of the root lookup, not after it. Its sessions are
     // addressed `<db>#<composerId>`, a string that begins with the globalStorage
@@ -760,6 +762,12 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
     // which is correct for a serial tool loop and is stated rather than assumed.
     const pending = new Map();
     const open = [];
+    // The outcome scan's own pair, for the same reason and with the same
+    // pairing rule. Separate from the trace's because it must run when the
+    // trace does not.
+    const outcome = newOutcomeScan();
+    const outcomePending = new Map();
+    const outcomeOpen = [];
     let current = null;
     const newTurn = ({ index, uuid, ts, text, promptId = null, hasImage = false, typed = true, steering = false, origin = null, effort = null }) => ({
         index,
@@ -933,6 +941,16 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
                     // counted in `fileTouches`, which is why that count can exceed the
                     // paths below and why nothing may present one as the total of the other.
                     harvestTool(block, session.artifacts, current?._files ?? null);
+                    // The outcome scan runs whether or not a trace was asked for, and
+                    // keeps NO bodies: a tool name, a write target and an error flag.
+                    // The trace reader below is gated on retainTrace because it retains
+                    // inputs and results; these two rungs need neither, and gating them
+                    // the same way would have made "did it land" a --with-trace feature.
+                    const oc = noteToolUse(outcome, { name: block.name, input: block.input });
+                    if (block.id)
+                        outcomePending.set(block.id, oc);
+                    else
+                        outcomeOpen.push(oc);
                     if (!current)
                         continue;
                     current._tools[block.name] = (current._tools[block.name] || 0) + 1;
@@ -947,6 +965,15 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
             }
             case 'user': {
                 const c = classifyUser(rec);
+                if (c.kind === 'tool_result') {
+                    const r = resultOf(rec);
+                    if (r) {
+                        const call = r.id ? outcomePending.get(r.id) : outcomeOpen.shift();
+                        if (r.id)
+                            outcomePending.delete(r.id);
+                        noteToolResult(outcome, call, r.isError);
+                    }
+                }
                 if (retainTrace && c.kind === 'tool_result') {
                     const r = resultOf(rec);
                     // A result whose call was never seen is dropped rather than invented:
@@ -1062,6 +1089,26 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
     session.totals.repeats = session.turns.filter((t) => t.derived.repeatOf !== null).length;
     session.totals.corrections = session.turns.filter((t) => t.signals.isCorrection).length;
     session.durationMs = Date.parse(session.endedAt) - Date.parse(session.startedAt) || 0;
+    // A check whose result never arrived still ran. Recorded before the state is
+    // read, so "ran, outcome unknown" survives rather than collapsing to "never
+    // ran" — which is the reading that would praise a session for nothing.
+    for (const call of [...outcomePending.values(), ...outcomeOpen])
+        noteUnansweredCall(outcome, call);
+    const filesTouched = [...new Set(session.turns.flatMap((t) => t.files.map((f) => f.path)))];
+    session.outcomes = {
+        delivery: deliveryOf(outcome),
+        verification: verificationOf(outcome),
+        checks: checksAfterLastWrite(outcome).map((c) => ({ label: c.label, ok: c.ok })),
+        artifact: probeWriteTargets(outcome.writeTargets, session.cwd, outcome.writesWithoutTarget),
+        // Reads the repository, so it is the one part of this extractor that can
+        // fail for a reason outside the transcript. It answers `unavailable` with
+        // the reason rather than throwing; `probeGit: false` skips it entirely.
+        landed: probeGit
+            ? probeLanded({
+                cwd: session.cwd, startedAt: session.startedAt, endedAt: session.endedAt, filesTouched,
+            })
+            : { state: 'unavailable', commits: 0, overlap: 0, unrelated: 0, repos: 0, why: 'not probed' },
+    };
     return session;
 }
 // ---------------------------------------------------------------- discovery

@@ -1,4 +1,4 @@
-// `task_class` is the one column of the nine a person wrote the text of, and
+// `task_class` is the one column of the eleven a person wrote the text of, and
 // /qcontrib prints "0 repo name(s)" directly above the values it is about to
 // send. A contribution cannot be recalled, so that line has to be true at the
 // moment it is printed — which makes this the test that guards a promise, not
@@ -6,7 +6,9 @@
 //
 // Every case below is one that shipped wrong or nearly did.
 
-import { withoutRepo, taskClass, contribSlug, band, bucket } from '../scripts/finding.mjs'
+
+
+import { withoutRepo, taskClass, contribSlug, band, bucket, toFinding, validateFinding } from '../scripts/finding.mjs'
 
 let pass = 0, fail = 0
 const chk = (name, got, want) => {
@@ -59,6 +61,40 @@ chk('bucket 0', bucket(0, 40), 0)
 chk('bucket is log2', bucket(1023, 40), 10)
 chk('bucket caps', bucket(1e12, 40), 40)
 chk('bucket floors at 0', bucket(-5, 40), 0)
+
+// ---- the eleven columns, and the two that are new -------------------------
+//
+// Consent material: this is what leaves a machine when somebody runs
+// /qcontrib, and the disclosure counts the columns out loud. A field added
+// here without the disclosure following it would ship something nobody saw.
+console.log('\n── plane A carries eleven bounded columns')
+{
+  const run = {
+    kind: 'human', repo: 'acme', week: '2026-W38', cliVersion: '2.1.9',
+    terminal: 'completed_prose', delivery: 'wrote_ok',
+    verification: 'passed', landed: 'during',
+    errorClass: 'none', out: 100, tools: 3, family: null, task: null,
+  }
+  const f = toFinding(run)
+  chk('eleven columns', Object.keys(f).length, 11)
+  chk('verification_state is one of them', 'verification_state' in f, true)
+  chk('landed_state is one of them', 'landed_state' in f, true)
+  chk('and they carry what the run measured', f.verification_state, 'passed')
+  chk('landed too', f.landed_state, 'during')
+  chk('a finding with all eleven validates', validateFinding(f), null)
+
+  // Every value is an enum or a bounded number; task_class is the only text a
+  // person chose, which is why the disclosure prints its values literally.
+  chk('a rung outside its enum is refused',
+    validateFinding({ ...f, verification_state: 'probably' }), 'invalid verification_state')
+  chk('a landed state that was never defined is refused',
+    validateFinding({ ...f, landed_state: 'merged' }), 'invalid landed_state')
+
+  // `unavailable` is a member, not an absence. A validator that refused it
+  // would force a machine to lie about runs it never looked at.
+  chk('unavailable is a legitimate landed state',
+    validateFinding({ ...f, landed_state: 'unavailable' }), null)
+}
 
 console.log(`\n   ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
