@@ -94,7 +94,7 @@ without your prompts going with them. A disclosure printed where no terminal was
 not count as having been read, so an unattended run does not start shipping on its own.
 
 `/qbl` also stays on this machine by default, writing only its per-project backlog; it reaches the
-team queue only when you explicitly add `--shared`. Five of the twelve can deliberately put something
+team queue only when you explicitly add `--shared`. Six of the thirteen can deliberately put something
 about your work on a wire, and they are not the same kind of send:
 
 - `/qcontrib` feeds the cross-tenant reference in nine bounded columns — no prompts, paths, repo
@@ -160,7 +160,7 @@ installed, never what the marketplace has. The other commands do not carry the s
 ### Codex, Cursor
 
 Both read the same skill format Claude Code does — a directory holding a `SKILL.md` with `name`
-and `description` frontmatter — so all twelve commands work there. What is *not* portable is the
+and `description` frontmatter — so all thirteen commands work there. What is *not* portable is the
 line inside each one that runs the analysis: it says `${CLAUDE_PLUGIN_ROOT}`, a variable only
 Claude Code sets, which anywhere else expands to nothing and fails on a path that never existed.
 

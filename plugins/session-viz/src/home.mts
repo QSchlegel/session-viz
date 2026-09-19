@@ -213,6 +213,44 @@ export function saveLiveState(data: unknown): SavedTo {
   return writeJson([first, ...livePaths().filter((p) => p !== first)], 'live reporting state', data)
 }
 
+// ---------------------------------------------------------------- drive state
+
+/**
+ * /qdrive's own ledger, and it holds ONE thing: that this machine has been
+ * shown what an inbox is.
+ *
+ * Separate from live.json for the reason live.json is separate from
+ * contrib.json — different writers, different lifetimes — and separate from
+ * config.json because losing the disclosure record must fail CLOSED. A machine
+ * whose ledger is gone has not been told, and being told again costs a
+ * paragraph.
+ *
+ * There is deliberately no per-session opt-in stored here. A session is
+ * steerable only while it is actually running the skill, and when it ends that
+ * is over with no state left behind saying otherwise — which is a stronger
+ * promise than /qlive's stored TTL, and cheaper to keep.
+ */
+const DRIVE_FILE = 'drive.json'
+
+export const drivePaths = (): string[] => configDirs().map((d) => join(d, DRIVE_FILE))
+
+export const driveTarget = (): string => join(dirname(configTarget()), DRIVE_FILE)
+
+export function loadDriveState<T>(): T | null {
+  const here = driveTarget()
+  const found = drivePaths().filter((q) => existsSync(q))
+  const p = (found.includes(here) && writable(here))
+    ? here
+    : found.sort((a, b) => mtime(b) - mtime(a))[0]
+  if (!p) return null
+  try { return JSON.parse(readFileSync(p, 'utf8')) as T } catch { return null }
+}
+
+export function saveDriveState(data: unknown): SavedTo {
+  const first = driveTarget()
+  return writeJson([first, ...drivePaths().filter((p) => p !== first)], 'inbox disclosure record', data)
+}
+
 // ---------------------------------------------------------------- harnesses
 
 export interface TranscriptRoot {
