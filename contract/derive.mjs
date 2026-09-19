@@ -174,8 +174,7 @@ export const DERIVES = {
   'ladder.rungs': async (root) => {
     const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')
-    const { extract } = await import(
-      pathToFileURL(join(root, 'plugins/session-viz/scripts/extract.mjs')).href)
+    const { execFileSync } = await import('node:child_process')
     const dir = mkdtempSync(join(tmpdir(), 'sv-rungs-'))
     try {
       const f = join(dir, 's.jsonl')
@@ -187,8 +186,22 @@ export const DERIVES = {
         rec({ type: 'assistant', uuid: 'c', timestamp: '2026-01-01T00:00:03Z', sessionId: 's', cwd: dir, message: { model: 'm', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } }),
         rec({ type: 'user', uuid: 'd', timestamp: '2026-01-01T00:00:04Z', sessionId: 's', cwd: dir, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'pass' }] } }),
       ].join('\n') + '\n')
-      const s = await extract(f, { probeGit: false })
-      const o = s.outcomes || {}
+
+      // A CHILD PROCESS, not an import — and the `?t=` counter above is not
+      // enough here. It busts the cache for the module it names; the rung
+      // vocabulary lives one level deeper, in outcome.mjs, which extract.mjs
+      // imports by a URL carrying no counter and therefore hits the ESM cache
+      // whatever we do to extract's own key. Watched: with a plain import this
+      // derive reported all three rungs intact after the check vocabulary had
+      // been emptied — reading the copy of the code loaded before the break.
+      const runner = join(dir, 'run.mjs')
+      writeFileSync(runner, [
+        `const { extract } = await import(${JSON.stringify(pathToFileURL(join(root, 'plugins/session-viz/scripts/extract.mjs')).href)})`,
+        `const s = await extract(${JSON.stringify(f)}, { probeGit: false })`,
+        'process.stdout.write(JSON.stringify(s.outcomes || {}))',
+      ].join('\n'))
+      const o = JSON.parse(execFileSync(process.execPath, [runner], { encoding: 'utf8' }) || '{}')
+
       const rungs = []
       if (o.delivery === 'wrote_ok') rungs.push('wrote')
       if (o.verification === 'passed') rungs.push('verified')
@@ -249,6 +262,17 @@ export const DERIVES = {
 /** One deliberate break per derive, each chosen to be the change a real feature
  *  would make: a new command, a flag removed, a network call added. */
 const PERTURBATIONS = {
+  // The rung that goes quiet. `verified` is populated by a vocabulary of what
+  // counts as a check, and narrowing that vocabulary is an ordinary-looking
+  // edit — somebody deciding `npm run build` is not really a test — whose
+  // effect is that the rung keeps type-checking, keeps rendering, and reports
+  // `none` for most sessions. Nothing but running the extractor notices it,
+  // which is the reason this derive is a run rather than a grep.
+  'ladder.rungs': (root) => {
+    const p = join(root, 'plugins', 'session-viz', 'scripts', 'outcome.mjs')
+    writeFileSync(p, read(p).replace("['npm', new Set(['test', 'run'])],", ''))
+    return 'stopped counting npm as a check runner'
+  },
   'extract.trace.default_off': (root) => {
     const p = join(root, 'plugins', 'session-viz', 'scripts', 'extract.mjs')
     writeFileSync(p, read(p).replace('retainTrace = false', 'retainTrace = true'))

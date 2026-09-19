@@ -25,8 +25,14 @@ import { codexRecords, listCodexSessions } from './codex.mjs'
 import { cursorRecords, listCursorSessions } from './cursor.mjs'
 import { repoFromSlug, repoName } from './repo.mjs'
 // The write/verify/artifact vocabulary, shared with the human-session path.
-import { probeWriteTargets, WRITE_TOOLS as SHARED_WRITE_TOOLS, writeTarget as sharedWriteTarget } from './outcome.mjs'
-import type { ArtifactProbe, ArtifactProbeState } from './outcome.mjs'
+import {
+  probeWriteTargets, WRITE_TOOLS as SHARED_WRITE_TOOLS, writeTarget as sharedWriteTarget,
+  newOutcomeScan, noteToolUse, noteToolResult, verificationOf,
+} from './outcome.mjs'
+import type { ArtifactProbe, ArtifactProbeState, OutcomeScan, VerificationState } from './outcome.mjs'
+import { probeLanded } from './landed.mjs'
+import type { LandedState } from './landed.mjs'
+export type { LandedState } from './landed.mjs'
 // Re-exported, not merely used: these were part of this module's surface
 // before they were shared, and /qfeed, /qshare and the probe's own suite
 // import them from here. Moving a definition should not move its address.
@@ -120,6 +126,11 @@ interface RunScan {
   loops: number
   toolCounts: Map<string, number>
   version: string | null
+  /** The shared write/check scan. This file keeps its own write counters —
+   *  they predate the shared module and other readings depend on them — and
+   *  uses this for the one question they cannot answer: did a check run after
+   *  the last write. */
+  outcome: OutcomeScan
 }
 
 export type RunKind = 'human' | 'scheduled' | 'subagent'
@@ -158,6 +169,13 @@ export interface Run {
   cliVersion: string | null
   terminal: TerminalState
   delivery: DeliveryState
+  /** Did a check run after the last successful write, and what did it say.
+   *  Free: it comes off the same records this already reads. */
+  verification: VerificationState
+  /** Did a commit carry this run's work. `unavailable` unless the caller asked
+   *  for the git probe — it costs subprocesses per run, and /qruns scans the
+   *  whole corpus. /qcontrib, which is a deliberate one-off contribution, asks. */
+  landed: LandedState
   errorClass: ErrorClass
   out: number
   cread: number
@@ -269,9 +287,11 @@ async function scanRecords(source: AsyncIterable<TranscriptRecord>): Promise<Run
     successfulWriteTargets: new Set(), successfulWritesWithoutTarget: 0,
     permission: false, auth: false, loops: 0,
     toolCounts: new Map(), version: null,
+    outcome: newOutcomeScan(),
   }
   const names = new Map<string, string>()
   const targets = new Map<string, string>()
+  const pending = new Map<string, ReturnType<typeof noteToolUse>>()
   let lastKey: string | null = null
   for await (const o of source) {
     const ts = o.timestamp
@@ -315,6 +335,10 @@ async function scanRecords(source: AsyncIterable<TranscriptRecord>): Promise<Run
           const target = writeTarget(b.name, b.input)
           if (target) targets.set(b.id, target)
         }
+        // The shared scan, alongside this loop's own counters rather than
+        // replacing them: it is what knows whether a CHECK ran after the last
+        // write, which this file has never tracked and the ladder needs.
+        pending.set(b.id, noteToolUse(r.outcome, { name: b.name, input: b.input }))
         // Loop detection: the same tool with the same input, back to back.
         // Keyed per tool name this measured "the previous use OF THIS TOOL",
         // so Read(A), Bash(X), Read(A) — a re-read after other work, not a
@@ -338,6 +362,8 @@ async function scanRecords(source: AsyncIterable<TranscriptRecord>): Promise<Run
         for (const b of c) {
           if (b.type === 'tool_result') {
             r.resolved.add(b.tool_use_id)
+            noteToolResult(r.outcome, pending.get(b.tool_use_id), b.is_error === true)
+            pending.delete(b.tool_use_id)
             const n = names.get(b.tool_use_id)
             const txt = typeof b.content === 'string' ? b.content : JSON.stringify(b.content || '')
             if (b.is_error) {
@@ -439,7 +465,7 @@ function* rootFiles(harness: string, dir: string): Generator<{ file: string; isS
   }
 }
 
-export async function collectRuns({ since = null }: { since?: number | null } = {}): Promise<{ runs: Run[]; roots: string[] }> {
+export async function collectRuns({ since = null, probeGit = false }: { since?: number | null; probeGit?: boolean } = {}): Promise<{ runs: Run[]; roots: string[] }> {
   const runs: Run[] = []
   const roots = transcriptRoots()
   for (const { harness, dir } of roots) {
@@ -468,6 +494,13 @@ export async function collectRuns({ since = null }: { since?: number | null } = 
         week: isoWeek(s.started), started: s.started,
         ended: s.lastRecord, cliVersion: s.version,
         terminal: terminalState(s), delivery: deliveryState(s),
+        verification: verificationOf(s.outcome),
+        landed: probeGit
+          ? probeLanded({
+            cwd: s.cwd, startedAt: s.started, endedAt: s.lastRecord,
+            filesTouched: [...s.successfulWriteTargets],
+          }).state
+          : 'unavailable',
         errorClass: s.permission ? 'permission' : s.auth ? 'auth' : s.toolErr ? 'tool_error' : 'none',
         out: s.out, cread: s.cread, ccreate: s.ccreate, cin: s.cin,
         tools: s.tools, toolErr: s.toolErr, loops: s.loops,

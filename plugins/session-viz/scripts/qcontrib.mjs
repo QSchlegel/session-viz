@@ -125,7 +125,7 @@ function disclose(sel) {
     const d = describe(sel.findings, sel.eligible, HOME);
     const weeks = [...new Set(sel.findings.map((f) => f.iso_week))].sort();
     const out = [];
-    out.push('qcontrib — the delivery ledger, reduced to nine bounded columns');
+    out.push('qcontrib — the delivery ledger, reduced to eleven bounded columns');
     out.push('');
     out.push(`  ${n(sel.all.length)} run(s) on this machine · ${n(sel.eligible.length)} new · ` +
         `${n(sel.alreadySent)} already sent · ${n(sel.warm)} still warm (held back)`);
@@ -135,7 +135,7 @@ function disclose(sel) {
     out.push('  what would leave');
     out.push(`    ${d.fields.length} field(s) per finding: ${d.fields.join(', ')}`);
     out.push(`    ${n(d.bytes)} bytes · ${n(sel.findings.length)} findings · ` +
-        `${d.fields.length}/9 declared fields, ${d.unknown.length} unknown` +
+        `${d.fields.length}/11 declared fields, ${d.unknown.length} unknown` +
         (d.unknown.length ? ` — ${d.unknown.join(', ')}, THIS IS A BUG` : ''));
     out.push(`    ${d.textFields} field(s) carrying verbatim prompt text`);
     out.push(`    ${d.homePaths} absolute home path(s) — ${d.homePaths === 0 ? 'the schema has no field for one' : 'STILL PRESENT, this is a bug'}`);

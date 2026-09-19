@@ -1,4 +1,4 @@
-// A Run, reduced to the nine bounded columns the shared reference accepts.
+// A Run, reduced to the eleven bounded columns the shared reference accepts.
 //
 // Pure: no I/O, no network, no filesystem. Everything here is a function of a
 // Run, so the payload /qcontrib prints and the payload /qcontrib sends are the
@@ -14,7 +14,8 @@
 // is not the thing that should be standing between a convenience spread and an
 // egress bug.
 
-import type { Run, TerminalState, DeliveryState } from './runs.mjs'
+import type { Run, TerminalState, DeliveryState, LandedState } from './runs.mjs'
+import type { VerificationState } from './outcome.mjs'
 
 /**
  * The wire type. NOT called `Finding`: doctor.mts already exports an interface
@@ -28,6 +29,8 @@ export interface ContribFinding {
   iso_week: string
   terminal_state: TerminalState
   delivery_state: DeliveryState
+  verification_state: VerificationState
+  landed_state: LandedState
   error_class: 'none' | 'permission' | 'auth' | 'tool_error' | 'other'
   cost_bucket: number
   tool_bucket: number
@@ -91,7 +94,7 @@ export function taskClass(run: Run): string {
 /**
  * A scheduled task is very often named after the repo it runs in — `acme-api`
  * in `acme-api`. That name is author-written, so it lands in `task_class`, and
- * `task_class` is the one column of the nine that a person chose the text of.
+ * `task_class` is the one column of the eleven that a person chose the text of.
  *
  * This is not a hypothetical tidy-up. The command prints **"0 repo name(s) —
  * the schema has no field for one"** immediately above the values it is about
@@ -145,6 +148,11 @@ export function toFinding(run: Run): ContribFinding {
     iso_week: run.week,
     terminal_state: run.terminal,
     delivery_state: run.delivery,
+    // The two rungs above delivery. `landed_state` is `unavailable` unless the
+    // caller asked for the git probe — which is a statement that nothing
+    // looked, never that nothing landed.
+    verification_state: run.verification,
+    landed_state: run.landed,
     error_class: run.errorClass,
     // OUTPUT tokens only, never out + cread + ccreate. The reference report
     // inverts this bucket as 2**b and prints it as a token count, and every row
@@ -170,7 +178,7 @@ export function toFinding(run: Run): ContribFinding {
 // too, rather than trusting this to have caught everything.
 const FIELDS = [
   'kind', 'task_class', 'cli_band', 'iso_week',
-  'terminal_state', 'delivery_state', 'error_class',
+  'terminal_state', 'delivery_state', 'verification_state', 'landed_state', 'error_class',
   'cost_bucket', 'tool_bucket',
 ] as const
 
@@ -181,6 +189,8 @@ const ENUMS: Record<string, readonly string[]> = {
     'abandoned_mid_tool', 'infra_halt', 'zombie', 'unknown',
   ],
   delivery_state: ['wrote_ok', 'denied', 'no_intent', 'unverified'],
+  verification_state: ['none', 'ran', 'passed', 'failed'],
+  landed_state: ['none', 'during', 'after', 'unavailable'],
   error_class: ['none', 'permission', 'auth', 'tool_error', 'other'],
 }
 
@@ -209,7 +219,7 @@ export function validateFinding(f: unknown): string | null {
  *
  * Printed above the payload rather than described in prose. "No paths are sent"
  * is a claim; the reader's own home directory on screen next to a payload that
- * has just been validated as nine known fields is evidence.
+ * has just been validated as eleven known fields is evidence.
  */
 export function withheld(run: Run): { k: string; v: string }[] {
   return [
