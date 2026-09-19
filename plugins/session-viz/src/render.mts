@@ -598,7 +598,16 @@ footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono)
 /* knowledge graph */
 .gwrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:0;border:1px solid var(--line);
   border-radius:10px;overflow:hidden;margin:10px 0 0;background:var(--panel)}
-@media (max-width:900px){.gwrap{grid-template-columns:1fr}}
+/* minmax(0,1fr), not a bare 1fr. A bare 1fr means minmax(auto,1fr), and that
+   auto floors the track at the widest child's MIN-CONTENT — which .greplay
+   set at 480px. On a
+   375px screen the single track was therefore 480px wide inside a 333px box,
+   and .gwrap's overflow:hidden (which it needs for its rounded corners) then
+   clipped the right 30% of the graph, its legend and the whole side panel with
+   no way to scroll to any of it. The desktop rule above already had the
+   minmax; only the narrow override was missing it, so the bug was mobile-only
+   by construction. */
+@media (max-width:900px){.gwrap{grid-template-columns:minmax(0,1fr)}}
 .glegend{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:16px;align-items:center;padding:9px 14px;
   border-bottom:1px solid var(--line);font-size:12.5px}
 .ghalf{display:inline-flex;align-items:center;gap:7px}
@@ -625,8 +634,15 @@ footer{margin-top:44px;color:var(--muted);font-size:12px;font-family:var(--mono)
 .gzoom button:hover{border-color:var(--accent)}
 .gscale{position:absolute;left:11px;bottom:14px;font-family:var(--mono);font-size:11px;
   color:var(--kg-label);opacity:.8;pointer-events:none}
-.greplay{grid-column:1/-1;display:flex;gap:12px;align-items:center;padding:9px 14px;
+/* flex-wrap, because this row is what was setting the floor: a 73px button, a
+   115px slider and a 235px readout do not fit across a phone, and without
+   wrapping their sum becomes the min-content width of the whole graph panel. */
+.greplay{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:9px 14px;
   border-top:1px solid var(--line);font-size:12.5px}
+/* The slider takes the leftover room once the readout has wrapped under it,
+   rather than staying at its intrinsic width with dead space beside it. */
+.greplay input[type=range]{flex:1 1 140px;min-width:0}
+.greplay output{flex:1 1 100%}
 .greplay input[type=range]{flex:1;min-width:110px;accent-color:var(--accent)}
 .greplay output{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap}
 
