@@ -403,8 +403,10 @@
     "facts.index.fields": {
       "statement": "Every field the workspace-visible index tier may carry.",
       "value": [
+        "artifact",
         "branch",
         "cli_version",
+        "delivery",
         "duration_ms",
         "ended_at",
         "files_dropped",
@@ -413,6 +415,7 @@
         "graph",
         "harness",
         "intents",
+        "landed",
         "mcp_servers",
         "models",
         "paths_recorded",
@@ -450,11 +453,12 @@
         "totals.tool_calls",
         "trace_shape",
         "turns",
+        "verification",
         "worktree"
       ],
       "render": {
-        "expr": "export const INDEX_FIELDS = [\n  'branch', 'cli_version', 'duration_ms', 'ended_at', 'files_dropped', 'files_touched',\n  'friction_kinds', 'graph', 'harness', 'intents', 'mcp_servers', 'models', 'paths_recorded',\n  'plugin_version', 'repo', 'schema_version', 'score.band', 'score.confidence',\n  'score.costliest_turn', 'score.craft_rate', 'score.friction_rate', 'score.turns_scored',\n  'score.value', 'score.wasted_tokens', 'secrets_redacted', 'session_id', 'slash_commands',\n  'started_at', 'title', 'tokens.cache_create', 'tokens.cache_read', 'tokens.input',\n  'tokens.output', 'tools', 'totals.assistant_messages', 'totals.compactions',\n  'totals.corrections', 'totals.friction_turns', 'totals.human_turns', 'totals.interruptions',\n  'totals.records', 'totals.repeats', 'totals.sidechain_records', 'totals.steering_turns',\n  'totals.tool_calls', 'trace_shape', 'turns', 'worktree'\n] as const",
-        "count": "48"
+        "expr": "export const INDEX_FIELDS = [\n  'artifact', 'branch', 'cli_version', 'delivery', 'duration_ms', 'ended_at',\n  'files_dropped', 'files_touched', 'friction_kinds', 'graph', 'harness', 'intents',\n  'landed', 'mcp_servers', 'models', 'paths_recorded', 'plugin_version', 'repo',\n  'schema_version', 'score.band', 'score.confidence', 'score.costliest_turn',\n  'score.craft_rate', 'score.friction_rate', 'score.turns_scored', 'score.value',\n  'score.wasted_tokens', 'secrets_redacted', 'session_id', 'slash_commands', 'started_at',\n  'title', 'tokens.cache_create', 'tokens.cache_read', 'tokens.input', 'tokens.output',\n  'tools', 'totals.assistant_messages', 'totals.compactions', 'totals.corrections',\n  'totals.friction_turns', 'totals.human_turns', 'totals.interruptions', 'totals.records',\n  'totals.repeats', 'totals.sidechain_records', 'totals.steering_turns',\n  'totals.tool_calls', 'trace_shape', 'turns', 'verification', 'worktree'\n] as const",
+        "count": "52"
       },
       "kind": "list",
       "risk": "consent",

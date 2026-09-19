@@ -66,10 +66,10 @@
 
 import {
   newOutcomeScan, noteToolUse, noteToolResult, noteUnansweredCall,
-  deliveryOf, verificationOf, checksAfterLastWrite,
+  deliveryOf, verificationOf, checksAfterLastWrite, probeWriteTargets,
 } from './outcome.mjs'
 import { probeLanded } from './landed.mjs'
-import type { OutcomeScan, DeliveryState, VerificationState } from './outcome.mjs'
+import type { OutcomeScan, DeliveryState, VerificationState, ArtifactProbe } from './outcome.mjs'
 import type { Landed } from './landed.mjs'
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs'
 import { createInterface } from 'node:readline'
@@ -363,6 +363,11 @@ export interface Session {
     verification: VerificationState
     /** The checks that ran after the last successful write, by label. */
     checks: Array<{ label: string; ok: boolean | null }>
+    /** Whether the files the session successfully wrote are on this disk NOW.
+     *  Corroboration, never proof: a container, a worktree or a later move
+     *  makes a real write absent, which is why absence is `not_found_local`
+     *  and never failure. */
+    artifact: ArtifactProbe
     landed: Landed
   }
 }
@@ -1636,6 +1641,7 @@ export async function extract(
     delivery: deliveryOf(outcome),
     verification: verificationOf(outcome),
     checks: checksAfterLastWrite(outcome).map((c) => ({ label: c.label, ok: c.ok })),
+    artifact: probeWriteTargets(outcome.writeTargets, session.cwd, outcome.writesWithoutTarget),
     // Reads the repository, so it is the one part of this extractor that can
     // fail for a reason outside the transcript. It answers `unavailable` with
     // the reason rather than throwing; `probeGit: false` skips it entirely.

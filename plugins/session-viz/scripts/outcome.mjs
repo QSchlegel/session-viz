@@ -26,6 +26,8 @@
 // `passed` is a check process that exited zero. A runner that exits zero while
 // reporting failures reads as passed here, and a flaky failure reads as failed.
 // It is evidence that a check RAN and what it said, not a claim about the code.
+import { statSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
 /** Widened to accept a missing name: the membership tests run against tool
  *  names that may not have been seen (an unmatched tool_result). */
 export const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
@@ -222,3 +224,39 @@ export function verificationOf(scan) {
 }
 /** The checks that count, for a page that wants to name them. */
 export const checksAfterLastWrite = (scan) => scan.lastWriteSeq === null ? [] : scan.checks.filter((c) => c.seq > scan.lastWriteSeq);
+/** Probe only successful write targets and report what is visible NOW.
+ *
+ * A missing local path is not called failed delivery: the tool may have run in
+ * a container, worktree, or remote filesystem, or the artifact may have moved
+ * after the run. Presence is useful corroborating evidence; absence is a lead
+ * to investigate. Both remain distinct from the transcript's `wrote_ok` fact. */
+export function probeWriteTargets(targets, cwd, unavailable = 0) {
+    let targeted = 0, present = 0, notFoundLocal = 0;
+    for (const target of new Set(targets)) {
+        targeted++;
+        if (!isAbsolute(target) && !cwd) {
+            unavailable++;
+            continue;
+        }
+        const path = isAbsolute(target) ? target : resolve(cwd, target);
+        try {
+            const st = statSync(path);
+            if (st.isFile())
+                present++;
+            else
+                unavailable++;
+        }
+        catch (e) {
+            if (e.code === 'ENOENT')
+                notFoundLocal++;
+            else
+                unavailable++;
+        }
+    }
+    const state = present && notFoundLocal ? 'partial'
+        : present ? 'present'
+            : notFoundLocal ? 'not_found_local'
+                : targeted || unavailable ? 'unavailable'
+                    : 'not_applicable';
+    return { state, targeted, present, notFoundLocal, unavailable };
+}

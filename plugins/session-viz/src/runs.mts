@@ -24,6 +24,14 @@ import type { HarnessCoverage } from './home.mjs'
 import { codexRecords, listCodexSessions } from './codex.mjs'
 import { cursorRecords, listCursorSessions } from './cursor.mjs'
 import { repoFromSlug, repoName } from './repo.mjs'
+// The write/verify/artifact vocabulary, shared with the human-session path.
+import { probeWriteTargets, WRITE_TOOLS as SHARED_WRITE_TOOLS, writeTarget as sharedWriteTarget } from './outcome.mjs'
+import type { ArtifactProbe, ArtifactProbeState } from './outcome.mjs'
+// Re-exported, not merely used: these were part of this module's surface
+// before they were shared, and /qfeed, /qshare and the probe's own suite
+// import them from here. Moving a definition should not move its address.
+export { probeWriteTargets } from './outcome.mjs'
+export type { ArtifactProbe, ArtifactProbeState } from './outcome.mjs'
 import { versionNote } from './version.mjs'
 
 // Shapes of the JSONL on disk. Only the fields this file reads are modelled;
@@ -125,14 +133,6 @@ export type TerminalState =
   | 'zombie'
   | 'unknown'
 export type DeliveryState = 'denied' | 'wrote_ok' | 'unverified' | 'no_intent'
-export type ArtifactProbeState = 'present' | 'partial' | 'not_found_local' | 'unavailable' | 'not_applicable'
-export interface ArtifactProbe {
-  state: ArtifactProbeState
-  targeted: number
-  present: number
-  notFoundLocal: number
-  unavailable: number
-}
 export type ErrorClass = 'permission' | 'auth' | 'tool_error' | 'none'
 
 export interface Run {
@@ -197,51 +197,10 @@ const RETURN_SET = new Set<string | null>(['StructuredOutput'])
 
 // Widened to accept a missing name: the membership tests below run against
 // tool names that may not have been seen (an unmatched tool_result).
-const WRITE_TOOLS = new Set<string | undefined>(['Write', 'Edit', 'NotebookEdit'])
+const WRITE_TOOLS = SHARED_WRITE_TOOLS
 
-/** The path field used by the three write tools across supported harnesses.
- *  Exported for the contract test: format drift here silently turns a real
- *  probe back into an `unavailable` counter. */
-export function writeTarget(name: string | undefined, input: unknown): string | null {
-  if (!WRITE_TOOLS.has(name) || !input || typeof input !== 'object' || Array.isArray(input)) return null
-  const o = input as Record<string, unknown>
-  const raw = name === 'NotebookEdit'
-    ? o.notebook_path ?? o.file_path ?? o.path
-    : o.file_path ?? o.path
-  const value = typeof raw === 'string' ? raw.trim() : ''
-  return value || null
-}
+export const writeTarget = sharedWriteTarget
 
-/** Probe only successful write targets and report what is visible NOW.
- *
- * A missing local path is not called failed delivery: the tool may have run in
- * a container, worktree, or remote filesystem, or the artifact may have moved
- * after the run. Presence is useful corroborating evidence; absence is a lead
- * to investigate. Both remain distinct from the transcript's `wrote_ok` fact. */
-export function probeWriteTargets(
-  targets: Iterable<string>, cwd: string | null, unavailable = 0,
-): ArtifactProbe {
-  let targeted = 0, present = 0, notFoundLocal = 0
-  for (const target of new Set(targets)) {
-    targeted++
-    if (!isAbsolute(target) && !cwd) { unavailable++; continue }
-    const path = isAbsolute(target) ? target : resolve(cwd!, target)
-    try {
-      const st = statSync(path)
-      if (st.isFile()) present++
-      else unavailable++
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') notFoundLocal++
-      else unavailable++
-    }
-  }
-  const state: ArtifactProbeState = present && notFoundLocal ? 'partial'
-    : present ? 'present'
-    : notFoundLocal ? 'not_found_local'
-    : targeted || unavailable ? 'unavailable'
-    : 'not_applicable'
-  return { state, targeted, present, notFoundLocal, unavailable }
-}
 
 function* walk(dir: string): Generator<string> {
   let entries: Dirent[]

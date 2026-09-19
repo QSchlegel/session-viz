@@ -63,7 +63,7 @@
 // into prompts, and `turn.text` still holds whatever they typed; every consumer
 // that scrubs prompt text already has to handle the absolute form appearing
 // there, and still does.
-import { newOutcomeScan, noteToolUse, noteToolResult, noteUnansweredCall, deliveryOf, verificationOf, checksAfterLastWrite, } from './outcome.mjs';
+import { newOutcomeScan, noteToolUse, noteToolResult, noteUnansweredCall, deliveryOf, verificationOf, checksAfterLastWrite, probeWriteTargets, } from './outcome.mjs';
 import { probeLanded } from './landed.mjs';
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -1099,6 +1099,7 @@ export async function extract(file, { redactText = true, maxPromptChars = 4000, 
         delivery: deliveryOf(outcome),
         verification: verificationOf(outcome),
         checks: checksAfterLastWrite(outcome).map((c) => ({ label: c.label, ok: c.ok })),
+        artifact: probeWriteTargets(outcome.writeTargets, session.cwd, outcome.writesWithoutTarget),
         // Reads the repository, so it is the one part of this extractor that can
         // fail for a reason outside the transcript. It answers `unavailable` with
         // the reason rather than throwing; `probeGit: false` skips it entirely.

@@ -40,16 +40,17 @@
 import { repoName, worktreeOf } from './repo.mjs';
 // <contract:facts.index.fields> generated from contract/claims.json — do not edit
 export const INDEX_FIELDS = [
-    'branch', 'cli_version', 'duration_ms', 'ended_at', 'files_dropped', 'files_touched',
-    'friction_kinds', 'graph', 'harness', 'intents', 'mcp_servers', 'models', 'paths_recorded',
-    'plugin_version', 'repo', 'schema_version', 'score.band', 'score.confidence',
-    'score.costliest_turn', 'score.craft_rate', 'score.friction_rate', 'score.turns_scored',
-    'score.value', 'score.wasted_tokens', 'secrets_redacted', 'session_id', 'slash_commands',
-    'started_at', 'title', 'tokens.cache_create', 'tokens.cache_read', 'tokens.input',
-    'tokens.output', 'tools', 'totals.assistant_messages', 'totals.compactions',
-    'totals.corrections', 'totals.friction_turns', 'totals.human_turns', 'totals.interruptions',
-    'totals.records', 'totals.repeats', 'totals.sidechain_records', 'totals.steering_turns',
-    'totals.tool_calls', 'trace_shape', 'turns', 'worktree'
+    'artifact', 'branch', 'cli_version', 'delivery', 'duration_ms', 'ended_at',
+    'files_dropped', 'files_touched', 'friction_kinds', 'graph', 'harness', 'intents',
+    'landed', 'mcp_servers', 'models', 'paths_recorded', 'plugin_version', 'repo',
+    'schema_version', 'score.band', 'score.confidence', 'score.costliest_turn',
+    'score.craft_rate', 'score.friction_rate', 'score.turns_scored', 'score.value',
+    'score.wasted_tokens', 'secrets_redacted', 'session_id', 'slash_commands', 'started_at',
+    'title', 'tokens.cache_create', 'tokens.cache_read', 'tokens.input', 'tokens.output',
+    'tools', 'totals.assistant_messages', 'totals.compactions', 'totals.corrections',
+    'totals.friction_turns', 'totals.human_turns', 'totals.interruptions', 'totals.records',
+    'totals.repeats', 'totals.sidechain_records', 'totals.steering_turns',
+    'totals.tool_calls', 'trace_shape', 'turns', 'verification', 'worktree'
 ];
 // </contract:facts.index.fields>
 // <contract:facts.trace.call_fields> generated from contract/claims.json — do not edit
@@ -331,6 +332,13 @@ export function indexFacts(s, meta = {}, intent = null) {
         friction_kinds: countBy(turns.flatMap((t) => t.friction || []), (f) => String(f)),
         files_touched: kept,
         files_dropped: dropped,
+        // Enums only. The counts behind them — how many commits, how many files
+        // overlapped, which checks by name — stay on the machine: the index tier
+        // is bounded values, and a roll-up needs the state, not the arithmetic.
+        delivery: String(s.outcomes?.delivery ?? 'no_intent'),
+        artifact: String(s.outcomes?.artifact?.state ?? 'not_applicable'),
+        verification: String(s.outcomes?.verification ?? 'none'),
+        landed: String(s.outcomes?.landed?.state ?? 'unavailable'),
         turns: turns.map((t) => ({
             index: Number(t.index || 0),
             duration_ms: Number(t.durationMs || 0),
