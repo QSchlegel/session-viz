@@ -175,5 +175,88 @@ section('nothing identifying is retained')
   chk('and merges are excluded', /--no-merges/.test(fmt), fmt)
 }
 
+section('against real git, which is where the fake could not follow')
+{
+  // Everything above drives the `run` seam. Two defects lived underneath it,
+  // both invisible to a fake whose answers agree with its own inputs by
+  // construction.
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+
+  let have = true
+  try { execFileSync('git', ['--version'], { stdio: 'ignore' }) } catch { have = false }
+  if (!have) console.log('skip  real git is not on this machine')
+  else {
+    const dir = mkdtempSync(join(tmpdir(), 'sv-landed-real-'))
+    const git = (args, when) => execFileSync('git', args, {
+      cwd: dir, encoding: 'utf8',
+      env: { ...process.env, GIT_AUTHOR_DATE: when || '', GIT_COMMITTER_DATE: when || '',
+        GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@x' },
+    })
+    try {
+      git(['init', '-q', '-b', 'main'])
+      writeFileSync(join(dir, 'mine.ts'), 'x')
+      git(['add', '.']); git(['commit', '-qm', 'mine'], '2026-09-19T10:30:00+0000')
+      const real = (over = {}) =>
+        probeLanded({ cwd: dir, startedAt: START, endedAt: END, filesTouched: ['mine.ts'], ...over })
+
+      // DEFECT ONE: a temp directory on macOS is /var/..., and git answers
+      // with /private/var/... . Comparing the two made `relative()` climb out
+      // with ../.. , the file was dropped, and the probe reported "none of
+      // the files are inside a git repository" about a file sitting in one.
+      // Any symlinked home, project directory or mount is the same story.
+      const own = real()
+      chk('a repository reached through a symlink is still a repository',
+        own.state === 'during' && own.commits === 1, JSON.stringify(own))
+      chk('and it is never reported as unprobeable', own.state !== 'unavailable', own.why || '')
+
+      chk('a window with no commits in it is `none`, having looked',
+        real({ startedAt: '2026-01-01T00:00:00Z', endedAt: '2026-01-01T01:00:00Z' }).state === 'none')
+
+      // DEFECT TWO: `--all` reaches refs/remotes/*, and a commit reachable
+      // only from there is one that arrived by fetch. Somebody else's work,
+      // in this session's window, touching a file this session also wrote,
+      // was counted as this session's work landing.
+      git(['checkout', '-q', '-b', 'theirs'])
+      writeFileSync(join(dir, 'mine.ts'), 'their edit')
+      git(['commit', '-qam', 'theirs'], '2026-09-19T10:45:00+0000')
+      const sha = git(['rev-parse', 'HEAD']).trim()
+      git(['checkout', '-q', 'main'])
+      git(['branch', '-qD', 'theirs'])
+      git(['update-ref', 'refs/remotes/origin/theirs', sha])
+      const fetched = real()
+      chk('a commit only a fetch could have put here is not this session\'s work',
+        fetched.commits === 1, `${fetched.commits} — a remote-tracking ref was counted`)
+
+      // A repository with nothing committed yet. Naming HEAD is fatal there,
+      // and the first version of the narrowing turned 17 real sessions into
+      // `unavailable` over it — a repository the probe can see perfectly
+      // well, reported as one it could not look at.
+      const fresh = mkdtempSync(join(tmpdir(), 'sv-landed-empty-'))
+      try {
+        execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: fresh })
+        writeFileSync(join(fresh, 'new.ts'), 'x')
+        const r = probeLanded({ cwd: fresh, startedAt: START, endedAt: END, filesTouched: ['new.ts'] })
+        chk('a repository with no commits yet answers `none`, not `unavailable`',
+          r.state === 'none', JSON.stringify(r))
+        chk('and it counts as having been looked in', r.repos === 1, JSON.stringify(r))
+      } finally { rmSync(fresh, { recursive: true, force: true }) }
+
+      // The case --all was there for, which must survive the narrowing: work
+      // committed on a local branch the session then left.
+      git(['checkout', '-q', '-b', 'mine-elsewhere'])
+      writeFileSync(join(dir, 'mine.ts'), 'more of mine')
+      git(['commit', '-qam', 'mine again'], '2026-09-19T10:50:00+0000')
+      git(['checkout', '-q', 'main'])
+      chk('but a local branch the session moved off still counts',
+        real().commits === 2, JSON.stringify(real()))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
 console.log(failed ? `\n${failed} failed` : '\nall passed')
 process.exit(failed ? 1 : 0)

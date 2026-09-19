@@ -29,9 +29,10 @@
 // whose filesystem this process cannot see: each is a reason the probe could
 // not look, and reporting those as "nothing landed" would be the probe lying
 // about work it never examined.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, resolve, relative } from 'node:path';
+import { isAbsolute, resolve, relative, join } from 'node:path';
 const NOT_PROBED = { state: 'unavailable', commits: 0, overlap: 0, unrelated: 0, repos: 0, why: 'not probed' };
 /**
  * How long after a session ends a commit still counts as its work.
@@ -124,16 +125,47 @@ export function probeLanded(input) {
         .map((p) => (p.startsWith('~') ? resolve(homedir(), p.slice(1).replace(/^\/+/, ''))
         : isAbsolute(p) ? p : resolve(cwd, p)));
     const memo = new Map();
+    /**
+     * The directory with every symlink resolved, memoised.
+     *
+     * `git rev-parse --show-toplevel` answers with a REAL path, while the
+     * transcript records the working directory as the person's shell saw it.
+     * On macOS every session under /tmp or /var is already a mismatch
+     * (/var -> /private/var), and a symlinked home, project directory or
+     * /Volumes mount is the same story anywhere. Comparing the two directly
+     * makes `relative()` climb out with `../..`, the file is dropped, and the
+     * probe answers "none of the files are inside a git repository" about a
+     * file that is plainly inside one — the false negative this rung exists to
+     * avoid, reported as though it were caution.
+     *
+     * A path that will not resolve (deleted since, or unreadable) falls back to
+     * itself: the literal path is the best evidence left, and rootOfDir will
+     * decline it a moment later if it is truly gone.
+     */
+    const realMemo = new Map();
+    const realOf = (dir) => {
+        const hit = realMemo.get(dir);
+        if (hit !== undefined)
+            return hit;
+        let real = dir;
+        try {
+            real = realpathSync(dir);
+        }
+        catch { /* fall back to the literal path */ }
+        realMemo.set(dir, real);
+        return real;
+    };
     // root -> the repo-relative paths of the session's files inside it
     const byRoot = new Map();
     for (const p of abs) {
-        const dir = p.replace(/\/[^/]*$/, '') || '/';
+        const dir = realOf(p.replace(/\/[^/]*$/, '') || '/');
+        const base = p.slice(p.lastIndexOf('/') + 1);
         const root = rootOfDir(dir, run, memo);
         if (!root)
             continue;
         if (!byRoot.has(root) && byRoot.size >= MAX_REPOS)
             continue;
-        const rel = gitish(relative(root, p));
+        const rel = gitish(relative(root, join(dir, base)));
         if (!rel || rel.startsWith('..'))
             continue;
         if (!byRoot.has(root))
@@ -159,7 +191,26 @@ export function probeLanded(input) {
                 // A record separator and a machine timestamp. Deliberately no %s and
                 // no %an: a subject line is prose and an author is a person.
                 '--pretty=format:%x1ecommit%x1f%cI',
-                '--all',
+                // Local refs only, NOT --all.
+                //
+                // --all includes refs/remotes/*, and a commit reachable only from
+                // there is by definition one that arrived from somewhere else. A
+                // fetch during the session window, of a colleague's commit touching
+                // a file this session also wrote, was being scored as this session's
+                // work landing — watched happening in a repository built for the
+                // purpose. Local branches, tags and HEAD keep the case --all was
+                // here for: work committed on a branch the session then left, and
+                // work committed in another worktree of the same repository. A
+                // detached HEAD is covered by HEAD.
+                //
+                // --ignore-missing because naming HEAD is fatal in a repository whose
+                // HEAD is unborn — a fresh `git init` with nothing committed yet —
+                // and the probe would answer `unavailable` for a repository it can
+                // see perfectly well and which simply has no commits in the window.
+                // Measured: 17 sessions moved from a real answer to `unavailable`
+                // before this was added. `--all` never hit it because it names no
+                // revision that can be missing.
+                '--ignore-missing', '--branches', '--tags', 'HEAD',
             ], root);
         }
         catch {
